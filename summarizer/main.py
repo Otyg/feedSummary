@@ -61,6 +61,7 @@ from summarizer.helpers import (
     text_clip,
 )
 import logging
+
 setup_logging()
 logger = logging.getLogger(__name__)
 

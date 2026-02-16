@@ -50,6 +50,7 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class OllamaConfig:
     base_url: str = "http://localhost:11434"

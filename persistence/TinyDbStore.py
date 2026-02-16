@@ -40,6 +40,7 @@ from tinydb import Query, TinyDB
 
 logger = logging.getLogger(__name__)
 
+
 class TinyDBStore:
     """
     TinyDB-backed store (JSON file). Implements NewsStore.
@@ -71,7 +72,7 @@ class TinyDBStore:
         A = Query()
         res = db.table("articles").search((A.summarized != True))  # noqa: E712
         db.close()
-        return res[:limit]
+        return res[:limit]  # pyright: ignore[reportReturnType]
 
     def mark_articles_summarized(self, article_ids: List[str]) -> None:
         db = self._db()
@@ -120,7 +121,7 @@ class TinyDBStore:
         db.close()
         if not doc:
             return None
-        return {"id": summary_id, **dict(doc)}
+        return {"id": summary_id, **dict(doc)}  # pyright: ignore[reportCallIssue, reportArgumentType, reportReturnType]
 
     # ---- Jobs
     def create_job(self) -> int:
@@ -151,7 +152,7 @@ class TinyDBStore:
         db.close()
         if not doc:
             return None
-        return {"id": job_id, **dict(doc)}
+        return {"id": job_id, **dict(doc)}  # pyright: ignore[reportCallIssue, reportArgumentType, reportReturnType]
 
     # ---- Utility
     def get_articles_by_ids(self, article_ids: List[str]) -> List[Dict[str, Any]]:

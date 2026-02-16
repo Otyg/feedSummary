@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional
 import logging
 import sys
 
+
 def setup_logging():
     root = logging.getLogger()
     root.setLevel(logging.INFO)
@@ -48,9 +49,12 @@ def setup_logging():
 
     h = logging.StreamHandler(sys.stdout)
     h.setLevel(logging.INFO)
-    formatter = logging.Formatter(" %(asctime)s - %(name)s - %(levelname)s:   %(message)s")
+    formatter = logging.Formatter(
+        " %(asctime)s - %(name)s - %(levelname)s:   %(message)s"
+    )
     h.setFormatter(formatter)
     root.addHandler(h)
+
 
 def _expand_path(p: str) -> str:
     return os.path.expandvars(os.path.expanduser(p))
