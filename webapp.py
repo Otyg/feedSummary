@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from datetime import datetime
@@ -42,19 +43,13 @@ import markdown as md
 import yaml
 from flask import Flask, jsonify, redirect, render_template, url_for
 
+from summarizer.helpers import setup_logging
 from summarizer.main import run_pipeline
 from persistence import NewsStore, create_store
-import logging
 
-APP_NAME = "FeedSummarizer - Web"
-logger = logging.getLogger(APP_NAME)
-logger.setLevel(logging.INFO)
-formatter = logging.Formatter("%(levelname)s:    %(message)s")
-log_stream = logging.StreamHandler()
-log_stream.setLevel(logging.INFO)
-log_stream.setFormatter(formatter)
-logger.addHandler(log_stream)
 
+setup_logging()
+logger = logging.getLogger(__name__)
 app = Flask(__name__)
 pipeline_lock = threading.Lock()
 
@@ -212,4 +207,4 @@ def api_status(job_id: int):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)

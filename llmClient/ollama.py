@@ -48,18 +48,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-APP_NAME = "OLLAMA"
-logger = logging.getLogger(APP_NAME)
-logger.setLevel(logging.INFO)
-
-# Undvik att lägga till flera handlers om modulen importeras flera gånger
-if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-    formatter = logging.Formatter("%(levelname)s:    %(message)s")
-    log_stream = logging.StreamHandler()
-    log_stream.setLevel(logging.INFO)
-    log_stream.setFormatter(formatter)
-    logger.addHandler(log_stream)
-
+logger = logging.getLogger(__name__)
 
 @dataclass
 class OllamaConfig:
