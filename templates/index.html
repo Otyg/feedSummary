@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}Nyhetssammanfattning{% endblock %}
+{% block header %}Nyhetssammanfattning{% endblock %}
+
+{% block subheader %}
+  {% if summary %}
+    Senast uppdaterad: {{ summary_time }} · Artiklar: {{ n_articles }}
+  {% else %}
+    Ingen sammanfattning sparad ännu.
+  {% endif %}
+{% endblock %}
+
+{% block top_actions %}
+  <a class="btn" href="{{ url_for('history') }}">History</a>
+  <form method="POST" action="{{ url_for('refresh') }}" style="margin:0;">
+    <button class="btn btn-primary" type="submit">Refresh</button>
+  </form>
+{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div class="status">
+      <strong>Status:</strong>
+      <span id="jobPill" class="pill">idle</span>
+      <span class="muted" id="jobMsg"></span>
+    </div>
+    <div class="muted" id="jobTimes" style="margin-top:6px;"></div>
+  </div>
+
+  {% if summary %}
+    <div class="grid">
+      <div class="card">
+        {{ summary_html|safe }}
+      </div>
+
+      <div class="card">
+        <h3>Källor</h3>
+        <ul>
+          {% for a in articles %}
+            <li style="margin-bottom: 10px;">
+              <div><strong>{{ a.title }}</strong></div>
+              <div class="muted">{{ a.source }}{% if a.published %} · {{ a.published }}{% endif %}</div>
+              <div><a href="{{ a.url }}" target="_blank" rel="noopener">Öppna</a></div>
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  {% else %}
+    <div class="card">
+      <p>Tryck <strong>Refresh</strong> för att hämta och summera.</p>
+      <p class="muted">Tips: kör <code>ollama serve</code> och se till att modellen finns (t.ex. <code>ollama pull llama3.1</code>).</p>
+    </div>
+  {% endif %}
+
+<script>
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  const jobId = params.get("job");
+  const pill = document.getElementById("jobPill");
+  const msg = document.getElementById("jobMsg");
+  const times = document.getElementById("jobTimes");
+
+  function setPill(status) {
+    pill.classList.remove("ok","err");
+    pill.textContent = status || "idle";
+    if (status === "done") pill.classList.add("ok");
+    if (status === "error") pill.classList.add("err");
+  }
+
+  function fmt(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    return d.toISOString().replace("T", " ").slice(0, 19);
+  }
+
+  async function poll() {
+    if (!jobId) {
+      setPill("idle");
+      msg.textContent = "";
+      times.textContent = "";
+      return;
+    }
+    try {
+      const r = await fetch(`/api/status/${jobId}`);
+      const data = await r.json();
+
+      setPill(data.status);
+      msg.textContent = data.message || "";
+
+      const created = fmt(data.created_at);
+      const started = fmt(data.started_at);
+      const finished = fmt(data.finished_at);
+      let tline = "";
+      if (created) tline += `Skapad: ${created}`;
+      if (started) tline += (tline ? " · " : "") + `Startad: ${started}`;
+      if (finished) tline += (tline ? " · " : "") + `Klar: ${finished}`;
+      times.textContent = tline;
+
+      if (data.status === "done") {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("job");
+        window.location.replace(url.toString());
+        return;
+      }
+      if (data.status === "error") return;
+      setTimeout(poll, 1500);
+    } catch (e) {
+      setPill("error");
+      msg.textContent = "Kunde inte läsa status.";
+    }
+  }
+
+  poll();
+})();
+</script>
+{% endblock %}

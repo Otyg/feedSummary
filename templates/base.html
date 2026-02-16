@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{% block title %}Nyhetssammanfattning{% endblock %}</title>
+  <style>{% include "style.css" %}</style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <h1>{% block header %}Nyhetssammanfattning{% endblock %}</h1>
+      <div class="muted">{% block subheader %}{% endblock %}</div>
+    </div>
+
+    <div style="display:flex; gap:10px; align-items:center;">
+      {% block top_actions %}{% endblock %}
+    </div>
+  </div>
+
+  {% block content %}{% endblock %}
+</body>
+</html>

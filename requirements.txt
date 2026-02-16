@@ -1,0 +1,10 @@
+aiohttp>=3.13.3
+aiolimiter>=1.2.1
+feedparser>=6.0.12
+Flask>=3.1.2
+Markdown>=3.10.2
+tenacity>=9.1.4
+tinydb>=4.8.2
+tld>=0.13.1
+PyYAML>=6.0.3
+trafilatura>=2.0.0
