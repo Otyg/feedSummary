@@ -5,21 +5,32 @@ store:
 feeds:
   - name: "SVT Nyheter"
     url: "https://www.svt.se/nyheter/rss.xml"
-  - name: "BBC World"
-    url: "http://feeds.bbci.co.uk/news/world/rss.xml"
 
 max_items_per_feed: 10
 article_timeout_s: 20
+
+batching:
+  max_chars_per_batch: 8000
+  max_articles_per_batch: 4
+  article_clip_chars: 2000
+  retry_user_clip_chars: 9000
+  meta_batch_clip_chars: 1800
+  meta_sources_clip_chars: 140
 
 llm:
   provider: "ollama"
   model: "llama3.1"
   base_url: "http://localhost:11434"
   max_rps: 1
+  timeout_s: 6000
+  sock_read_timeout_s: 360
+  max_retries: 3
+  retry_backoff_s: 2.0
 
-batching:
-  max_chars_per_batch: 18000
-  max_articles_per_batch: 10
+checkpointing:
+  enabled: true
+  dir: "~/.local/share/FeedSummary/checkpoints"
+
 
 prompts:
   batch_system: |

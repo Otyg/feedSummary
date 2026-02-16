@@ -32,6 +32,9 @@
 
 import asyncio
 import hashlib
+import json
+import os
+from pathlib import Path
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -50,6 +53,66 @@ from tenacity import (
 
 from llmClient import LLMClient, create_llm_client
 from persistence import NewsStore, create_store
+
+import logging
+
+APP_NAME = "FeedSummarizer"
+logger = logging.getLogger(APP_NAME)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter("%(levelname)s:    %(message)s")
+log_stream = logging.StreamHandler()
+log_stream.setLevel(logging.INFO)
+log_stream.setFormatter(formatter)
+logger.addHandler(log_stream)
+
+
+def _expand_path(p: str) -> str:
+    return os.path.expandvars(os.path.expanduser(p))
+
+
+def _checkpoint_dir(config: Dict[str, Any]) -> Path:
+    cp = config.get("checkpointing") or {}
+    enabled = bool(cp.get("enabled", True))
+    if not enabled:
+        return Path()  # unused
+    d = cp.get("dir", "./.checkpoints")
+    return Path(_expand_path(str(d))).resolve()
+
+
+def _checkpoint_key(job_id: Optional[int], articles: List[dict]) -> str:
+    # Om job_id finns: använd den (bäst). Annars: stabil hash på artikel-id:n.
+    if job_id is not None:
+        return f"job_{job_id}"
+    ids = [a.get("id", "") for a in articles]
+    ids_join = "|".join(ids)
+    return hashlib.sha256(ids_join.encode("utf-8")).hexdigest()[:16]
+
+
+def _checkpoint_path(config: Dict[str, Any], key: str) -> Path:
+    d = _checkpoint_dir(config)
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{key}.json"
+
+
+def _atomic_write_json(path: Path, obj: Dict[str, Any]) -> None:
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_checkpoint(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _meta_ckpt_path(config: Dict[str, Any], key: str) -> Path:
+    d = _checkpoint_dir(config)
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{key}.meta.json"
 
 
 # ----------------------------
@@ -71,10 +134,16 @@ def stable_id(url: str) -> str:
 
 
 def text_clip(s: str, max_chars: int) -> str:
+    return clip_text(s=s, n=max_chars)
+
+
+def clip_text(s: str, n: int = 5000) -> str:
     s = (s or "").strip()
-    if len(s) <= max_chars:
-        return s
-    return s[:max_chars] + "…"
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def clip_line(s: str, n: int = 200) -> str:
+    return clip_text(s=s, n=n)
 
 
 class RateLimitError(Exception):
@@ -186,9 +255,10 @@ async def gather_articles_to_store(
             set_job(f"Läser RSS: {name}")
 
             try:
+                logger.info(f"Hämtar RSS: {name} ({feed_url})")
                 feed = await fetch_rss(feed_url, session)
             except Exception as e:
-                print(f"[WARN] Kunde inte läsa RSS: {name} ({feed_url}) -> {e}")
+                logger.warning(f"Kunde inte läsa RSS: {name} ({feed_url}) -> {e}")
                 continue
 
             for entry in feed.entries[:max_items]:
@@ -231,15 +301,17 @@ async def gather_articles_to_store(
                         doc["summarized_at"] = None
                         store.upsert_article(doc)
                         inserted += 1
+                        logger.info(f"Inserted {title} från {name} som {aid}")
                     else:
                         if existing.get("content_hash") != chash:
                             doc["summarized"] = False
                             doc["summarized_at"] = None
                             store.upsert_article(doc)
                             updated += 1
+                            logger.info(f"Uppdaterade {title} från {name} som {aid}")
 
                 except Exception as e:
-                    print(f"[WARN] Artikel misslyckades: {link} -> {e}")
+                    logger.warning(f"Artikel misslyckades: {link} -> {e}")
 
     return inserted, updated
 
@@ -251,13 +323,14 @@ def batch_articles(
     articles: List[dict],
     max_chars_per_batch: int,
     max_articles_per_batch: int,
+    article_clip_chars: int = 2500,
 ) -> List[List[dict]]:
     batches: List[List[dict]] = []
     current: List[dict] = []
     current_chars = 0
 
     for a in articles:
-        per_article_text = text_clip(a.get("text", ""), 6000)
+        per_article_text = text_clip(a.get("text", ""), article_clip_chars)
         estimated = (
             len(per_article_text)
             + len(a.get("title", ""))
@@ -294,28 +367,110 @@ async def summarize_batches_then_meta(
     store: NewsStore,
     job_id: Optional[int] = None,
 ) -> str:
+    """
+    Summerar artiklar i batcher + metasammanfattning.
+    Checkpointing:
+      - Efter varje batch sparas batch_summaries till disk (atomiskt).
+      - Innan meta körs sparas meta_input till disk.
+      - Efter meta körts sparas meta_result till disk.
+      - Vid start försöker funktionen återuppta från checkpoint:
+          * Om meta_result finns: returnerar direkt (ingen ny LLM-körning).
+          * Annars: återupptar batcher och fortsätter.
+    Kräver att följande helpers finns i samma modul:
+      - load_prompts(config)
+      - batch_articles(articles, max_chars_per_batch, max_articles_per_batch)
+      - _checkpoint_dir(config) -> Path
+      - _checkpoint_key(job_id, articles) -> str
+      - _checkpoint_path(config, key) -> Path
+      - _meta_ckpt_path(config, key) -> Path
+      - _atomic_write_json(path: Path, obj: Dict[str, Any])
+      - _load_checkpoint(path: Path) -> Optional[Dict[str, Any]]
+    """
+
     def set_job(msg: str):
         if job_id is not None:
             store.update_job(job_id, message=msg)
 
     prompts = load_prompts(config)
 
-    batching = config.get("batching", {})
+    batching = config.get("batching", {}) or {}
     max_chars = int(batching.get("max_chars_per_batch", 18000))
     max_n = int(batching.get("max_articles_per_batch", 10))
 
+    # Optional clipping knobs (safe defaults)
+    article_clip_chars = int(batching.get("article_clip_chars", 6000))
+    meta_batch_clip_chars = int(batching.get("meta_batch_clip_chars", 3500))
+    meta_sources_clip_chars = int(batching.get("meta_sources_clip_chars", 140))
+
+    def clip_text(s: str, n: int) -> str:
+        s = (s or "").strip()
+        return s if len(s) <= n else s[:n] + "…"
+
+    def clip_line(s: str, n: int) -> str:
+        s = (s or "").strip()
+        return s if len(s) <= n else s[:n] + "…"
+
+    # --- CHECKPOINT SETUP ---
+    cp_cfg = config.get("checkpointing") or {}
+    cp_enabled = bool(cp_cfg.get("enabled", True))
+
+    cp_key = _checkpoint_key(job_id, articles)
+    cp_path = _checkpoint_path(config, cp_key) if cp_enabled else None
+    meta_path = _meta_ckpt_path(config, cp_key) if cp_enabled else None
+
     batches = batch_articles(articles, max_chars, max_n)
 
-    batch_summaries: List[Tuple[int, str]] = []
+    # --- RESUME: om meta redan finns, returnera den direkt ---
+    if cp_enabled and meta_path is not None:
+        meta_cp = _load_checkpoint(meta_path)
+        if meta_cp and meta_cp.get("kind") == "meta_result":
+            cached = (meta_cp.get("meta") or "").strip()
+            if cached:
+                set_job("Återupptar: meta redan klar (från checkpoint).")
+                logger.info("Återupptar: meta redan klar (från checkpoint).")
+                return cached
 
+    # --- RESUME: ladda batch-checkpoint om den finns ---
+    done_map: Dict[int, str] = {}
+    if cp_enabled and cp_path is not None:
+        cp = _load_checkpoint(cp_path)
+        if cp and cp.get("kind") == "batch_summaries":
+            if cp.get("batch_total") == len(batches):
+                done = cp.get("done") or {}
+                try:
+                    for k, v in done.items():
+                        done_map[int(k)] = str(v)
+                    if done_map:
+                        set_job(
+                            f"Återupptar från checkpoint: {len(done_map)}/{len(batches)} batcher klara."
+                        )
+                        logger.info(
+                            f"Återupptar från checkpoint: {len(done_map)}/{len(batches)} batcher klara."
+                        )
+                except Exception:
+                    done_map = {}
+
+    batch_summaries: List[Tuple[int, str]] = [
+        (i, done_map[i]) for i in sorted(done_map.keys())
+    ]
+
+    # --- RUN REMAINING BATCHES ---
     for idx, batch in enumerate(batches, start=1):
+        if idx in done_map:
+            logger.info(f"Batch {idx} redan klar (från checkpoint)")
+            continue
+        logger.info(f"Summerar batch {idx}/{len(batches)}...")
         set_job(f"Summerar batch {idx}/{len(batches)}...")
 
+        # Bygg batch-korpus
         parts = []
         for i, a in enumerate(batch, start=1):
             parts.append(
-                f"[{i}] {a.get('title', '')}\nKälla: {a.get('source', '')}\n"
-                f"Publicerad: {a.get('published', '')}\nURL: {a.get('url', '')}\n\n{a.get('text', '')}"
+                f"[{i}] {a.get('title', '')}\n"
+                f"Källa: {a.get('source', '')}\n"
+                f"Publicerad: {a.get('published', '')}\n"
+                f"URL: {a.get('url', '')}\n\n"
+                f"{clip_text(a.get('text', ''), article_clip_chars)}"
             )
         corpus = "\n\n---\n\n".join(parts)
 
@@ -329,18 +484,44 @@ async def summarize_batches_then_meta(
             {"role": "system", "content": prompts["batch_system"]},
             {"role": "user", "content": user_content},
         ]
+
         summary = await llm.chat(messages, temperature=0.2)
+
+        # Spara i minnet
+        done_map[idx] = summary
         batch_summaries.append((idx, summary))
 
-    set_job("Skapar metasammanfattning...")
+        # --- CHECKPOINT WRITE (after each batch) ---
+        if cp_enabled and cp_path is not None:
+            payload = {
+                "kind": "batch_summaries",
+                "created_at": int(time.time()),
+                "job_id": job_id,
+                "checkpoint_key": cp_key,
+                "batch_total": len(batches),
+                "done": {str(k): v for k, v in sorted(done_map.items())},
+                "article_ids": [a.get("id", "") for a in articles],
+            }
+            logger.info(f"Skriver checkpoint {cp_key}")
+            _atomic_write_json(cp_path, payload)
 
+    # --- META STEP ---
+    set_job("Skapar metasammanfattning...")
+    logger.info("Skapar metasammanfattning...")
+
+    # Bygg källista (klippt)
     sources_list = [
-        f"- {a.get('title', '').strip()} — {a.get('url', '').strip()}" for a in articles
+        f"- {clip_line(a.get('title', ''), meta_sources_clip_chars)} — {a.get('url', '').strip()}"
+        for a in articles
     ]
     sources_text = "\n".join(sources_list)
 
+    # Bygg batch-summaries (klippt)
     batch_text = "\n\n====================\n\n".join(
-        [f"Batch {i}:\n{s}" for i, s in batch_summaries]
+        [
+            f"Batch {i}:\n{clip_text(s, meta_batch_clip_chars)}"
+            for i, s in sorted(batch_summaries, key=lambda x: x[0])
+        ]
     )
 
     meta_user = prompts["meta_user_template"].format(
@@ -348,6 +529,23 @@ async def summarize_batches_then_meta(
         sources_list=sources_text,
     )
 
+    # --- CHECKPOINT: meta input (debug + resume) ---
+    if cp_enabled and meta_path is not None:
+        logger.info(f"Skriver checkpoint {cp_key}")
+        _atomic_write_json(
+            meta_path,
+            {
+                "kind": "meta_input",
+                "created_at": int(time.time()),
+                "job_id": job_id,
+                "checkpoint_key": cp_key,
+                "batch_total": len(batches),
+                "article_ids": [a.get("id", "") for a in articles],
+                "meta_system": prompts["meta_system"],
+                "meta_user": meta_user,
+            },
+        )
+    logger.info("Väntar på llm")
     meta = await llm.chat(
         [
             {"role": "system", "content": prompts["meta_system"]},
@@ -355,6 +553,38 @@ async def summarize_batches_then_meta(
         ],
         temperature=0.2,
     )
+
+    # --- CHECKPOINT: meta result (resume without re-calling LLM) ---
+    if cp_enabled and meta_path is not None:
+        logger.info(f"Skriver checkpoint {cp_key}")
+        _atomic_write_json(
+            meta_path,
+            {
+                "kind": "meta_result",
+                "created_at": int(time.time()),
+                "job_id": job_id,
+                "checkpoint_key": cp_key,
+                "batch_total": len(batches),
+                "article_ids": [a.get("id", "") for a in articles],
+                "meta": meta,
+            },
+        )
+
+    # --- CLEANUP CHECKPOINTS on success ---
+    if cp_enabled:
+        try:
+            if cp_path is not None:
+                logger.info(f"Rensar {str(cp_path)}")
+                cp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            if meta_path is not None:
+                logger.info(f"Rensar {str(meta_path)}")
+                meta_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    logger.info("Summary+meta done")
     return meta
 
 
@@ -377,6 +607,7 @@ async def run_pipeline(
             started_at=int(time.time()),
             message="Startar ingest...",
         )
+        logger.info(f"Startar ingest job {job_id}")
 
     ins, upd = await gather_articles_to_store(config, store, job_id=job_id)
 

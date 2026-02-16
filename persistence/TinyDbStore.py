@@ -32,10 +32,20 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
 from tinydb import Query, TinyDB
+
+APP_NAME = "FeedSummarizer-TinyDB"
+logger = logging.getLogger(APP_NAME)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter("%(levelname)s:    %(message)s")
+log_stream = logging.StreamHandler()
+log_stream.setLevel(logging.INFO)
+log_stream.setFormatter(formatter)
+logger.addHandler(log_stream)
 
 
 class TinyDBStore:
@@ -134,11 +144,13 @@ class TinyDBStore:
             }
         )
         db.close()
+        logger.info(f"Job {jid} created")
         return jid
 
     def update_job(self, job_id: int, **fields) -> None:
         db = self._db()
         db.table("jobs").update(fields, doc_ids=[job_id])
+        logger.info(f"Job {job_id} updated")
         db.close()
 
     def get_job(self, job_id: int) -> Optional[Dict[str, Any]]:
@@ -147,6 +159,7 @@ class TinyDBStore:
         db.close()
         if not doc:
             return None
+        logger.info(f"Get {job_id}")
         return {"id": job_id, **dict(doc)}
 
     # ---- Utility

@@ -48,16 +48,6 @@ class LLMClient(Protocol):
 
 
 def create_llm_client(llm_cfg: Dict[str, Any]) -> LLMClient:
-    """
-    Factory to create an LLM client from config.
-    Extend this with new providers without touching pipeline logic.
-
-    Example llm_cfg:
-      provider: "ollama"
-      model: "llama3.1"
-      base_url: "http://localhost:11434"
-      max_rps: 1
-    """
     provider = (llm_cfg.get("provider") or "ollama").lower()
 
     if provider == "ollama":
@@ -65,6 +55,7 @@ def create_llm_client(llm_cfg: Dict[str, Any]) -> LLMClient:
             base_url=llm_cfg.get("base_url", "http://localhost:11434"),
             model=llm_cfg.get("model", "llama3.1"),
             max_rps=float(llm_cfg.get("max_rps", 1.0)),
+            progress_log_every_s=float(llm_cfg.get("progress_log_every_s", 5.0)),
         )
         return OllamaClient(cfg)
 

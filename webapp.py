@@ -44,6 +44,16 @@ from flask import Flask, jsonify, redirect, render_template, url_for
 
 from summarizer.main import run_pipeline
 from persistence import NewsStore, create_store
+import logging
+
+APP_NAME = "FeedSummarizer - Web"
+logger = logging.getLogger(APP_NAME)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter("%(levelname)s:    %(message)s")
+log_stream = logging.StreamHandler()
+log_stream.setLevel(logging.INFO)
+log_stream.setFormatter(formatter)
+logger.addHandler(log_stream)
 
 app = Flask(__name__)
 pipeline_lock = threading.Lock()
@@ -174,6 +184,7 @@ def refresh():
                 finished_at=int(time.time()),
                 message=f"Refresh misslyckades: {e}",
             )
+            logger.error(f"{jid} Refresh misslyckades: {e}")
         finally:
             pipeline_lock.release()
 
