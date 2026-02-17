@@ -8,3 +8,6 @@ tinydb>=4.8.2
 tld>=0.13.1
 PyYAML>=6.0.3
 trafilatura>=2.0.0
+ollama
+lxml_html_clean
+

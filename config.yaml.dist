@@ -1,9 +1,49 @@
 store:
   provider: tinydb
-  path: news_docs.json
+  path: ~/.local/share/FeedSummary/news_docs.json
 feeds:
-- name: SVT Nyheter
-  url: https://www.svt.se/nyheter/rss.xml
+  - name: "Recorded Future"
+    url: https://therecord.media/feed
+  - name: "Mandiant (Google)"
+    url: https://www.mandiant.com/resources/blog/rss.xml
+  - name: "Cisco Talos - Global Threat Intelligence"
+    url: https://blog.talosintelligence.com/feeds/posts/default
+  - name: "Unit 42 (Palo Alto)"
+    url: https://unit42.paloaltonetworks.com/feed/
+  - name: "Microsoft Security Blog"
+    url: https://www.microsoft.com/en-us/security/blog/feed/
+  - name: "DataBreaches.net"
+    url: https://www.databreaches.net/feed/
+  - name: "Troy Hunt (Have I Been Pwned)"
+    url: https://www.troyhunt.com/rss/
+  - name: "BleepingComputer"
+    url: https://www.bleepingcomputer.com/feed/
+  - name: "Cybernews"
+    url: https://cybernews.com/news/feed/
+  - name: "Krebs on Security"
+    url: https://krebsonsecurity.com/feed/
+  - name: "Enforcement Tracker"
+    url: https://www.enforcementtracker.com/feed/
+  - name: "IAPP (Privacy Advisor)"
+    url: https://iapp.org/rss/news/
+  - name: "Hunton Privacy Blog"
+    url: https://www.huntonprivacyblog.com/feed/
+  - name: "Lawfare (Cybersecurity)"
+    url: https://www.lawfaremedia.org/sections/cybersecurity/feed
+  - name: "CERT-SE"
+    url: https://www.cert.se/feed.rss
+  - name: "IMY"
+    url: https://www.imy.se/rss-floden/nyheter/
+  - name: "Rapid7 Blog"
+    url: https://www.rapid7.com/blog/rss/
+  - name: "SANS Internet Storm Center"
+    url: https://isc.sans.edu/rssfeed.xml
+  - name: "The Register Security"
+    url: https://www.theregister.com/security/headlines.atom
+  - name: "Threatpost"
+    url: https://threatpost.com/feed/
+  - name: "CVE Latest High/Critical"
+    url: https://cvefeed.io/rssfeed/severity/high.xml
 ingest:
   lookback: "24h"   # h=hours, d=days, w=weeks, m=minutes
   max_items_per_feed: 10

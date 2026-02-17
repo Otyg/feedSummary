@@ -42,7 +42,16 @@ from typing import Any, Dict, Optional
 
 import markdown as md
 import yaml
-from flask import Flask, jsonify, redirect, render_template, request, url_for, stream_with_context, Response
+from flask import (
+    Flask,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+    stream_with_context,
+    Response,
+)
 from summarizer.helpers import setup_logging
 from summarizer.main import run_pipeline
 from persistence import NewsStore, create_store
@@ -211,6 +220,7 @@ def api_status(job_id: int):
         }
     )
 
+
 @app.get("/prompt-lab")
 def prompt_lab():
     cfg = load_config()
@@ -234,7 +244,7 @@ def prompt_lab():
     temp = store.get_temp_summary(job_or_result) if job_or_result else None
 
     # defaults från config.yaml
-    p_cfg = (cfg.get("prompts") or {})
+    p_cfg = cfg.get("prompts") or {}
     prompts = {
         "batch_system": p_cfg.get("batch_system", ""),
         "batch_user_template": p_cfg.get("batch_user_template", ""),
@@ -265,8 +275,6 @@ def prompt_lab():
     )
 
 
-
-
 @app.post("/prompt-lab/run")
 def prompt_lab_run():
     cfg = load_config()
@@ -276,9 +284,14 @@ def prompt_lab_run():
     prompts = build_prompts_from_form(request.form, cfg)
 
     job_id = store.create_job()
-    store.update_job(job_id, status="running", started_at=int(time.time()), message="Prompt-lab: startar...")
+    store.update_job(
+        job_id,
+        status="running",
+        started_at=int(time.time()),
+        message="Prompt-lab: startar...",
+    )
 
-    llm = create_llm_client(cfg.get("llm", {}))
+    llm = create_llm_client(cfg)
 
     def worker(jid: int):
         if not pipeline_lock.acquire(blocking=False):
@@ -312,7 +325,12 @@ def prompt_lab_run():
                 )
             )
 
-            store.update_job(jid, status="done", finished_at=int(time.time()), message="Prompt-lab: klart.")
+            store.update_job(
+                jid,
+                status="done",
+                finished_at=int(time.time()),
+                message="Prompt-lab: klart.",
+            )
         except Exception as e:
             store.update_job(
                 jid,
@@ -330,7 +348,6 @@ def prompt_lab_run():
     return redirect(url_for("prompt_lab", job=job_id, summary_id=summary_id))
 
 
-
 @app.post("/prompt-lab/apply")
 def prompt_lab_apply():
     """
@@ -339,13 +356,19 @@ def prompt_lab_apply():
     """
     cfg = load_config()
     cfg.setdefault("prompts", {})
-    for k in ["batch_system", "batch_user_template", "meta_system", "meta_user_template"]:
-        cfg["prompts"][k] = request.form.get(k, "") # type: ignore
+    for k in [
+        "batch_system",
+        "batch_user_template",
+        "meta_system",
+        "meta_user_template",
+    ]:
+        cfg["prompts"][k] = request.form.get(k, "")  # type: ignore
 
     with open("config.yaml", "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
 
     return redirect(url_for("prompt_lab"))
+
 
 @app.get("/api/status/stream/<int:job_id>")
 def api_status_stream(job_id: int):
@@ -394,13 +417,14 @@ def api_status_stream(job_id: int):
             time.sleep(1.0)
 
     return Response(
-        generate(), # type: ignore
+        generate(),  # type: ignore
         mimetype="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",  # bra om du kör bakom nginx
         },
     )
+
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)

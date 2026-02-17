@@ -61,9 +61,81 @@ from summarizer.helpers import (
     text_clip,
 )
 import logging
+import datetime
+from email.utils import parsedate_to_datetime
+import re
+from summarizer.token_budget import enforce_budget
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+_PROMPT_TOO_LONG_RE = re.compile(
+    r"exceeded max context length by\s+(\d+)\s+tokens", re.IGNORECASE
+)
+
+def _extract_overflow_tokens(err: Exception) -> Optional[int]:
+    m = _PROMPT_TOO_LONG_RE.search(str(err))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([mhdw])\s*$", re.IGNORECASE)
+
+
+def parse_lookback_to_seconds(s: str) -> int:
+    """
+    "90m" -> 5400, "24h" -> 86400, "3d" -> 259200, "2w" -> 1209600
+    """
+    if not s:
+        raise ValueError("lookback är tom")
+    m = _DURATION_RE.match(s)
+    if not m:
+        raise ValueError(
+            f"Ogiltigt lookback-format: {s!r} (förväntar t.ex. 90m, 24h, 3d, 2w)"
+        )
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit == "m":
+        return n * 60
+    if unit == "h":
+        return n * 60 * 60
+    if unit == "d":
+        return n * 60 * 60 * 24
+    if unit == "w":
+        return n * 60 * 60 * 24 * 7
+    raise ValueError(f"Okänd enhet: {unit}")
+
+
+def entry_published_ts(entry: feedparser.FeedParserDict) -> Optional[int]:
+    """
+    Försök få ett unix-timestamp för entry.
+    Prioriterar feedparser's *_parsed (struct_time) men kan även parse:a text.
+    """
+    # 1) feedparser strukturerade datum
+    for attr in ("published_parsed", "updated_parsed"):
+        st = getattr(entry, attr, None)
+        if st:
+            try:
+                return int(time.mktime(st))
+            except Exception:
+                pass
+
+    # 2) fallback: parsea strängar (RFC822/ISO-aktigt)
+    for attr in ("published", "updated"):
+        s = getattr(entry, attr, None)
+        if s:
+            try:
+                dt = parsedate_to_datetime(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                return int(dt.timestamp())
+            except Exception:
+                pass
+
+    return None
 
 
 # ----------------------------
@@ -144,12 +216,84 @@ async def gather_articles_to_store(
     store: NewsStore,
     job_id: Optional[int] = None,
 ) -> Tuple[int, int]:
+    """
+    Ingest (RSS -> article text -> store)
+
+    Nytt:
+      - config.ingest.lookback: "24h", "3d", "2w", "90m" osv.
+        Hämtar bara artiklar vars published/updated ligger inom lookback-fönstret.
+      - max_items_per_feed används fortfarande som safety cap.
+      - Om lookback saknas: exakt samma beteende som tidigare (entries[:max_items]).
+    """
+    import datetime
+    from email.utils import parsedate_to_datetime
+
+    _DURATION_RE = re.compile(r"^\s*(\d+)\s*([mhdw])\s*$", re.IGNORECASE)
+
+    def parse_lookback_to_seconds(s: str) -> int:
+        """
+        "90m" -> 5400, "24h" -> 86400, "3d" -> 259200, "2w" -> 1209600
+        """
+        if not s:
+            raise ValueError("lookback är tom")
+        m = _DURATION_RE.match(s)
+        if not m:
+            raise ValueError(
+                f"Ogiltigt lookback-format: {s!r} (förväntar t.ex. 90m, 24h, 3d, 2w)"
+            )
+        n = int(m.group(1))
+        unit = m.group(2).lower()
+        if unit == "m":
+            return n * 60
+        if unit == "h":
+            return n * 60 * 60
+        if unit == "d":
+            return n * 60 * 60 * 24
+        if unit == "w":
+            return n * 60 * 60 * 24 * 7
+        raise ValueError(f"Okänd enhet: {unit}")
+
+    def entry_published_ts(entry: feedparser.FeedParserDict) -> Optional[int]:
+        """
+        Försök få ett unix-timestamp för entry.
+        Prioriterar feedparser's *_parsed (struct_time) men kan även parse:a text.
+        """
+        # 1) feedparser strukturerade datum
+        for attr in ("published_parsed", "updated_parsed"):
+            st = getattr(entry, attr, None)
+            if st:
+                try:
+                    return int(time.mktime(st))
+                except Exception:
+                    pass
+
+        # 2) fallback: parsea strängar (RFC822/ISO-aktigt)
+        for attr in ("published", "updated"):
+            s = getattr(entry, attr, None)
+            if s:
+                try:
+                    dt = parsedate_to_datetime(s)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=datetime.timezone.utc)
+                    return int(dt.timestamp())
+                except Exception:
+                    pass
+
+        return None
+
     def set_job(msg: str):
         if job_id is not None:
             store.update_job(job_id, message=msg)
 
     feeds = config.get("feeds", [])
-    max_items = int(config.get("max_items_per_feed", 8))
+
+    ingest_cfg = config.get("ingest") or {}
+    lookback = ingest_cfg.get("lookback")  # t.ex. "24h", "3d"
+    # Safety cap (och bakåtkompatibilitet)
+    max_items = int(
+        ingest_cfg.get("max_items_per_feed", config.get("max_items_per_feed", 8))
+    )
+
     timeout_s = int(config.get("article_timeout_s", 20))
 
     http_limiter = AsyncLimiter(max_rate=6, time_period=1)
@@ -171,7 +315,50 @@ async def gather_articles_to_store(
                 logger.warning(f"Kunde inte läsa RSS: {name} ({feed_url}) -> {e}")
                 continue
 
-            for entry in feed.entries[:max_items]:
+            entries = list(feed.entries or [])
+
+            # lookback-filter
+            cutoff_ts: Optional[int] = None
+            if lookback:
+                now = int(time.time())
+                cutoff_ts = now - parse_lookback_to_seconds(str(lookback))
+
+                filtered: List[feedparser.FeedParserDict] = []
+                for entry in entries:
+                    ts = entry_published_ts(entry)
+                    # Saknas datum -> skip (säkrare, annars kan gamla artiklar smita in)
+                    if ts is None:
+                        continue
+                    if ts >= cutoff_ts:
+                        filtered.append(entry)
+
+                # sortera nyast först (RSS kan vara osorterad)
+                filtered.sort(key=lambda e: entry_published_ts(e) or 0, reverse=True)
+
+                # Safety cap
+                if max_items and len(filtered) > max_items:
+                    filtered = filtered[:max_items]
+
+                logger.info(
+                    "RSS %s: %d entries (filtered=%d, lookback=%s, cap=%s)",
+                    name,
+                    len(entries),
+                    len(filtered),
+                    lookback,
+                    max_items,
+                )
+                entries_to_process = filtered
+            else:
+                # gammalt beteende (bakåtkompatibelt)
+                entries_to_process = entries[:max_items]
+                logger.info(
+                    "RSS %s: %d entries (cap=%s, lookback=none)",
+                    name,
+                    len(entries),
+                    max_items,
+                )
+
+            for entry in entries_to_process:
                 link = getattr(entry, "link", None)
                 if not link:
                     continue
@@ -279,23 +466,23 @@ async def summarize_batches_then_meta(
 ) -> str:
     """
     Summerar artiklar i batcher + metasammanfattning.
-    Checkpointing:
-      - Efter varje batch sparas batch_summaries till disk (atomiskt).
-      - Innan meta körs sparas meta_input till disk.
-      - Efter meta körts sparas meta_result till disk.
-      - Vid start försöker funktionen återuppta från checkpoint:
-          * Om meta_result finns: returnerar direkt (ingen ny LLM-körning).
-          * Annars: återupptar batcher och fortsätter.
-    Kräver att följande helpers finns i samma modul:
+
+    Innehåller:
+      - Checkpointing av batch-summaries + meta-input + meta-result (för resume vid krasch)
+      - Token-/context-budget enforcement före varje LLM-call (för att undvika "prompt too long")
+      - Retry vid "prompt too long" med hårdare klippning/budget
+
+    Kräver att följande helpers finns i samma modul (som du redan byggt):
       - load_prompts(config)
       - batch_articles(articles, max_chars_per_batch, max_articles_per_batch)
-      - _checkpoint_dir(config) -> Path
       - _checkpoint_key(job_id, articles) -> str
       - _checkpoint_path(config, key) -> Path
       - _meta_ckpt_path(config, key) -> Path
-      - _atomic_write_json(path: Path, obj: Dict[str, Any])
-      - _load_checkpoint(path: Path) -> Optional[Dict[str, Any]]
+      - _atomic_write_json(path, obj)
+      - _load_checkpoint(path) -> Optional[dict]
+      - enforce_budget(messages, max_context_tokens, max_output_tokens, safety_margin_tokens) -> (messages, est, budget)
     """
+    from pathlib import Path
 
     def set_job(msg: str):
         if job_id is not None:
@@ -320,13 +507,111 @@ async def summarize_batches_then_meta(
         s = (s or "").strip()
         return s if len(s) <= n else s[:n] + "…"
 
+    # ---- LLM context budgeting knobs (from config) ----
+    llm_cfg = config.get("llm") or {}
+    max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
+    max_out = int(llm_cfg.get("max_output_tokens", 700))
+    margin = int(llm_cfg.get("prompt_safety_margin", 1024))
+
+    async def chat_guarded(messages: List[Dict[str, str]], *, temperature: float = 0.2) -> str:
+        """
+        1) enforce_budget (best effort)
+        2) om servern säger "prompt too long; exceeded ... by N tokens":
+        - klipp ner sista user-content proportionellt och prova igen
+        """
+        # konfig: hur aggressivt vi översätter tokens->chars när vi måste klippa
+        # 2.2–2.8 är rimligt när man vill vara konservativ (URL:er och markup kan bli tok-dyra)
+        chars_per_token = float(llm_cfg.get("token_chars_per_token", 2.4))
+        max_attempts = int(llm_cfg.get("prompt_too_long_max_attempts", 6))
+
+        # hitta sista user-meddelandet (där bulk-data ligger)
+        def last_user_index(msgs: List[Dict[str, str]]) -> Optional[int]:
+            for i in range(len(msgs) - 1, -1, -1):
+                if msgs[i].get("role") == "user":
+                    return i
+            return None
+
+        def hard_trim_last_user(msgs: List[Dict[str, str]], remove_tokens: int) -> List[Dict[str, str]]:
+            """
+            Klipper bort ungefär remove_tokens från slutet av sista user-content.
+            Vi klipper i chars, konservativt.
+            """
+            out = [dict(m) for m in msgs]
+            idx = last_user_index(out)
+            if idx is None:
+                return out
+            content = out[idx].get("content") or ""
+            remove_chars = int(remove_tokens * chars_per_token)
+
+            # klipp från slutet (behåll början, där instruktion+struktur ofta finns)
+            if remove_chars <= 0:
+                remove_chars = int(512 * chars_per_token)
+            if remove_chars >= len(content):
+                out[idx]["content"] = "[TRUNCATED FOR CONTEXT WINDOW]\n"
+                return out
+
+            out[idx]["content"] = content[: len(content) - remove_chars] + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
+            return out
+
+        # 1) Best-effort budget enforcement enligt din konfig
+        msgs2, est, budget = enforce_budget(
+            messages,
+            max_context_tokens=max_ctx,
+            max_output_tokens=max_out,
+            safety_margin_tokens=margin,
+        )
+        logger.info(f"LLM budget: est_prompt_tokens={est} budget_tokens={budget}")
+
+        attempt = 1
+        current = msgs2
+
+        while True:
+            try:
+                logger.info("Skickar request till LLM")
+                return await llm.chat(current, temperature=temperature)
+            except Exception as e:
+                msg = str(e).lower()
+                overflow = _extract_overflow_tokens(e)
+
+                if ("prompt too long" in msg or "max context" in msg or "context length" in msg) and overflow:
+                    if attempt >= max_attempts:
+                        raise
+
+                    # Vi måste minska mer än overflow för att kompensera för estimator/overhead.
+                    # Lägg på buffert (t.ex. +512 tokens) så vi slipper loopa 20 ggr.
+                    remove_tokens = overflow + 512
+
+                    logger.warning(
+                        "LLM: prompt too long. overflow=%s tokens. attempt=%s/%s. trimming ~%s tokens...",
+                        overflow, attempt, max_attempts, remove_tokens
+                    )
+
+                    current = hard_trim_last_user(current, remove_tokens)
+                    attempt += 1
+                    continue
+
+                # fallback: om prompt too long men vi kan inte parse:a overflow
+                if "prompt too long" in msg or "max context" in msg or "context length" in msg:
+                    if attempt >= max_attempts:
+                        raise
+                    logger.warning(
+                        "LLM: prompt too long (no overflow parsed). attempt=%s/%s. trimming fixed chunk...",
+                        attempt, max_attempts
+                    )
+                    current = hard_trim_last_user(current, 1024)  # ~1024 tokens som schablon
+                    attempt += 1
+                    continue
+
+                raise
+
+
     # --- CHECKPOINT SETUP ---
     cp_cfg = config.get("checkpointing") or {}
     cp_enabled = bool(cp_cfg.get("enabled", True))
 
     cp_key = _checkpoint_key(job_id, articles)
-    cp_path = _checkpoint_path(config, cp_key) if cp_enabled else None
-    meta_path = _meta_ckpt_path(config, cp_key) if cp_enabled else None
+    cp_path: Optional[Path] = _checkpoint_path(config, cp_key) if cp_enabled else None
+    meta_path: Optional[Path] = _meta_ckpt_path(config, cp_key) if cp_enabled else None
 
     batches = batch_articles(articles, max_chars, max_n)
 
@@ -337,7 +622,6 @@ async def summarize_batches_then_meta(
             cached = (meta_cp.get("meta") or "").strip()
             if cached:
                 set_job("Återupptar: meta redan klar (från checkpoint).")
-                logger.info("Återupptar: meta redan klar (från checkpoint).")
                 return cached
 
     # --- RESUME: ladda batch-checkpoint om den finns ---
@@ -354,9 +638,6 @@ async def summarize_batches_then_meta(
                         set_job(
                             f"Återupptar från checkpoint: {len(done_map)}/{len(batches)} batcher klara."
                         )
-                        logger.info(
-                            f"Återupptar från checkpoint: {len(done_map)}/{len(batches)} batcher klara."
-                        )
                 except Exception:
                     done_map = {}
 
@@ -367,9 +648,8 @@ async def summarize_batches_then_meta(
     # --- RUN REMAINING BATCHES ---
     for idx, batch in enumerate(batches, start=1):
         if idx in done_map:
-            logger.info(f"Batch {idx} redan klar (från checkpoint)")
-            continue
-        logger.info(f"Summerar batch {idx}/{len(batches)}...")
+            continue  # redan klar (från checkpoint)
+
         set_job(f"Summerar batch {idx}/{len(batches)}...")
 
         # Bygg batch-korpus
@@ -395,7 +675,7 @@ async def summarize_batches_then_meta(
             {"role": "user", "content": user_content},
         ]
 
-        summary = await llm.chat(messages, temperature=0.2)
+        summary = await chat_guarded(messages, temperature=0.2)
 
         # Spara i minnet
         done_map[idx] = summary
@@ -412,12 +692,10 @@ async def summarize_batches_then_meta(
                 "done": {str(k): v for k, v in sorted(done_map.items())},
                 "article_ids": [a.get("id", "") for a in articles],
             }
-            logger.info(f"Skriver checkpoint {cp_key}")
             _atomic_write_json(cp_path, payload)
 
     # --- META STEP ---
     set_job("Skapar metasammanfattning...")
-    logger.info("Skapar metasammanfattning...")
 
     # Bygg källista (klippt)
     sources_list = [
@@ -441,7 +719,6 @@ async def summarize_batches_then_meta(
 
     # --- CHECKPOINT: meta input (debug + resume) ---
     if cp_enabled and meta_path is not None:
-        logger.info(f"Skriver checkpoint {cp_key}")
         _atomic_write_json(
             meta_path,
             {
@@ -455,18 +732,16 @@ async def summarize_batches_then_meta(
                 "meta_user": meta_user,
             },
         )
-    logger.info("Väntar på llm")
-    meta = await llm.chat(
-        [
-            {"role": "system", "content": prompts["meta_system"]},
-            {"role": "user", "content": meta_user},
-        ],
-        temperature=0.2,
-    )
+
+    meta_messages = [
+        {"role": "system", "content": prompts["meta_system"]},
+        {"role": "user", "content": meta_user},
+    ]
+
+    meta = await chat_guarded(meta_messages, temperature=0.2)
 
     # --- CHECKPOINT: meta result (resume without re-calling LLM) ---
     if cp_enabled and meta_path is not None:
-        logger.info(f"Skriver checkpoint {cp_key}")
         _atomic_write_json(
             meta_path,
             {
@@ -484,17 +759,15 @@ async def summarize_batches_then_meta(
     if cp_enabled:
         try:
             if cp_path is not None:
-                logger.info(f"Rensar {str(cp_path)}")
                 cp_path.unlink(missing_ok=True)
         except Exception:
             pass
         try:
             if meta_path is not None:
-                logger.info(f"Rensar {str(meta_path)}")
                 meta_path.unlink(missing_ok=True)
         except Exception:
             pass
-    logger.info("Summary+meta done")
+    logger.info("Summary done")
     return meta
 
 
@@ -508,7 +781,7 @@ async def run_pipeline(
         config = yaml.safe_load(f)
 
     store = create_store(config.get("store", {}))
-    llm = create_llm_client(config.get("llm", {}))
+    llm = create_llm_client(config)
 
     if job_id is not None:
         store.update_job(
