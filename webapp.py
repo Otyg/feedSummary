@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -41,11 +42,16 @@ from typing import Any, Dict, Optional
 
 import markdown as md
 import yaml
-from flask import Flask, jsonify, redirect, render_template, url_for
-
+from flask import Flask, jsonify, redirect, render_template, request, url_for, stream_with_context, Response
 from summarizer.helpers import setup_logging
 from summarizer.main import run_pipeline
 from persistence import NewsStore, create_store
+from summarizer.prompt_lab import (
+    build_prompts_from_form,
+    select_articles_for_promptlab,
+    run_promptlab_summarization,
+)
+from llmClient import create_llm_client
 
 
 setup_logging()
@@ -205,6 +211,196 @@ def api_status(job_id: int):
         }
     )
 
+@app.get("/prompt-lab")
+def prompt_lab():
+    cfg = load_config()
+    store = get_store()
+
+    summaries = store.list_summaries()
+    items = [
+        {
+            "id": s["id"],
+            "time": format_ts(s.get("created_at")),
+            "n": len(s.get("article_ids", []) or []),
+        }
+        for s in summaries
+    ]
+
+    job = request.args.get("job", type=int)
+    result = request.args.get("result", type=int)
+    selected_summary_id = request.args.get("summary_id", type=int)
+
+    job_or_result = job or result
+    temp = store.get_temp_summary(job_or_result) if job_or_result else None
+
+    # defaults från config.yaml
+    p_cfg = (cfg.get("prompts") or {})
+    prompts = {
+        "batch_system": p_cfg.get("batch_system", ""),
+        "batch_user_template": p_cfg.get("batch_user_template", ""),
+        "meta_system": p_cfg.get("meta_system", ""),
+        "meta_user_template": p_cfg.get("meta_user_template", ""),
+    }
+
+    # om vi visar ett temp-resultat: fyll prompterna från den körningen
+    if temp and (temp.get("meta") or {}).get("prompts"):
+        tp = temp["meta"]["prompts"]
+        for k in list(prompts.keys()):
+            if k in tp and isinstance(tp[k], str):
+                prompts[k] = tp[k]
+
+    temp_html = None
+    if temp and temp.get("summary"):
+        temp_html = md.markdown(temp["summary"], extensions=["extra"])
+
+    return render_template(
+        "prompt_lab.html",
+        prompts=prompts,
+        summaries=items,
+        selected_summary_id=selected_summary_id,
+        job_id=job,
+        result_id=result,
+        temp=temp,
+        temp_html=temp_html,
+    )
+
+
+
+
+@app.post("/prompt-lab/run")
+def prompt_lab_run():
+    cfg = load_config()
+    store = get_store()
+
+    summary_id = request.form.get("summary_id", type=int)
+    prompts = build_prompts_from_form(request.form, cfg)
+
+    job_id = store.create_job()
+    store.update_job(job_id, status="running", started_at=int(time.time()), message="Prompt-lab: startar...")
+
+    llm = create_llm_client(cfg.get("llm", {}))
+
+    def worker(jid: int):
+        if not pipeline_lock.acquire(blocking=False):
+            store.update_job(
+                jid,
+                status="error",
+                finished_at=int(time.time()),
+                message="En körning pågår redan. Försök igen om en stund.",
+            )
+            return
+
+        try:
+            sel = select_articles_for_promptlab(store, summary_id=summary_id)
+            articles = sel["articles"]
+            source_summary_id = sel["source_summary_id"]
+
+            store.update_job(
+                jid,
+                message=f"Prompt-lab: använder summary {source_summary_id} ({len(articles)} artiklar)",
+            )
+
+            asyncio.run(
+                run_promptlab_summarization(
+                    config=cfg,
+                    prompts=prompts,
+                    store=store,
+                    llm=llm,
+                    job_id=jid,
+                    source_summary_id=source_summary_id,
+                    articles=articles,
+                )
+            )
+
+            store.update_job(jid, status="done", finished_at=int(time.time()), message="Prompt-lab: klart.")
+        except Exception as e:
+            store.update_job(
+                jid,
+                status="error",
+                finished_at=int(time.time()),
+                message=f"Prompt-lab misslyckades: {e}",
+            )
+        finally:
+            pipeline_lock.release()
+
+    threading.Thread(target=worker, args=(job_id,), daemon=True).start()
+
+    # Viktigt: vi redirectar till prompt-lab med ?job=<id> (aktiv körning).
+    # När jobbet blir done kommer JS:en byta till ?result=<id> och ta bort job-parametern.
+    return redirect(url_for("prompt_lab", job=job_id, summary_id=summary_id))
+
+
+
+@app.post("/prompt-lab/apply")
+def prompt_lab_apply():
+    """
+    Skriv tillbaka prompts till config.yaml.
+    OBS: pyyaml skriver om filformat/kommentarer.
+    """
+    cfg = load_config()
+    cfg.setdefault("prompts", {})
+    for k in ["batch_system", "batch_user_template", "meta_system", "meta_user_template"]:
+        cfg["prompts"][k] = request.form.get(k, "") # type: ignore
+
+    with open("config.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+
+    return redirect(url_for("prompt_lab"))
+
+@app.get("/api/status/stream/<int:job_id>")
+def api_status_stream(job_id: int):
+    store = get_store()
+
+    def event(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    @stream_with_context
+    def generate():
+        last_payload = None
+        last_emit = 0.0
+
+        # initial event direkt
+        job = store.get_job(job_id)
+        if not job:
+            yield event({"status": "error", "message": "Jobb hittades inte."})
+            return
+
+        while True:
+            job = store.get_job(job_id)
+            if not job:
+                yield event({"status": "error", "message": "Jobb hittades inte."})
+                return
+
+            payload = {
+                "status": job.get("status"),
+                "message": job.get("message", ""),
+                "created_at": job.get("created_at"),
+                "started_at": job.get("started_at"),
+                "finished_at": job.get("finished_at"),
+                "summary_id": job.get("summary_id"),
+            }
+
+            # Skicka om något förändrats eller var 10:e sekund (heartbeat)
+            now = time.time()
+            if payload != last_payload or (now - last_emit) > 10:
+                yield event(payload)
+                last_payload = payload
+                last_emit = now
+
+            # Avsluta stream när jobbet är klart
+            if payload["status"] in ("done", "error"):
+                return
+
+            time.sleep(1.0)
+
+    return Response(
+        generate(), # type: ignore
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # bra om du kör bakom nginx
+        },
+    )
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)

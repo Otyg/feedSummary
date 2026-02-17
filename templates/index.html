@@ -75,44 +75,48 @@
     return d.toISOString().replace("T", " ").slice(0, 19);
   }
 
-  async function poll() {
-    if (!jobId) {
-      setPill("idle");
-      msg.textContent = "";
-      times.textContent = "";
-      return;
-    }
-    try {
-      const r = await fetch(`/api/status/${jobId}`);
-      const data = await r.json();
-
-      setPill(data.status);
-      msg.textContent = data.message || "";
-
-      const created = fmt(data.created_at);
-      const started = fmt(data.started_at);
-      const finished = fmt(data.finished_at);
-      let tline = "";
-      if (created) tline += `Skapad: ${created}`;
-      if (started) tline += (tline ? " · " : "") + `Startad: ${started}`;
-      if (finished) tline += (tline ? " · " : "") + `Klar: ${finished}`;
-      times.textContent = tline;
-
-      if (data.status === "done") {
-        const url = new URL(window.location.href);
-        url.searchParams.delete("job");
-        window.location.replace(url.toString());
-        return;
-      }
-      if (data.status === "error") return;
-      setTimeout(poll, 1500);
-    } catch (e) {
-      setPill("error");
-      msg.textContent = "Kunde inte läsa status.";
-    }
+  if (!jobId) {
+    setPill("idle");
+    return;
   }
 
-  poll();
+  setPill("running");
+
+  const es = new EventSource(`/api/status/stream/${jobId}`);
+
+  es.onmessage = (ev) => {
+    const data = JSON.parse(ev.data);
+
+    setPill(data.status);
+    msg.textContent = data.message || "";
+
+    const created = fmt(data.created_at);
+    const started = fmt(data.started_at);
+    const finished = fmt(data.finished_at);
+
+    let tline = "";
+    if (created) tline += `Skapad: ${created}`;
+    if (started) tline += (tline ? " · " : "") + `Startad: ${started}`;
+    if (finished) tline += (tline ? " · " : "") + `Klar: ${finished}`;
+    times.textContent = tline;
+
+    if (data.status === "done") {
+      es.close();
+      const url = new URL(window.location.href);
+      url.searchParams.delete("job");
+      window.location.replace(url.toString());
+    }
+    if (data.status === "error") {
+      es.close();
+    }
+  };
+
+  es.onerror = () => {
+    setPill("error");
+    msg.textContent = "Status-anslutning bröts.";
+    es.close();
+  };
 })();
 </script>
+
 {% endblock %}

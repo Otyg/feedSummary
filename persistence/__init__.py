@@ -72,6 +72,13 @@ class NewsStore(Protocol):
     # ---- Utility
     def get_articles_by_ids(self, article_ids: List[str]) -> List[Dict[str, Any]]: ...
 
+    # ---- Temp summaries (prompt lab)
+    def save_temp_summary(
+        self, job_id: int, summary_text: str, meta: Dict[str, Any]
+    ) -> None: ...
+
+    def get_temp_summary(self, job_id: int) -> Optional[Dict[str, Any]]: ...
+
 
 def _expand_path(p: str) -> str:
     # Expand ~ och miljövariabler som $HOME eller ${HOME}

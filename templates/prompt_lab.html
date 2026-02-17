@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+
+{% block title %}Prompt-lab{% endblock %}
+{% block header %}Prompt-lab{% endblock %}
+{% block subheader %}Testa prompts på befintlig data (ingen ny hämtning){% endblock %}
+
+{% block top_actions %}
+  <a class="btn" href="{{ url_for('index') }}">Senaste</a>
+  <a class="btn" href="{{ url_for('history') }}">History</a>
+{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <form method="POST" action="{{ url_for('prompt_lab_run') }}">
+      <div style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;">
+        <div style="min-width: 280px;">
+          <label><strong>Välj underlag (befintlig summary)</strong></label><br/>
+          <select name="summary_id" style="padding:10px; border-radius:10px; border:1px solid #ddd; width:100%;">
+            {% for s in summaries %}
+              <option value="{{ s.id }}" {% if selected_summary_id == s.id %}selected{% endif %}>
+                #{{ s.id }} · {{ s.time }} · {{ s.n }} artiklar
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div>
+          <button class="btn btn-primary" type="submit">Kör test-sammanfattning</button>
+        </div>
+      </div>
+
+      <hr style="border:none; border-top:1px solid #eee; margin:16px 0;"/>
+
+      <h3>Prompter (redigera fritt)</h3>
+
+      <label><strong>batch_system</strong></label>
+      <textarea name="batch_system" rows="8" style="width:100%; padding:10px; border-radius:10px; border:1px solid #ddd;">{{ prompts.batch_system }}</textarea>
+
+      <label><strong>batch_user_template</strong></label>
+      <textarea name="batch_user_template" rows="6" style="width:100%; padding:10px; border-radius:10px; border:1px solid #ddd;">{{ prompts.batch_user_template }}</textarea>
+
+      <label><strong>meta_system</strong></label>
+      <textarea name="meta_system" rows="8" style="width:100%; padding:10px; border-radius:10px; border:1px solid #ddd;">{{ prompts.meta_system }}</textarea>
+
+      <label><strong>meta_user_template</strong></label>
+      <textarea name="meta_user_template" rows="6" style="width:100%; padding:10px; border-radius:10px; border:1px solid #ddd;">{{ prompts.meta_user_template }}</textarea>
+
+      <p class="muted" style="margin-top:10px;">
+        Tips: du kan köra testet flera gånger. Resultatet sparas bara som temporär post kopplad till job-id och visas här.
+      </p>
+    </form>
+
+    <form method="POST" action="{{ url_for('prompt_lab_apply') }}" style="margin-top:10px;">
+      <input type="hidden" name="batch_system" value="{{ prompts.batch_system|e }}">
+      <input type="hidden" name="batch_user_template" value="{{ prompts.batch_user_template|e }}">
+      <input type="hidden" name="meta_system" value="{{ prompts.meta_system|e }}">
+      <input type="hidden" name="meta_user_template" value="{{ prompts.meta_user_template|e }}">
+      <button class="btn" type="submit">Spara dessa prompts till config.yaml</button>
+      <span class="muted">OBS: YAML kan skrivas om (kommentarer kan försvinna).</span>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="status">
+      <strong>Status:</strong>
+      <span id="jobPill" class="pill">idle</span>
+      <span class="muted" id="jobMsg"></span>
+    </div>
+    <div class="muted" id="jobTimes" style="margin-top:6px;"></div>
+  </div>
+
+  <div class="card">
+    <h3>Testresultat</h3>
+    {% if temp_html %}
+        <div class="muted">Temporär sammanfattning (job {{ temp.job_id }})</div>
+        <div style="margin-top:10px;">{{ temp_html|safe }}</div>
+    {% else %}
+        <p class="muted">Kör en test-sammanfattning för att se resultat här.</p>
+    {% endif %}
+  </div>
+
+<script>
+(function() {
+  // ---------
+  // Helpers
+  // ---------
+  const params = new URLSearchParams(window.location.search);
+  const jobId = params.get("job");       // aktiv körning
+  const resultId = params.get("result"); // visning av resultat (ingen SSE)
+  const summaryId = params.get("summary_id");
+
+  const pill = document.getElementById("jobPill");
+  const msg = document.getElementById("jobMsg");
+  const times = document.getElementById("jobTimes");
+
+  const STORAGE_KEY = "promptLab.prompts.v1";
+
+  function setPill(status) {
+    if (!pill) return;
+    pill.classList.remove("ok","err");
+    pill.textContent = status || "idle";
+    if (status === "done") pill.classList.add("ok");
+    if (status === "error") pill.classList.add("err");
+  }
+
+  function fmt(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    return d.toISOString().replace("T", " ").slice(0, 19);
+  }
+
+  // ---------
+  // Persist prompts in localStorage so edits survive redirects/reloads
+  // ---------
+  const fields = ["batch_system", "batch_user_template", "meta_system", "meta_user_template"];
+
+  function readTextareas() {
+    const out = {};
+    for (const k of fields) {
+      const el = document.querySelector(`textarea[name="${k}"]`);
+      if (el) out[k] = el.value;
+    }
+    return out;
+  }
+
+  function writeTextareas(data) {
+    if (!data) return;
+    for (const k of fields) {
+      const el = document.querySelector(`textarea[name="${k}"]`);
+      if (el && typeof data[k] === "string" && data[k].length > 0) {
+        el.value = data[k];
+      }
+    }
+  }
+
+  function saveLocal() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(readTextareas()));
+    } catch (_) {}
+  }
+
+  function restoreLocal() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      writeTextareas(data);
+    } catch (_) {}
+  }
+
+  // Restore on page load (after server-render)
+  restoreLocal();
+
+  // Save on typing
+  for (const k of fields) {
+    const el = document.querySelector(`textarea[name="${k}"]`);
+    if (el) {
+      el.addEventListener("input", () => saveLocal());
+    }
+  }
+
+  // Also save right before submitting "run" form so we never lose edits
+  const runForm = document.querySelector('form[action$="/prompt-lab/run"]');
+  if (runForm) {
+    runForm.addEventListener("submit", () => saveLocal());
+  }
+
+  // ---------
+  // Status via SSE (only when job is active)
+  // ---------
+  if (!jobId) {
+    // No active job: show idle (or keep whatever server rendered)
+    if (!resultId) {
+      setPill("idle");
+      if (msg) msg.textContent = "";
+      if (times) times.textContent = "";
+    }
+    return;
+  }
+
+  setPill("running");
+
+  const es = new EventSource(`/api/status/stream/${jobId}`);
+
+  es.onmessage = (ev) => {
+    const data = JSON.parse(ev.data);
+
+    setPill(data.status);
+    if (msg) msg.textContent = data.message || "";
+
+    const created = fmt(data.created_at);
+    const started = fmt(data.started_at);
+    const finished = fmt(data.finished_at);
+
+    let tline = "";
+    if (created) tline += `Skapad: ${created}`;
+    if (started) tline += (tline ? " · " : "") + `Startad: ${started}`;
+    if (finished) tline += (tline ? " · " : "") + `Klar: ${finished}`;
+    if (times) times.textContent = tline;
+
+    if (data.status === "done") {
+      es.close();
+
+      // IMPORTANT:
+      // Replace ?job=... with ?result=... so we DON'T start SSE again after reload.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("job");
+      url.searchParams.set("result", String(jobId));
+      if (summaryId) url.searchParams.set("summary_id", summaryId);
+
+      // One navigation only, no loop.
+      window.location.replace(url.toString());
+      return;
+    }
+
+    if (data.status === "error") {
+      es.close();
+      return;
+    }
+  };
+
+  es.onerror = () => {
+    setPill("error");
+    if (msg) msg.textContent = "Status-anslutning bröts.";
+    es.close();
+  };
+})();
+</script>
+
+
+{% endblock %}

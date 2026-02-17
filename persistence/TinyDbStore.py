@@ -166,3 +166,30 @@ class TinyDBStore:
                 out.append(rows[0])
         db.close()
         return out
+
+    # ---- Temp summaries
+    def save_temp_summary(
+        self, job_id: int, summary_text: str, meta: Dict[str, Any]
+    ) -> None:
+        db = self._db()
+        t = db.table("temp_summaries")
+        # upsert på job_id
+        T = Query()
+        t.upsert(
+            {
+                "job_id": job_id,
+                "created_at": int(time.time()),
+                "summary": summary_text,
+                "meta": meta or {},
+            },
+            T.job_id == job_id,
+        )
+        db.close()
+
+    def get_temp_summary(self, job_id: int) -> Optional[Dict[str, Any]]:
+        db = self._db()
+        t = db.table("temp_summaries")
+        T = Query()
+        rows = t.search(T.job_id == job_id)
+        db.close()
+        return rows[0] if rows else None
