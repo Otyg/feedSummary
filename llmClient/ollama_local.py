@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class OllamaConfig:
     base_url: str = "http://localhost:11434"
-    model: str = "llama3.1:latest"
+    model: str = "gemma3:1b"
     max_rps: float = 1.0
 
     # Hur länge vi kan vänta på att Ollama börjar svara (första bytes/headers).

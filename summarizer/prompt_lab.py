@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("FeedSummarizer")
 
@@ -60,7 +60,7 @@ def _last_user_index(msgs: List[Dict[str, str]]) -> Optional[int]:
     return None
 
 
-def _hard_trim_last_user(
+def _trim_last_user_word_boundary(
     msgs: List[Dict[str, str]],
     remove_tokens: int,
     *,
@@ -72,60 +72,81 @@ def _hard_trim_last_user(
         return out
 
     content = out[idx].get("content") or ""
-    remove_chars = int(remove_tokens * chars_per_token)
-    if remove_chars <= 0:
-        remove_chars = int(512 * chars_per_token)
+    if not content:
+        return out
 
+    remove_chars = int(max(1, remove_tokens) * chars_per_token)
     if remove_chars >= len(content):
         out[idx]["content"] = "[TRUNCATED FOR CONTEXT WINDOW]\n"
         return out
 
+    target = len(content) - remove_chars
+    if target < 0:
+        target = 0
+
+    cut_space = content.rfind(" ", 0, target)
+    cut_nl = content.rfind("\n", 0, target)
+    cut_tab = content.rfind("\t", 0, target)
+    cut = max(cut_space, cut_nl, cut_tab)
+    if cut <= 0:
+        cut = target
+
     out[idx]["content"] = (
-        content[: len(content) - remove_chars] + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
+        content[:cut].rstrip() + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
     )
     return out
 
 
-def _estimate_tokens(text: str, *, chars_per_token: float) -> int:
-    return max(1, int(len(text) / chars_per_token))
+def _clip(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[:n] + "…"
 
 
-def _messages_to_text(messages: List[Dict[str, str]]) -> str:
-    parts = []
-    for m in messages:
-        parts.append(m.get("role", "user") + ":\n" + (m.get("content") or ""))
-    return "\n\n".join(parts)
+def _estimate_article_chars(a: dict) -> int:
+    # _clip_text används om den finns
+    t = a.get("_clip_text")
+    if not isinstance(t, str):
+        t = a.get("text", "") or ""
+    return len(t) + len(a.get("title", "")) + len(a.get("url", "")) + 200
 
 
-def _enforce_budget(
-    messages: List[Dict[str, str]],
-    *,
-    max_context_tokens: int,
-    max_output_tokens: int,
-    safety_margin_tokens: int,
-    chars_per_token: float,
-) -> Tuple[List[Dict[str, str]], int, int]:
-    budget = max_context_tokens - max_output_tokens - safety_margin_tokens
-    if budget < 256:
-        budget = 256
+def _batch_chars(batch: List[dict]) -> int:
+    return sum(_estimate_article_chars(x) for x in batch)
 
-    est = _estimate_tokens(_messages_to_text(messages), chars_per_token=chars_per_token)
-    if est <= budget:
-        return messages, est, budget
 
-    out = [dict(m) for m in messages]
-    idx = _last_user_index(out)
-    if idx is None:
-        return messages, est, budget
+def _can_fit_in_batch(
+    batch: List[dict], a: dict, *, max_chars: int, max_n: int
+) -> bool:
+    if max_n and len(batch) >= max_n:
+        return False
+    return (_batch_chars(batch) + _estimate_article_chars(a)) <= max_chars
 
-    target_chars = int(budget * chars_per_token)
-    content = out[idx].get("content") or ""
-    if len(content) > target_chars:
-        out[idx]["content"] = (
-            content[:target_chars] + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
-        )
-    est2 = _estimate_tokens(_messages_to_text(out), chars_per_token=chars_per_token)
-    return out, est2, budget
+
+def _move_article_to_tail_batch(
+    batches: List[List[dict]], a: dict, *, max_chars: int, max_n: int
+) -> None:
+    if not batches:
+        batches.append([a])
+        return
+    last = batches[-1]
+    if _can_fit_in_batch(last, a, max_chars=max_chars, max_n=max_n):
+        last.append(a)
+    else:
+        batches.append([a])
+
+
+def _choose_trim_action(overflow_tokens: int, structural_threshold: int) -> str:
+    if overflow_tokens <= 200:
+        return "word_trim"
+    if overflow_tokens <= structural_threshold:
+        return "drop_one_article"
+    return "drop_multiple_articles"
+
+
+class PromptTooLongStructural(Exception):
+    def __init__(self, overflow_tokens: int):
+        super().__init__(f"prompt too long (structural), overflow={overflow_tokens}")
+        self.overflow_tokens = overflow_tokens
 
 
 async def chat_guarded(
@@ -135,27 +156,21 @@ async def chat_guarded(
     *,
     temperature: float = 0.2,
 ) -> str:
-    """Robust chat för prompt-lab: budget + overflow-trim-retry."""
+    """
+    Prompt-lab chat: overflow-driven.
+    - small overflow: word-trim här
+    - medium/large: signalera structural till batch-loopen
+    """
     llm_cfg = config.get("llm") or {}
-    max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
-    max_out = int(llm_cfg.get("max_output_tokens", 700))
-    margin = int(llm_cfg.get("prompt_safety_margin", 1024))
     chars_per_token = float(llm_cfg.get("token_chars_per_token", 2.4))
     max_attempts = int(llm_cfg.get("prompt_too_long_max_attempts", 6))
-
-    msgs2, est, budget = _enforce_budget(
-        messages,
-        max_context_tokens=max_ctx,
-        max_output_tokens=max_out,
-        safety_margin_tokens=margin,
-        chars_per_token=chars_per_token,
-    )
-    logger.info(
-        f"Prompt-lab LLM budget: est_prompt_tokens={est} budget_tokens={budget}"
+    structural_threshold = int(
+        llm_cfg.get("prompt_too_long_structural_threshold_tokens", 1200)
     )
 
     attempt = 1
-    current = msgs2
+    current = messages
+
     while True:
         try:
             return await llm.chat(current, temperature=temperature)
@@ -170,35 +185,38 @@ async def chat_guarded(
             ):
                 if attempt >= max_attempts:
                     raise
+
                 if overflow:
-                    remove_tokens = overflow + 512
-                    logger.warning(
-                        "Prompt-lab: prompt too long. overflow=%s tokens. attempt=%s/%s. trimming ~%s tokens...",
-                        overflow,
-                        attempt,
-                        max_attempts,
-                        remove_tokens,
-                    )
-                    current = _hard_trim_last_user(
-                        current, remove_tokens, chars_per_token=chars_per_token
-                    )
-                else:
-                    logger.warning(
-                        "Prompt-lab: prompt too long (no overflow parsed). attempt=%s/%s. trimming fixed chunk...",
-                        attempt,
-                        max_attempts,
-                    )
-                    current = _hard_trim_last_user(
-                        current, 1024, chars_per_token=chars_per_token
-                    )
+                    action = _choose_trim_action(int(overflow), structural_threshold)
+                    if action == "word_trim":
+                        remove_tokens = int(overflow) + 512
+                        logger.warning(
+                            "Prompt-lab prompt too long: overflow=%s action=word_trim attempt=%s/%s remove_tokens~%s",
+                            overflow,
+                            attempt,
+                            max_attempts,
+                            remove_tokens,
+                        )
+                        current = _trim_last_user_word_boundary(
+                            current, remove_tokens, chars_per_token=chars_per_token
+                        )
+                        attempt += 1
+                        continue
+
+                    # medium/large: låt batch-loopen flytta artiklar
+                    raise PromptTooLongStructural(int(overflow))
+
+                # overflow okänd → word-trim schablon
+                logger.warning(
+                    "Prompt-lab prompt too long (no overflow parsed): trimming fixed chunk"
+                )
+                current = _trim_last_user_word_boundary(
+                    current, 1024, chars_per_token=chars_per_token
+                )
                 attempt += 1
                 continue
+
             raise
-
-
-def _clip(s: str, n: int) -> str:
-    s = (s or "").strip()
-    return s if len(s) <= n else s[:n] + "…"
 
 
 async def run_promptlab_summarization(
@@ -213,9 +231,7 @@ async def run_promptlab_summarization(
 ) -> int:
     """
     Kör prompt-lab på befintliga artiklar (ingen ny ingest).
-    Lagrar temporärt resultat under en tydlig "temp"-nyckel kopplad till job_id.
-
-    Returnerar temp_summary_id (ofta samma som job_id beroende på store-implementation).
+    Lagrar temporärt resultat under job_id via store.put_temp_summary(job_id, payload).
     """
 
     batching = config.get("batching") or {}
@@ -225,14 +241,19 @@ async def run_promptlab_summarization(
     meta_batch_clip_chars = int(batching.get("meta_batch_clip_chars", 2500))
     meta_sources_clip_chars = int(batching.get("meta_sources_clip_chars", 140))
 
-    # Använd samma batchning som main, om du har en utility. Annars enkel variant:
+    llm_cfg = config.get("llm") or {}
+    chars_per_token = float(llm_cfg.get("token_chars_per_token", 2.4))
+    structural_threshold = int(
+        llm_cfg.get("prompt_too_long_structural_threshold_tokens", 1200)
+    )
+
     def batch_articles_local(items: List[dict]) -> List[List[dict]]:
         batches: List[List[dict]] = []
         current: List[dict] = []
         current_chars = 0
         for a in items:
             t = _clip(a.get("text", ""), article_clip_chars)
-            estimated = len(t) + len(a.get("title", "")) + len(a.get("url", ""))
+            estimated = len(t) + len(a.get("title", "")) + len(a.get("url", "")) + 200
             if current and (
                 current_chars + estimated > max_chars or len(current) >= max_n
             ):
@@ -247,17 +268,11 @@ async def run_promptlab_summarization(
             batches.append(current)
         return batches
 
-    batches = batch_articles_local(articles)
-
-    done_map: Dict[int, str] = {}
-
-    for idx, batch in enumerate(batches, start=1):
-        store.update_job(
-            job_id, message=f"Prompt-lab: summerar batch {idx}/{len(batches)}..."
-        )
-
+    def build_messages_for_batch(
+        batch_index: int, batch_total: int, batch_items: List[dict]
+    ) -> List[Dict[str, str]]:
         parts = []
-        for i, a in enumerate(batch, start=1):
+        for i, a in enumerate(batch_items, start=1):
             parts.append(
                 f"[{i}] {a.get('title', '')}\n"
                 f"Källa: {a.get('source', '')}\n"
@@ -266,21 +281,84 @@ async def run_promptlab_summarization(
                 f"{a.get('_clip_text', '')}"
             )
         corpus = "\n\n---\n\n".join(parts)
-
         user_content = prompts["batch_user_template"].format(
-            batch_index=idx,
-            batch_total=len(batches),
+            batch_index=batch_index,
+            batch_total=batch_total,
             articles_corpus=corpus,
         )
-        messages = [
+        return [
             {"role": "system", "content": prompts["batch_system"]},
             {"role": "user", "content": user_content},
         ]
 
-        summary = await chat_guarded(llm, config, messages, temperature=0.2)
+    batches = batch_articles_local(articles)
+    done_map: Dict[int, str] = {}
+
+    idx = 1
+    while idx <= len(batches):
+        store.update_job(
+            job_id, message=f"Prompt-lab: summerar batch {idx}/{len(batches)}..."
+        )
+        batch = batches[idx - 1]
+
+        while True:
+            messages = build_messages_for_batch(idx, len(batches), batch)
+            try:
+                summary = await chat_guarded(llm, config, messages, temperature=0.2)
+                break
+            except PromptTooLongStructural as e:
+                overflow = int(getattr(e, "overflow_tokens", 0) or 0)
+                action = _choose_trim_action(overflow, structural_threshold)
+
+                if len(batch) <= 1:
+                    # batch med 1 artikel → klipp text hårdare
+                    a0 = batch[0]
+                    t = a0.get("_clip_text", "") or ""
+                    new_len = max(800, int(len(t) * 0.6))
+                    a0["_clip_text"] = _clip(t, new_len)
+                    logger.warning(
+                        "Prompt-lab batch %s: 1 artikel overflow=%s. Klipper text hårdare och retry.",
+                        idx,
+                        overflow,
+                    )
+                    continue
+
+                target_remove_tokens = overflow + 512
+                target_remove_chars = int(target_remove_tokens * chars_per_token)
+
+                removed_count = 0
+                removed_chars = 0
+
+                if action == "drop_one_article":
+                    a = batch.pop()
+                    removed_count = 1
+                    removed_chars = _estimate_article_chars(a)
+                    _move_article_to_tail_batch(
+                        batches, a, max_chars=max_chars, max_n=max_n
+                    )
+                else:
+                    while len(batch) > 1 and removed_chars < target_remove_chars:
+                        a = batch.pop()
+                        removed_count += 1
+                        removed_chars += _estimate_article_chars(a)
+                        _move_article_to_tail_batch(
+                            batches, a, max_chars=max_chars, max_n=max_n
+                        )
+
+                logger.warning(
+                    "Prompt-lab structural: overflow=%s action=%s removed=%s (chars~%s) from batch=%s. "
+                    "Moved to tail. Retrying same batch.",
+                    overflow,
+                    action,
+                    removed_count,
+                    removed_chars,
+                    idx,
+                )
+                continue
+
         done_map[idx] = summary
 
-        # checkpoint per batch (i store som temp, så UI kan visa progress om du vill)
+        # partial temp-save
         store.put_temp_summary(
             job_id,
             {
@@ -294,6 +372,8 @@ async def run_promptlab_summarization(
                 "meta": {"prompts": prompts},
             },
         )
+
+        idx += 1
 
     store.update_job(job_id, message="Prompt-lab: skapar metasammanfattning...")
 
@@ -319,9 +399,20 @@ async def run_promptlab_summarization(
         {"role": "user", "content": meta_user},
     ]
 
-    meta = await chat_guarded(llm, config, meta_messages, temperature=0.2)
+    # Meta: vid structural → gör word-trim fallback
+    try:
+        meta = await chat_guarded(llm, config, meta_messages, temperature=0.2)
+    except PromptTooLongStructural as e:
+        overflow = int(getattr(e, "overflow_tokens", 0) or 0)
+        logger.warning(
+            "Prompt-lab meta structural overflow=%s. Faller tillbaka till word-trim i meta.",
+            overflow,
+        )
+        trimmed = _trim_last_user_word_boundary(
+            meta_messages, overflow + 2048, chars_per_token=chars_per_token
+        )
+        meta = await llm.chat(trimmed, temperature=0.2)
 
-    # slutligt temp-resultat
     store.put_temp_summary(
         job_id,
         {
