@@ -143,7 +143,7 @@ class TinyDBStore:
     def update_job(self, job_id: int, **fields) -> None:
         db = self._db()
         db.table("jobs").update(fields, doc_ids=[job_id])
-        logger.info(f"Job {job_id} updated")
+        logger.info(f"Job {job_id} updated: {fields}")
         db.close()
 
     def get_job(self, job_id: int) -> Optional[Dict[str, Any]]:
@@ -168,23 +168,29 @@ class TinyDBStore:
         return out
 
     # ---- Temp summaries
+
+    # Alias used by prompt_lab_updated.py (stores a full payload dict under temp_summaries)
+    def put_temp_summary(self, job_id: int, payload: Dict[str, Any]) -> None:
+        """Upsert a temp summary payload by job_id.
+
+        Expected payload keys (typical):
+          - job_id, created_at, summary, meta, partials, etc.
+        """
+        db = self._db()
+        t = db.table("temp_summaries")
+        T = Query()
+        doc = dict(payload or {})
+        doc["job_id"] = job_id
+        if "created_at" not in doc:
+            doc["created_at"] = int(time.time())
+        t.upsert(doc, T.job_id == job_id)
+        db.close()
+
     def save_temp_summary(
         self, job_id: int, summary_text: str, meta: Dict[str, Any]
     ) -> None:
-        db = self._db()
-        t = db.table("temp_summaries")
-        # upsert på job_id
-        T = Query()
-        t.upsert(
-            {
-                "job_id": job_id,
-                "created_at": int(time.time()),
-                "summary": summary_text,
-                "meta": meta or {},
-            },
-            T.job_id == job_id,
-        )
-        db.close()
+        """Backward-compatible helper: saves summary/meta in the temp payload."""
+        self.put_temp_summary(job_id, {"summary": summary_text, "meta": meta or {}})
 
     def get_temp_summary(self, job_id: int) -> Optional[Dict[str, Any]]:
         db = self._db()

@@ -73,6 +73,7 @@ _PROMPT_TOO_LONG_RE = re.compile(
     r"exceeded max context length by\s+(\d+)\s+tokens", re.IGNORECASE
 )
 
+
 def _extract_overflow_tokens(err: Exception) -> Optional[int]:
     m = _PROMPT_TOO_LONG_RE.search(str(err))
     if not m:
@@ -81,6 +82,7 @@ def _extract_overflow_tokens(err: Exception) -> Optional[int]:
         return int(m.group(1))
     except Exception:
         return None
+
 
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([mhdw])\s*$", re.IGNORECASE)
 
@@ -513,7 +515,9 @@ async def summarize_batches_then_meta(
     max_out = int(llm_cfg.get("max_output_tokens", 700))
     margin = int(llm_cfg.get("prompt_safety_margin", 1024))
 
-    async def chat_guarded(messages: List[Dict[str, str]], *, temperature: float = 0.2) -> str:
+    async def chat_guarded(
+        messages: List[Dict[str, str]], *, temperature: float = 0.2
+    ) -> str:
         """
         1) enforce_budget (best effort)
         2) om servern säger "prompt too long; exceeded ... by N tokens":
@@ -531,7 +535,9 @@ async def summarize_batches_then_meta(
                     return i
             return None
 
-        def hard_trim_last_user(msgs: List[Dict[str, str]], remove_tokens: int) -> List[Dict[str, str]]:
+        def hard_trim_last_user(
+            msgs: List[Dict[str, str]], remove_tokens: int
+        ) -> List[Dict[str, str]]:
             """
             Klipper bort ungefär remove_tokens från slutet av sista user-content.
             Vi klipper i chars, konservativt.
@@ -550,7 +556,10 @@ async def summarize_batches_then_meta(
                 out[idx]["content"] = "[TRUNCATED FOR CONTEXT WINDOW]\n"
                 return out
 
-            out[idx]["content"] = content[: len(content) - remove_chars] + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
+            out[idx]["content"] = (
+                content[: len(content) - remove_chars]
+                + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
+            )
             return out
 
         # 1) Best-effort budget enforcement enligt din konfig
@@ -573,7 +582,11 @@ async def summarize_batches_then_meta(
                 msg = str(e).lower()
                 overflow = _extract_overflow_tokens(e)
 
-                if ("prompt too long" in msg or "max context" in msg or "context length" in msg) and overflow:
+                if (
+                    "prompt too long" in msg
+                    or "max context" in msg
+                    or "context length" in msg
+                ) and overflow:
                     if attempt >= max_attempts:
                         raise
 
@@ -583,7 +596,10 @@ async def summarize_batches_then_meta(
 
                     logger.warning(
                         "LLM: prompt too long. overflow=%s tokens. attempt=%s/%s. trimming ~%s tokens...",
-                        overflow, attempt, max_attempts, remove_tokens
+                        overflow,
+                        attempt,
+                        max_attempts,
+                        remove_tokens,
                     )
 
                     current = hard_trim_last_user(current, remove_tokens)
@@ -591,19 +607,25 @@ async def summarize_batches_then_meta(
                     continue
 
                 # fallback: om prompt too long men vi kan inte parse:a overflow
-                if "prompt too long" in msg or "max context" in msg or "context length" in msg:
+                if (
+                    "prompt too long" in msg
+                    or "max context" in msg
+                    or "context length" in msg
+                ):
                     if attempt >= max_attempts:
                         raise
                     logger.warning(
                         "LLM: prompt too long (no overflow parsed). attempt=%s/%s. trimming fixed chunk...",
-                        attempt, max_attempts
+                        attempt,
+                        max_attempts,
                     )
-                    current = hard_trim_last_user(current, 1024)  # ~1024 tokens som schablon
+                    current = hard_trim_last_user(
+                        current, 1024
+                    )  # ~1024 tokens som schablon
                     attempt += 1
                     continue
 
                 raise
-
 
     # --- CHECKPOINT SETUP ---
     cp_cfg = config.get("checkpointing") or {}

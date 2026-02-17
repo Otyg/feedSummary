@@ -39,7 +39,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import logging
 from ollama import AsyncClient
+
 logger = logging.getLogger(__name__)
+
 
 class LLMRateLimitError(RuntimeError):
     def __init__(self, message: str, retry_after_seconds: Optional[int] = None):

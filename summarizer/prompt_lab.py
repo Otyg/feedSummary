@@ -28,138 +28,242 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
 
 from __future__ import annotations
 
 import logging
+import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from llmClient import LLMClient
-from persistence import NewsStore
-from summarizer.helpers import clip_text
+logger = logging.getLogger("FeedSummarizer")
 
-logger = logging.getLogger(__name__)
-
-
-def _clip(s: str, n: int) -> str:
-    return clip_text(s=s, n=n)
+_PROMPT_TOO_LONG_RE = re.compile(
+    r"exceeded max context length by\s+(\d+)\s+tokens", re.IGNORECASE
+)
 
 
-def build_prompts_from_form(
-    form: Dict[str, str], base_config: Dict[str, Any]
-) -> Dict[str, str]:
-    """
-    Tar prompts från webform (om givna) annars från config.yaml.
-    """
-    defaults = base_config.get("prompts") or {}
-    keys = ["batch_system", "batch_user_template", "meta_system", "meta_user_template"]
+def _extract_overflow_tokens(err: Exception) -> Optional[int]:
+    m = _PROMPT_TOO_LONG_RE.search(str(err))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
 
-    out: Dict[str, str] = {}
-    for k in keys:
-        v = form.get(k)
-        if v is None or v.strip() == "":
-            v = str(defaults.get(k, ""))
-        out[k] = str(v)
+
+def _last_user_index(msgs: List[Dict[str, str]]) -> Optional[int]:
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            return i
+    return None
+
+
+def _hard_trim_last_user(
+    msgs: List[Dict[str, str]],
+    remove_tokens: int,
+    *,
+    chars_per_token: float,
+) -> List[Dict[str, str]]:
+    out = [dict(m) for m in msgs]
+    idx = _last_user_index(out)
+    if idx is None:
+        return out
+
+    content = out[idx].get("content") or ""
+    remove_chars = int(remove_tokens * chars_per_token)
+    if remove_chars <= 0:
+        remove_chars = int(512 * chars_per_token)
+
+    if remove_chars >= len(content):
+        out[idx]["content"] = "[TRUNCATED FOR CONTEXT WINDOW]\n"
+        return out
+
+    out[idx]["content"] = (
+        content[: len(content) - remove_chars] + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
+    )
     return out
 
 
-def select_articles_for_promptlab(
-    store: NewsStore, summary_id: Optional[int] = None
-) -> Dict[str, Any]:
-    """
-    Väljer artiklar från en existerande summary (latest eller specifik).
-    Returnerar {summary_id, created_at, article_ids, articles}.
-    """
-    if summary_id is None:
-        s = store.get_latest_summary()
-        if not s:
-            raise ValueError("Ingen sparad summary finns att använda för prompt-lab.")
-    else:
-        s = store.get_summary(summary_id)
-        if not s:
-            raise ValueError("Kunde inte hitta angiven summary_id.")
-
-    article_ids = s.get("article_ids", []) or []
-    articles = store.get_articles_by_ids(article_ids)
-
-    return {
-        "source_summary_id": s.get("id"),
-        "source_created_at": s.get("created_at"),
-        "article_ids": article_ids,
-        "articles": articles,
-    }
+def _estimate_tokens(text: str, *, chars_per_token: float) -> int:
+    return max(1, int(len(text) / chars_per_token))
 
 
-def batch_articles(
-    articles: List[dict],
-    max_chars_per_batch: int,
-    max_articles_per_batch: int,
-    article_clip_chars: int,
-) -> List[List[dict]]:
-    batches: List[List[dict]] = []
-    current: List[dict] = []
-    current_chars = 0
+def _messages_to_text(messages: List[Dict[str, str]]) -> str:
+    parts = []
+    for m in messages:
+        parts.append(m.get("role", "user") + ":\n" + (m.get("content") or ""))
+    return "\n\n".join(parts)
 
-    for a in articles:
-        text = _clip(a.get("text", ""), article_clip_chars)
-        estimated = len(text) + len(a.get("title", "")) + len(a.get("url", "")) + 200
 
-        if current and (
-            current_chars + estimated > max_chars_per_batch
-            or len(current) >= max_articles_per_batch
-        ):
-            batches.append(current)
-            current = []
-            current_chars = 0
+def _enforce_budget(
+    messages: List[Dict[str, str]],
+    *,
+    max_context_tokens: int,
+    max_output_tokens: int,
+    safety_margin_tokens: int,
+    chars_per_token: float,
+) -> Tuple[List[Dict[str, str]], int, int]:
+    budget = max_context_tokens - max_output_tokens - safety_margin_tokens
+    if budget < 256:
+        budget = 256
 
-        a2 = dict(a)
-        a2["text"] = text
-        current.append(a2)
-        current_chars += estimated
+    est = _estimate_tokens(_messages_to_text(messages), chars_per_token=chars_per_token)
+    if est <= budget:
+        return messages, est, budget
 
-    if current:
-        batches.append(current)
+    out = [dict(m) for m in messages]
+    idx = _last_user_index(out)
+    if idx is None:
+        return messages, est, budget
 
-    return batches
+    target_chars = int(budget * chars_per_token)
+    content = out[idx].get("content") or ""
+    if len(content) > target_chars:
+        out[idx]["content"] = (
+            content[:target_chars] + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
+        )
+    est2 = _estimate_tokens(_messages_to_text(out), chars_per_token=chars_per_token)
+    return out, est2, budget
+
+
+async def chat_guarded(
+    llm: Any,
+    config: Dict[str, Any],
+    messages: List[Dict[str, str]],
+    *,
+    temperature: float = 0.2,
+) -> str:
+    """Robust chat för prompt-lab: budget + overflow-trim-retry."""
+    llm_cfg = config.get("llm") or {}
+    max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
+    max_out = int(llm_cfg.get("max_output_tokens", 700))
+    margin = int(llm_cfg.get("prompt_safety_margin", 1024))
+    chars_per_token = float(llm_cfg.get("token_chars_per_token", 2.4))
+    max_attempts = int(llm_cfg.get("prompt_too_long_max_attempts", 6))
+
+    msgs2, est, budget = _enforce_budget(
+        messages,
+        max_context_tokens=max_ctx,
+        max_output_tokens=max_out,
+        safety_margin_tokens=margin,
+        chars_per_token=chars_per_token,
+    )
+    logger.info(
+        f"Prompt-lab LLM budget: est_prompt_tokens={est} budget_tokens={budget}"
+    )
+
+    attempt = 1
+    current = msgs2
+    while True:
+        try:
+            return await llm.chat(current, temperature=temperature)
+        except Exception as e:
+            msg = str(e).lower()
+            overflow = _extract_overflow_tokens(e)
+
+            if (
+                "prompt too long" in msg
+                or "max context" in msg
+                or "context length" in msg
+            ):
+                if attempt >= max_attempts:
+                    raise
+                if overflow:
+                    remove_tokens = overflow + 512
+                    logger.warning(
+                        "Prompt-lab: prompt too long. overflow=%s tokens. attempt=%s/%s. trimming ~%s tokens...",
+                        overflow,
+                        attempt,
+                        max_attempts,
+                        remove_tokens,
+                    )
+                    current = _hard_trim_last_user(
+                        current, remove_tokens, chars_per_token=chars_per_token
+                    )
+                else:
+                    logger.warning(
+                        "Prompt-lab: prompt too long (no overflow parsed). attempt=%s/%s. trimming fixed chunk...",
+                        attempt,
+                        max_attempts,
+                    )
+                    current = _hard_trim_last_user(
+                        current, 1024, chars_per_token=chars_per_token
+                    )
+                attempt += 1
+                continue
+            raise
+
+
+def _clip(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[:n] + "…"
 
 
 async def run_promptlab_summarization(
     *,
     config: Dict[str, Any],
     prompts: Dict[str, str],
-    store: NewsStore,
-    llm: LLMClient,
+    store: Any,
+    llm: Any,
     job_id: int,
     source_summary_id: int,
     articles: List[dict],
-) -> str:
+) -> int:
     """
-    Kör batch + meta enligt prompts, men sparar endast som temp_summary kopplat till job_id.
-    """
-    batching = config.get("batching", {}) or {}
-    max_chars = int(batching.get("max_chars_per_batch", 8000))
-    max_n = int(batching.get("max_articles_per_batch", 4))
-    article_clip_chars = int(batching.get("article_clip_chars", 2000))
+    Kör prompt-lab på befintliga artiklar (ingen ny ingest).
+    Lagrar temporärt resultat under en tydlig "temp"-nyckel kopplad till job_id.
 
+    Returnerar temp_summary_id (ofta samma som job_id beroende på store-implementation).
+    """
+
+    batching = config.get("batching") or {}
+    max_chars = int(batching.get("max_chars_per_batch", 18000))
+    max_n = int(batching.get("max_articles_per_batch", 10))
+    article_clip_chars = int(batching.get("article_clip_chars", 2500))
     meta_batch_clip_chars = int(batching.get("meta_batch_clip_chars", 2500))
     meta_sources_clip_chars = int(batching.get("meta_sources_clip_chars", 140))
 
-    def set_job(msg: str):
-        store.update_job(job_id, message=msg)
+    # Använd samma batchning som main, om du har en utility. Annars enkel variant:
+    def batch_articles_local(items: List[dict]) -> List[List[dict]]:
+        batches: List[List[dict]] = []
+        current: List[dict] = []
+        current_chars = 0
+        for a in items:
+            t = _clip(a.get("text", ""), article_clip_chars)
+            estimated = len(t) + len(a.get("title", "")) + len(a.get("url", ""))
+            if current and (
+                current_chars + estimated > max_chars or len(current) >= max_n
+            ):
+                batches.append(current)
+                current = []
+                current_chars = 0
+            aa = dict(a)
+            aa["_clip_text"] = t
+            current.append(aa)
+            current_chars += estimated
+        if current:
+            batches.append(current)
+        return batches
 
-    batches = batch_articles(articles, max_chars, max_n, article_clip_chars)
+    batches = batch_articles_local(articles)
 
-    batch_summaries: List[str] = []
+    done_map: Dict[int, str] = {}
+
     for idx, batch in enumerate(batches, start=1):
-        set_job(f"Prompt-lab: summerar batch {idx}/{len(batches)}...")
-        logger.info(f"Prompt-lab: summerar batch {idx}/{len(batches)}...")
+        store.update_job(
+            job_id, message=f"Prompt-lab: summerar batch {idx}/{len(batches)}..."
+        )
+
         parts = []
         for i, a in enumerate(batch, start=1):
             parts.append(
-                f"[{i}] {a.get('title', '')}\nKälla: {a.get('source', '')}\n"
-                f"Publicerad: {a.get('published', '')}\nURL: {a.get('url', '')}\n\n{a.get('text', '')}"
+                f"[{i}] {a.get('title', '')}\n"
+                f"Källa: {a.get('source', '')}\n"
+                f"Publicerad: {a.get('published', '')}\n"
+                f"URL: {a.get('url', '')}\n\n"
+                f"{a.get('_clip_text', '')}"
             )
         corpus = "\n\n---\n\n".join(parts)
 
@@ -168,59 +272,67 @@ async def run_promptlab_summarization(
             batch_total=len(batches),
             articles_corpus=corpus,
         )
+        messages = [
+            {"role": "system", "content": prompts["batch_system"]},
+            {"role": "user", "content": user_content},
+        ]
 
-        summary = await llm.chat(
-            [
-                {"role": "system", "content": prompts["batch_system"]},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.2,
+        summary = await chat_guarded(llm, config, messages, temperature=0.2)
+        done_map[idx] = summary
+
+        # checkpoint per batch (i store som temp, så UI kan visa progress om du vill)
+        store.put_temp_summary(
+            job_id,
+            {
+                "kind": "prompt_lab_partial",
+                "job_id": job_id,
+                "source_summary_id": source_summary_id,
+                "created_at": int(time.time()),
+                "batch_done": idx,
+                "batch_total": len(batches),
+                "batch_summaries": {str(k): v for k, v in sorted(done_map.items())},
+                "meta": {"prompts": prompts},
+            },
         )
-        batch_summaries.append(summary)
 
-    set_job("Prompt-lab: skapar metasammanfattning...")
-    logger.info("Prompt-lab: skapar metasammanfattning...")
-    # Klipp meta-input för att hålla det snällt för modellen
-    clipped_batches = []
-    for i, s in enumerate(batch_summaries, start=1):
-        clipped_batches.append(f"Batch {i}:\n{_clip(s, meta_batch_clip_chars)}")
-    batch_text = "\n\n====================\n\n".join(clipped_batches)
+    store.update_job(job_id, message="Prompt-lab: skapar metasammanfattning...")
 
-    sources_list = []
-    for a in articles:
-        title = _clip(a.get("title", ""), meta_sources_clip_chars)
-        sources_list.append(f"- {title} — {a.get('url', '').strip()}")
+    sources_list = [
+        f"- {_clip(a.get('title', ''), meta_sources_clip_chars)} — {str(a.get('url', '')).strip()}"
+        for a in articles
+    ]
     sources_text = "\n".join(sources_list)
+
+    batch_text = "\n\n====================\n\n".join(
+        [
+            f"Batch {i}:\n{_clip(s, meta_batch_clip_chars)}"
+            for i, s in sorted(done_map.items(), key=lambda x: x[0])
+        ]
+    )
 
     meta_user = prompts["meta_user_template"].format(
         batch_summaries=batch_text,
         sources_list=sources_text,
     )
+    meta_messages = [
+        {"role": "system", "content": prompts["meta_system"]},
+        {"role": "user", "content": meta_user},
+    ]
 
-    meta = await llm.chat(
-        [
-            {"role": "system", "content": prompts["meta_system"]},
-            {"role": "user", "content": meta_user},
-        ],
-        temperature=0.2,
-    )
+    meta = await chat_guarded(llm, config, meta_messages, temperature=0.2)
 
-    # Spara temp-resultatet i DB (tydligt temporärt)
-    store.save_temp_summary(
-        job_id=job_id,
-        summary_text=meta,
-        meta={
-            "kind": "prompt_lab",
+    # slutligt temp-resultat
+    store.put_temp_summary(
+        job_id,
+        {
+            "kind": "prompt_lab_result",
+            "job_id": job_id,
             "source_summary_id": source_summary_id,
             "created_at": int(time.time()),
-            "used_article_count": len(articles),
-            "prompts": {
-                "batch_system": prompts["batch_system"],
-                "batch_user_template": prompts["batch_user_template"],
-                "meta_system": prompts["meta_system"],
-                "meta_user_template": prompts["meta_user_template"],
-            },
+            "summary": meta,
+            "meta": {"prompts": prompts},
+            "batch_summaries": {str(k): v for k, v in sorted(done_map.items())},
         },
     )
 
-    return meta
+    return job_id

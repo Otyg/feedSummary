@@ -55,11 +55,7 @@ from flask import (
 from summarizer.helpers import setup_logging
 from summarizer.main import run_pipeline
 from persistence import NewsStore, create_store
-from summarizer.prompt_lab import (
-    build_prompts_from_form,
-    select_articles_for_promptlab,
-    run_promptlab_summarization,
-)
+from summarizer.prompt_lab import run_promptlab_summarization
 from llmClient import create_llm_client
 
 
@@ -68,6 +64,24 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 pipeline_lock = threading.Lock()
 
+def _get_promptlab_prompts(cfg: dict, form=None) -> dict:
+    """
+    Returnerar prompts att använda:
+      - om form skickas in: använd formvärden (om satt), annars fallback till cfg
+      - annars: bara cfg
+    """
+    p_cfg = (cfg.get("prompts") or {})
+
+    keys = ["batch_system", "batch_user_template", "meta_system", "meta_user_template"]
+    out = {k: str(p_cfg.get(k, "")) for k in keys}
+
+    if form is not None:
+        for k in keys:
+            v = form.get(k)
+            if v is not None and str(v).strip() != "":
+                out[k] = str(v)
+
+    return out
 
 def load_config(path: str = "config.yaml") -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
@@ -226,6 +240,7 @@ def prompt_lab():
     cfg = load_config()
     store = get_store()
 
+    # Lista summaries att välja som underlag
     summaries = store.list_summaries()
     items = [
         {
@@ -236,32 +251,32 @@ def prompt_lab():
         for s in summaries
     ]
 
-    job = request.args.get("job", type=int)
-    result = request.args.get("result", type=int)
+    job = request.args.get("job", type=int)       # aktiv körning
+    result = request.args.get("result", type=int) # visning av resultat
     selected_summary_id = request.args.get("summary_id", type=int)
 
     job_or_result = job or result
-    temp = store.get_temp_summary(job_or_result) if job_or_result else None
 
-    # defaults från config.yaml
-    p_cfg = cfg.get("prompts") or {}
-    prompts = {
-        "batch_system": p_cfg.get("batch_system", ""),
-        "batch_user_template": p_cfg.get("batch_user_template", ""),
-        "meta_system": p_cfg.get("meta_system", ""),
-        "meta_user_template": p_cfg.get("meta_user_template", ""),
-    }
-
-    # om vi visar ett temp-resultat: fyll prompterna från den körningen
-    if temp and (temp.get("meta") or {}).get("prompts"):
-        tp = temp["meta"]["prompts"]
-        for k in list(prompts.keys()):
-            if k in tp and isinstance(tp[k], str):
-                prompts[k] = tp[k]
-
+    temp = None
     temp_html = None
-    if temp and temp.get("summary"):
-        temp_html = md.markdown(temp["summary"], extensions=["extra"])
+    prompts = _get_promptlab_prompts(cfg, form=None)
+
+    if job_or_result:
+        # Temp payload sparas via store.put_temp_summary(job_id, payload) i prompt_lab_updated.py
+        temp = store.get_temp_summary(job_or_result)
+
+        # Om temp innehåller prompts från körningen, visa dem i UI (så de inte "hoppar tillbaka")
+        if temp and isinstance(temp, dict):
+            meta = temp.get("meta") or {}
+            tp = meta.get("prompts")
+            if isinstance(tp, dict):
+                for k in list(prompts.keys()):
+                    if k in tp and isinstance(tp[k], str):
+                        prompts[k] = tp[k]
+
+            # Rendera markdown till HTML om summary finns
+            if temp.get("summary"):
+                temp_html = md.markdown(str(temp["summary"]), extensions=["extra"])
 
     return render_template(
         "prompt_lab.html",
@@ -275,22 +290,23 @@ def prompt_lab():
     )
 
 
+
 @app.post("/prompt-lab/run")
 def prompt_lab_run():
     cfg = load_config()
     store = get_store()
 
+    # Hämta summary_id från form (valfritt)
     summary_id = request.form.get("summary_id", type=int)
-    prompts = build_prompts_from_form(request.form, cfg)
 
+    # Plocka prompts från form (behåller användarens inmatning)
+    prompts = _get_promptlab_prompts(cfg, form=request.form)
+
+    # Skapa job
     job_id = store.create_job()
-    store.update_job(
-        job_id,
-        status="running",
-        started_at=int(time.time()),
-        message="Prompt-lab: startar...",
-    )
+    store.update_job(job_id, status="running", started_at=int(time.time()), message="Prompt-lab: startar...")
 
+    # Skapa LLM (respekterar llm/llm_fallback via din factory)
     llm = create_llm_client(cfg)
 
     def worker(jid: int):
@@ -304,15 +320,26 @@ def prompt_lab_run():
             return
 
         try:
-            sel = select_articles_for_promptlab(store, summary_id=summary_id)
-            articles = sel["articles"]
-            source_summary_id = sel["source_summary_id"]
+            # Välj underlag: angiven summary eller senaste
+            if summary_id is None:
+                s = store.get_latest_summary()
+                if not s:
+                    raise RuntimeError("Ingen sparad summary finns att använda i prompt-lab.")
+            else:
+                s = store.get_summary(summary_id)
+                if not s:
+                    raise RuntimeError(f"Kunde inte hitta summary_id={summary_id}")
+
+            source_summary_id = int(s.get("id")) # type: ignore
+            article_ids = s.get("article_ids", []) or []
+            articles = store.get_articles_by_ids(article_ids)
 
             store.update_job(
                 jid,
                 message=f"Prompt-lab: använder summary {source_summary_id} ({len(articles)} artiklar)",
             )
 
+            # Kör prompt-lab. Den sparar partial + final i temp store via put_temp_summary(job_id, payload)
             asyncio.run(
                 run_promptlab_summarization(
                     config=cfg,
@@ -325,12 +352,7 @@ def prompt_lab_run():
                 )
             )
 
-            store.update_job(
-                jid,
-                status="done",
-                finished_at=int(time.time()),
-                message="Prompt-lab: klart.",
-            )
+            store.update_job(jid, status="done", finished_at=int(time.time()), message="Prompt-lab: klart.")
         except Exception as e:
             store.update_job(
                 jid,
@@ -343,9 +365,9 @@ def prompt_lab_run():
 
     threading.Thread(target=worker, args=(job_id,), daemon=True).start()
 
-    # Viktigt: vi redirectar till prompt-lab med ?job=<id> (aktiv körning).
-    # När jobbet blir done kommer JS:en byta till ?result=<id> och ta bort job-parametern.
+    # Redirect till prompt-lab med ?job=... (JS byter sedan till ?result=... när done)
     return redirect(url_for("prompt_lab", job=job_id, summary_id=summary_id))
+
 
 
 @app.post("/prompt-lab/apply")

@@ -72,10 +72,10 @@
   <div class="card">
     <h3>Testresultat</h3>
     {% if temp_html %}
-        <div class="muted">Temporär sammanfattning (job {{ temp.job_id }})</div>
-        <div style="margin-top:10px;">{{ temp_html|safe }}</div>
+      <div class="muted">Temporär sammanfattning (job {{ temp.job_id }})</div>
+      <div style="margin-top:10px;">{{ temp_html|safe }}</div>
     {% else %}
-        <p class="muted">Kör en test-sammanfattning för att se resultat här.</p>
+      <p class="muted">Kör en test-sammanfattning för att se resultat här.</p>
     {% endif %}
   </div>
 
