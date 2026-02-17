@@ -45,6 +45,7 @@ import trafilatura
 import yaml
 from aiolimiter import AsyncLimiter
 from tenacity import (
+    RetryError,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
@@ -69,6 +70,29 @@ from summarizer.token_budget import enforce_budget
 
 setup_logging()
 logger = logging.getLogger(__name__)
+trace = aiohttp.TraceConfig()
+
+
+@trace.on_request_start
+async def on_request_start(session, context, params):
+    logger.debug("HTTP START %s %s", params.method, params.url)
+
+
+@trace.on_request_end
+async def on_request_end(session, context, params):
+    logger.debug(
+        "HTTP END %s %s -> %s", params.method, params.url, params.response.status
+    )
+
+
+@trace.on_request_exception
+async def on_request_exception(session, context, params):
+    logger.warning("HTTP EXC %s %s -> %r", params.method, params.url, params.exception)
+
+
+trace.on_request_start.append(on_request_start)
+trace.on_request_end.append(on_request_end)
+trace.on_request_exception.append(on_request_exception)
 
 _PROMPT_TOO_LONG_RE = re.compile(
     r"exceeded max context length by\s+(\d+)\s+tokens", re.IGNORECASE
@@ -175,14 +199,28 @@ def extract_text_from_html(html: str, url: str) -> str:
 async def fetch_article_html(
     url: str, session: aiohttp.ClientSession, timeout_s: int
 ) -> str:
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
+    async with session.get(
+        url, timeout=aiohttp.ClientTimeout(total=timeout_s), allow_redirects=True
+    ) as resp:
+        text = await resp.text(errors="ignore")
+        logger.info("HTTP %s for %s", resp.status, url)
+        # Logga alltid status för felsökning
+        if resp.status >= 400:
+            logger.warning(
+                "HTTP %s for %s (final_url=%s) body_snippet=%r",
+                resp.status,
+                url,
+                str(resp.url),
+                text[:300],
+            )
+
         if resp.status == 429:
             ra = resp.headers.get("Retry-After")
             retry_after = float(ra) if ra and ra.isdigit() else None
-            body = await resp.text(errors="ignore")
-            raise RateLimitError(429, retry_after=retry_after, body=body[:500])
+            raise RateLimitError(429, retry_after=retry_after, body=text[:500])
+
         resp.raise_for_status()
-        return await resp.text(errors="ignore")
+        return text
 
 
 @retry(
@@ -199,9 +237,11 @@ async def guarded_fetch_article(
 ) -> str:
     try:
         return await fetch_article_html(url, session, timeout_s)
-    except RateLimitError as e:
-        if e.retry_after:
-            await asyncio.sleep(min(e.retry_after, 60))
+    except Exception as e:
+        logger.warning("Fetch attempt failed for %s: %r (%s)", url, e, type(e).__name__)
+        if isinstance(e, RateLimitError):
+            if e.retry_after:
+                await asyncio.sleep(min(e.retry_after, 60))
         raise
 
 
@@ -234,8 +274,15 @@ async def gather_articles_to_store(
 
     inserted = 0
     updated = 0
-
-    async with aiohttp.ClientSession(headers=headers) as session:
+    connector = aiohttp.TCPConnector(limit=50, ttl_dns_cache=300)
+    async with aiohttp.ClientSession(
+        headers=headers,
+        connector=connector,
+        # höj maxstorlek för headers (bytes)
+        max_line_size=16384,
+        max_field_size=32768,
+        trace_configs=[trace],
+    ) as session:
         for f in feeds:
             name = f["name"]
             feed_url = f["url"]
@@ -332,7 +379,28 @@ async def gather_articles_to_store(
                             logger.info(f"Uppdaterade {title} från {name} som {aid}")
 
                 except Exception as e:
-                    logger.warning(f"Artikel misslyckades: {link} -> {e}")
+                    if isinstance(e, RetryError):
+                        last = e.last_attempt.exception()
+                        logger.warning(
+                            "Artikel misslyckades: %s -> RetryError; last_exc=%r type=%s",
+                            link,
+                            last,
+                            type(last).__name__,
+                        )
+                        # Om det är ClientResponseError kan du logga status + url:
+                        try:
+                            if isinstance(last, aiohttp.ClientResponseError):
+                                logger.warning(
+                                    "Last ClientResponseError: status=%s message=%s url=%s headers=%s",
+                                    last.status,
+                                    last.message,
+                                    getattr(last.request_info, "real_url", None),
+                                    dict(getattr(last, "headers", {}) or {}),
+                                )
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning(f"Artikel misslyckades: {link} -> {e}")
 
     return inserted, updated
 
