@@ -30,16 +30,21 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+import datetime
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any, Dict, List, Optional, Deque, Callable
 
 import logging
 import sys
 from collections import defaultdict, deque
+
+import feedparser
 
 
 def setup_logging():
@@ -253,3 +258,96 @@ class RateLimitError(Exception):
         self.status = status
         self.retry_after = retry_after
         self.body = body
+
+
+_PROMPT_TOO_LONG_RE = re.compile(
+    r"exceeded max context length by\s+(\d+)\s+tokens", re.IGNORECASE
+)
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([mhdw])\s*$", re.IGNORECASE)
+
+
+def _extract_overflow_tokens(err: Exception) -> Optional[int]:
+    m = _PROMPT_TOO_LONG_RE.search(str(err))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def parse_lookback_to_seconds(s: str) -> int:
+    """
+    "90m" -> 5400, "24h" -> 86400, "3d" -> 259200, "2w" -> 1209600
+    """
+    if not s:
+        raise ValueError("lookback är tom")
+    m = _DURATION_RE.match(s)
+    if not m:
+        raise ValueError(
+            f"Ogiltigt lookback-format: {s!r} (förväntar t.ex. 90m, 24h, 3d, 2w)"
+        )
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    HOUR = 60 * 60
+    DAY = HOUR * 24
+    WEEK = DAY * 7
+    MONTH = WEEK * 4
+    if unit == "h":
+        return n * HOUR
+    if unit == "d":
+        return n * DAY
+    if unit == "w":
+        return n * WEEK
+    if unit == "m":
+        return n * MONTH
+    raise ValueError(f"Okänd enhet: {unit}")
+
+
+def entry_published_ts(entry: feedparser.FeedParserDict) -> Optional[int]:
+    """
+    Försök få ett unix-timestamp för entry.
+    Prioriterar feedparser's *_parsed (struct_time) men kan även parse:a text.
+    """
+    for attr in ("published_parsed", "updated_parsed"):
+        st = getattr(entry, attr, None)
+        if st:
+            try:
+                return int(time.mktime(st))
+            except Exception:
+                pass
+
+    for attr in ("published", "updated"):
+        s = getattr(entry, attr, None)
+        if s:
+            try:
+                dt = parsedate_to_datetime(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                return int(dt.timestamp())
+            except Exception:
+                pass
+
+    return None
+
+
+# ----------------------------
+# Prompt loader (from config)
+# ----------------------------
+def load_prompts(config: Dict[str, Any]) -> Dict[str, str]:
+    defaults = {
+        "batch_system": None,
+        "batch_user_template": None,
+        "meta_system": None,
+        "meta_user_template": None,
+    }
+
+    p = config.get("prompts", {}) or {}
+    out = {k: str(p.get(k, defaults[k])) for k in defaults.keys()}
+    if None in out:
+        raise
+    return out
+
+def set_job(msg:str, job_id, store):
+    if job_id is not None:
+        store.update_job(job_id, message=msg)

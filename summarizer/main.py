@@ -31,11 +31,8 @@
 #
 
 import asyncio
-import datetime
 import logging
-import re
 import time
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,108 +55,23 @@ from summarizer.helpers import (
     _atomic_write_json,
     _checkpoint_key,
     _checkpoint_path,
+    _extract_overflow_tokens,
     _load_checkpoint,
     _meta_ckpt_path,
     compute_content_hash,
+    entry_published_ts,
     interleave_by_source_oldest_first,
+    load_prompts,
+    parse_lookback_to_seconds,
     setup_logging,
     stable_id,
     text_clip,
+    set_job
 )
 from summarizer.token_budget import enforce_budget
 
 setup_logging()
 logger = logging.getLogger(__name__)
-
-_PROMPT_TOO_LONG_RE = re.compile(
-    r"exceeded max context length by\s+(\d+)\s+tokens", re.IGNORECASE
-)
-
-_DURATION_RE = re.compile(r"^\s*(\d+)\s*([mhdw])\s*$", re.IGNORECASE)
-
-
-def _extract_overflow_tokens(err: Exception) -> Optional[int]:
-    m = _PROMPT_TOO_LONG_RE.search(str(err))
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except Exception:
-        return None
-
-
-def parse_lookback_to_seconds(s: str) -> int:
-    """
-    "90m" -> 5400, "24h" -> 86400, "3d" -> 259200, "2w" -> 1209600
-    """
-    if not s:
-        raise ValueError("lookback är tom")
-    m = _DURATION_RE.match(s)
-    if not m:
-        raise ValueError(
-            f"Ogiltigt lookback-format: {s!r} (förväntar t.ex. 90m, 24h, 3d, 2w)"
-        )
-    n = int(m.group(1))
-    unit = m.group(2).lower()
-    HOUR = 60 * 60
-    DAY = HOUR * 24
-    WEEK = DAY * 7
-    MONTH = WEEK * 4
-    if unit == "h":
-        return n * HOUR
-    if unit == "d":
-        return n * DAY
-    if unit == "w":
-        return n * WEEK
-    if unit == "m":
-        return n * MONTH
-    raise ValueError(f"Okänd enhet: {unit}")
-
-
-def entry_published_ts(entry: feedparser.FeedParserDict) -> Optional[int]:
-    """
-    Försök få ett unix-timestamp för entry.
-    Prioriterar feedparser's *_parsed (struct_time) men kan även parse:a text.
-    """
-    for attr in ("published_parsed", "updated_parsed"):
-        st = getattr(entry, attr, None)
-        if st:
-            try:
-                return int(time.mktime(st))
-            except Exception:
-                pass
-
-    for attr in ("published", "updated"):
-        s = getattr(entry, attr, None)
-        if s:
-            try:
-                dt = parsedate_to_datetime(s)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=datetime.timezone.utc)
-                return int(dt.timestamp())
-            except Exception:
-                pass
-
-    return None
-
-
-# ----------------------------
-# Prompt loader (from config)
-# ----------------------------
-def load_prompts(config: Dict[str, Any]) -> Dict[str, str]:
-    defaults = {
-        "batch_system": None,
-        "batch_user_template": None,
-        "meta_system": None,
-        "meta_user_template": None,
-    }
-
-    p = config.get("prompts", {}) or {}
-    out = {k: str(p.get(k, defaults[k])) for k in defaults.keys()}
-    if None in out:
-        raise
-    return out
-
 
 # ----------------------------
 # Fetch/extract
@@ -229,11 +141,7 @@ async def gather_articles_to_store(
     - max_items_per_feed används fortfarande som safety cap.
     - Om lookback saknas: bakåtkompatibelt (entries[:max_items]).
     """
-
-    def set_job(msg: str):
-        if job_id is not None:
-            store.update_job(job_id, message=msg)
-
+    
     feeds = config.get("feeds", [])
     ingest_cfg = config.get("ingest") or {}
     lookback = ingest_cfg.get("lookback")
@@ -257,7 +165,7 @@ async def gather_articles_to_store(
         for f in feeds:
             name = f["name"]
             feed_url = f["url"]
-            set_job(f"Läser RSS: {name}")
+            set_job(f"Läser RSS: {name}",job_id, store)
 
             try:
                 logger.info(f"Hämtar RSS: {name}")
@@ -690,11 +598,6 @@ async def summarize_batches_then_meta(
     - robust prompt-too-long: flytta artiklar (undvik tail-loop) och trimma single-article batch vid ordgräns
     - meta byggs budgeterat för att hålla context
     """
-
-    def set_job(msg: str):
-        if job_id is not None:
-            store.update_job(job_id, message=msg)
-
     prompts = load_prompts(config)
 
     batching = config.get("batching", {}) or {}
@@ -791,7 +694,7 @@ async def summarize_batches_then_meta(
         if meta_cp and meta_cp.get("kind") == "meta_result":
             cached = (meta_cp.get("meta") or "").strip()
             if cached:
-                set_job("Återupptar: meta redan klar (från checkpoint).")
+                set_job("Återupptar: meta redan klar (från checkpoint).", job_id, store)
                 return cached
 
     # batch resume
@@ -810,7 +713,9 @@ async def summarize_batches_then_meta(
                 )
                 done_map = _done_map_from_done_batches(cp_done_batches)
                 set_job(
-                    f"Återupptar stabilt från checkpoint: {len(done_map)}/{len(batches)} batcher klara."
+                    f"Återupptar stabilt från checkpoint: {len(done_map)}/{len(batches)} batcher klara.",
+                    job_id,
+                    store
                 )
             except Exception as e:
                 logger.warning(
@@ -828,7 +733,9 @@ async def summarize_batches_then_meta(
                         done_map[int(k)] = str(v)
                     if done_map:
                         set_job(
-                            f"Återupptar från checkpoint (index): {len(done_map)}/{len(batches)} batcher klara."
+                            f"Återupptar från checkpoint (index): {len(done_map)}/{len(batches)} batcher klara.",
+                            job_id,
+                            store
                         )
                 except Exception:
                     done_map = {}
@@ -849,7 +756,7 @@ async def summarize_batches_then_meta(
             continue
 
         batch = batches[idx - 1]
-        set_job(f"Summerar batch {idx}/{len(batches)}...")
+        set_job(f"Summerar batch {idx}/{len(batches)}...", job_id, store)
 
         def build_messages_for_batch(
             batch_index: int, batch_items: List[dict]
@@ -967,7 +874,7 @@ async def summarize_batches_then_meta(
         idx += 1
 
     # --- META (adaptivt budgeterad) ---
-    set_job("Skapar metasammanfattning...")
+    set_job("Skapar metasammanfattning...", job_id, store)
 
     sources_list = []
     for a in articles:
