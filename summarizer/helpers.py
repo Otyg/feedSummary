@@ -193,13 +193,6 @@ def trim_last_user_word_boundary(
     return out
 
 
-def _published_sort_key(a: dict) -> int:
-    ts = a.get("published_ts")
-    if isinstance(ts, int) and ts > 0:
-        return ts
-    return 0
-
-
 def _published_ts(a: dict) -> int:
     ts = a.get("published_ts")
     if isinstance(ts, int) and ts > 0:
@@ -348,6 +341,7 @@ def load_prompts(config: Dict[str, Any]) -> Dict[str, str]:
         raise
     return out
 
-def set_job(msg:str, job_id, store):
+
+def set_job(msg: str, job_id, store):
     if job_id is not None:
         store.update_job(job_id, message=msg)

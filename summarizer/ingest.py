@@ -4,9 +4,21 @@
 import time
 from aiolimiter import AsyncLimiter
 from typing import Any, Dict, List, Optional, Tuple
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 from persistence import NewsStore
-from summarizer.helpers import RateLimitError, compute_content_hash, entry_published_ts, parse_lookback_to_seconds, set_job, stable_id
+from summarizer.helpers import (
+    RateLimitError,
+    compute_content_hash,
+    entry_published_ts,
+    parse_lookback_to_seconds,
+    set_job,
+    stable_id,
+)
 import logging
 import trafilatura
 import asyncio
@@ -14,6 +26,8 @@ import aiohttp
 import feedparser
 
 logger = logging.getLogger(__name__)
+
+
 async def fetch_rss(
     feed_url: str, session: aiohttp.ClientSession
 ) -> feedparser.FeedParserDict:
@@ -100,7 +114,7 @@ async def gather_articles_to_store(
         for f in feeds:
             name = f["name"]
             feed_url = f["url"]
-            set_job(f"Läser RSS: {name}",job_id, store)
+            set_job(f"Läser RSS: {name}", job_id, store)
 
             try:
                 logger.info(f"Hämtar RSS: {name}")

@@ -3,7 +3,9 @@ from summarizer.helpers import text_clip
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from summarizer.main import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def batch_articles(
@@ -317,5 +319,41 @@ def _budgeted_meta_user(
         else sources_text,
     )
 
+
 def _est_user_tokens(s: str, chars_per_token: float) -> int:
-        return max(1, int(len(s) / chars_per_token))
+    return max(1, int(len(s) / chars_per_token))
+
+
+def build_messages_for_batch(
+    *,
+    prompts: Dict[str, str],
+    batch_index: int,
+    batch_total: int,
+    batch_items: List[dict],
+) -> List[Dict[str, str]]:
+    """
+    Shared batch prompt builder (used by summarizer + prompt_lab).
+
+    Returns a chat message list compatible with LLMClient.chat.
+    """
+    parts: List[str] = []
+    for i, a in enumerate(batch_items, start=1):
+        parts.append(
+            f"[{i}] {a.get('title', '')}\n"
+            f"Källa: {a.get('source', '')}\n"
+            f"Publicerad: {a.get('published', '')}\n"
+            f"URL: {a.get('url', '')}\n\n"
+            f"{a.get('text', '')}"
+        )
+
+    corpus = "\n\n---\n\n".join(parts)
+    user_content = prompts["batch_user_template"].format(
+        batch_index=batch_index,
+        batch_total=batch_total,
+        articles_corpus=corpus,
+    )
+
+    return [
+        {"role": "system", "content": prompts["batch_system"]},
+        {"role": "user", "content": user_content},
+    ]

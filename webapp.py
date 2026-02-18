@@ -56,8 +56,9 @@ from flask import (
 from llmClient import create_llm_client
 from persistence import NewsStore, create_store
 from summarizer.helpers import setup_logging
-from summarizer.main import run_pipeline, run_resume_from_checkpoint
+from summarizer.main import run_pipeline
 from summarizer.prompt_lab import run_promptlab_summarization
+from summarizer.summarizer import run_resume_from_checkpoint
 
 setup_logging()
 logger = logging.getLogger(__name__)
