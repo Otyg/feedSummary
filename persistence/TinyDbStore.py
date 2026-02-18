@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+from json import JSONDecodeError
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -161,9 +162,12 @@ class TinyDBStore:
         at = db.table("articles")
         out: List[Dict[str, Any]] = []
         for aid in article_ids:
-            rows = at.search(lambda r: r.get("id") == aid)
-            if rows:
-                out.append(rows[0])
+            try:
+                rows = at.search(lambda r: r.get("id") == aid)
+                if rows:
+                    out.append(rows[0])
+            except JSONDecodeError as e:
+                logger.warning(e)
         db.close()
         return out
 
