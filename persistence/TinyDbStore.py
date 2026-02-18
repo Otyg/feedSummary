@@ -32,7 +32,6 @@
 
 from __future__ import annotations
 
-from json import JSONDecodeError
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -85,7 +84,7 @@ class TinyDBStore:
             )
         db.close()
 
-    # ---- Summaries
+    # ---- Summaries (legacy)
     def save_summary(self, summary_text: str, article_ids: List[str]) -> int:
         db = self._db()
         doc_id = db.table("summaries").insert(
@@ -111,7 +110,6 @@ class TinyDBStore:
         db = self._db()
         docs = list(db.table("summaries"))
         db.close()
-        # include id
         out = [{"id": d.doc_id, **dict(d)} for d in docs]
         out.sort(key=lambda r: r.get("created_at", 0), reverse=True)
         return out
@@ -123,6 +121,76 @@ class TinyDBStore:
         if not doc:
             return None
         return {"id": summary_id, **dict(doc)}  # pyright: ignore[reportCallIssue, reportArgumentType, reportReturnType]
+
+    # ---- Summary documents (new)
+    def save_summary_doc(self, summary_doc: Dict[str, Any]) -> Any:
+        """
+        Upsert a structured summary document in table 'summary_docs'.
+
+        Expected to follow schema like:
+          { "id": "...", "created": ts, "kind": "...", "llm": {...}, "prompts": {...}, ... }
+
+        Returns:
+          - summary_doc["id"] if present (stable id)
+          - otherwise TinyDB doc_id
+        """
+        db = self._db()
+        t = db.table("summary_docs")
+        Q = Query()
+
+        doc = dict(summary_doc or {})
+        if "created" not in doc:
+            doc["created"] = int(time.time())
+        if "kind" not in doc:
+            doc["kind"] = "summary"
+
+        if doc.get("id"):
+            sid = str(doc["id"])
+            t.upsert(doc, Q.id == sid)
+            db.close()
+            return sid
+
+        # fallback: insert and store generated id inside doc (so you can reference later)
+        doc_id = t.insert(doc)
+        try:
+            t.update({"id": f"summary_doc_{doc_id}"}, doc_ids=[doc_id])
+        except Exception:
+            pass
+        db.close()
+        return doc_id
+
+    # Aliases (so main.py can probe)
+    def save_summary_document(self, summary_doc: Dict[str, Any]) -> Any:
+        return self.save_summary_doc(summary_doc)
+
+    def put_summary_doc(self, summary_doc: Dict[str, Any]) -> Any:
+        return self.save_summary_doc(summary_doc)
+
+    def insert_summary_doc(self, summary_doc: Dict[str, Any]) -> Any:
+        return self.save_summary_doc(summary_doc)
+
+    def get_summary_doc(self, summary_doc_id: str) -> Optional[Dict[str, Any]]:
+        db = self._db()
+        t = db.table("summary_docs")
+        Q = Query()
+        rows = t.search(Q.id == str(summary_doc_id))
+        db.close()
+        return rows[0] if rows else None
+
+    def get_summary_document(self, summary_doc_id: str) -> Optional[Dict[str, Any]]:
+        return self.get_summary_doc(summary_doc_id)
+
+    def list_summary_docs(self) -> List[Dict[str, Any]]:
+        db = self._db()
+        docs = list(db.table("summary_docs"))
+        db.close()
+        out = [dict(d) for d in docs]
+        out.sort(key=lambda r: r.get("created", 0), reverse=True)
+        return out
+
+    def get_latest_summary_doc(self) -> Optional[Dict[str, Any]]:
+        docs = self.list_summary_docs()
+        return docs[0] if docs else None
 
     # ---- Jobs
     def create_job(self) -> int:
@@ -162,12 +230,9 @@ class TinyDBStore:
         at = db.table("articles")
         out: List[Dict[str, Any]] = []
         for aid in article_ids:
-            try:
-                rows = at.search(lambda r: r.get("id") == aid)
-                if rows:
-                    out.append(rows[0])
-            except JSONDecodeError as e:
-                logger.warning(e)
+            rows = at.search(lambda r: r.get("id") == aid)
+            if rows:
+                out.append(rows[0])
         db.close()
         return out
 
@@ -190,9 +255,7 @@ class TinyDBStore:
         t.upsert(doc, T.job_id == job_id)
         db.close()
 
-    def save_temp_summary(
-        self, job_id: int, summary_text: str, meta: Dict[str, Any]
-    ) -> None:
+    def save_temp_summary(self, job_id: int, summary_text: str, meta: Dict[str, Any]) -> None:
         """Backward-compatible helper: saves summary/meta in the temp payload."""
         self.put_temp_summary(job_id, {"summary": summary_text, "meta": meta or {}})
 
