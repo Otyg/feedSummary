@@ -72,7 +72,7 @@ def _get_promptlab_prompts(cfg: dict, form=None) -> dict:
       - om form skickas in: använd formvärden (om satt), annars fallback till cfg
       - annars: bara cfg
     """
-    p_cfg = (cfg.get("prompts") or {})
+    p_cfg = cfg.get("prompts") or {}
 
     keys = ["batch_system", "batch_user_template", "meta_system", "meta_user_template"]
     out = {k: str(p_cfg.get(k, "")) for k in keys}
@@ -230,7 +230,9 @@ def resume():
 
     job_id = request.args.get("job", type=int)
     if not job_id:
-        return jsonify({"status": "error", "message": "Saknar job. Använd /resume?job=<id>"}), 400
+        return jsonify(
+            {"status": "error", "message": "Saknar job. Använd /resume?job=<id>"}
+        ), 400
 
     # Markera jobbet som running igen
     store.update_job(
@@ -310,7 +312,7 @@ def prompt_lab():
         for s in summaries
     ]
 
-    job = request.args.get("job", type=int)        # aktiv körning
+    job = request.args.get("job", type=int)  # aktiv körning
     result = request.args.get("result", type=int)  # visning av resultat
     selected_summary_id = request.args.get("summary_id", type=int)
 
@@ -362,7 +364,12 @@ def prompt_lab_run():
 
     # Skapa job
     job_id = store.create_job()
-    store.update_job(job_id, status="running", started_at=int(time.time()), message="Prompt-lab: startar...")
+    store.update_job(
+        job_id,
+        status="running",
+        started_at=int(time.time()),
+        message="Prompt-lab: startar...",
+    )
 
     # Skapa LLM (respekterar llm/llm_fallback via din factory)
     llm = create_llm_client(cfg)
@@ -382,7 +389,9 @@ def prompt_lab_run():
             if summary_id is None:
                 s = store.get_latest_summary()
                 if not s:
-                    raise RuntimeError("Ingen sparad summary finns att använda i prompt-lab.")
+                    raise RuntimeError(
+                        "Ingen sparad summary finns att använda i prompt-lab."
+                    )
             else:
                 s = store.get_summary(summary_id)
                 if not s:
@@ -410,7 +419,12 @@ def prompt_lab_run():
                 )
             )
 
-            store.update_job(jid, status="done", finished_at=int(time.time()), message="Prompt-lab: klart.")
+            store.update_job(
+                jid,
+                status="done",
+                finished_at=int(time.time()),
+                message="Prompt-lab: klart.",
+            )
         except Exception as e:
             store.update_job(
                 jid,

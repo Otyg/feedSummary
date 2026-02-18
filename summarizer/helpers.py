@@ -35,10 +35,11 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Deque, Callable
 
 import logging
 import sys
+from collections import defaultdict, deque
 
 
 def setup_logging():
@@ -135,8 +136,16 @@ def clip_text(s: str, n: int = 5000) -> str:
 def clip_line(s: str, n: int = 200) -> str:
     return clip_text(s=s, n=n)
 
-def trim_text_tail_by_words(text: str, remove_tokens: int, *, chars_per_token: float) -> str:
-    return trim_last_user_word_boundary(messages=[{'foo':text}], remove_tokens=remove_tokens, chars_per_token=chars_per_token)[0]['foo']
+
+def trim_text_tail_by_words(
+    text: str, remove_tokens: int, *, chars_per_token: float
+) -> str:
+    return trim_last_user_word_boundary(
+        messages=[{"foo": text}],
+        remove_tokens=remove_tokens,
+        chars_per_token=chars_per_token,
+    )[0]["foo"]
+
 
 def trim_last_user_word_boundary(
     messages: List[Dict[str, str]],
@@ -177,6 +186,64 @@ def trim_last_user_word_boundary(
         content[:cut].rstrip() + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
     )
     return out
+
+
+def _published_sort_key(a: dict) -> int:
+    ts = a.get("published_ts")
+    if isinstance(ts, int) and ts > 0:
+        return ts
+    return 0
+
+
+def _published_ts(a: dict) -> int:
+    ts = a.get("published_ts")
+    if isinstance(ts, int) and ts > 0:
+        return ts
+    return 0
+
+
+def interleave_by_source_oldest_first(
+    articles: List[dict],
+    *,
+    source_key: str = "source",
+    ts_key_fn: Callable[[dict], int] = _published_ts,
+) -> List[dict]:
+    """
+    1) Grupp per källa
+    2) Sortera varje grupp äldst->nyast
+    3) Round-robin plock: en från varje källa i tur och ordning,
+       men alltid med källorna sorterade efter sin *nästa* (äldsta kvarvarande) artikel,
+       så att global ordning lutar mot äldst först.
+    """
+    groups: Dict[str, List[dict]] = defaultdict(list)
+    for a in articles:
+        src = str(a.get(source_key) or "unknown")
+        groups[src].append(a)
+
+    # sortera varje grupp äldst->nyast
+    queues: Dict[str, Deque[dict]] = {}
+    for src, items in groups.items():
+        items_sorted = sorted(items, key=ts_key_fn)  # äldst först
+        queues[src] = deque(items_sorted)
+
+    out: List[dict] = []
+
+    # Vi vill att "äldst globalt" ska komma först, men ändå interleava.
+    # Vi gör därför varje varv: sortera källor efter timestamp på nästa element i kön,
+    # plocka 1 från varje (i den ordningen).
+    while True:
+        active = [(src, q) for src, q in queues.items() if q]
+        if not active:
+            break
+
+        active.sort(key=lambda sq: ts_key_fn(sq[1][0]))  # nästa äldsta per källa
+
+        for src, q in active:
+            if q:
+                out.append(q.popleft())
+
+    return out
+
 
 class RateLimitError(Exception):
     def __init__(

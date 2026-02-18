@@ -36,7 +36,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from summarizer.helpers import trim_last_user_word_boundary, trim_text_tail_by_words
+from summarizer.helpers import trim_text_tail_by_words
 
 logger = logging.getLogger("FeedSummarizer")
 
@@ -328,12 +328,16 @@ async def run_promptlab_summarization(
                     logger.warning(
                         "Prompt-lab batch %s har 1 artikel och prompten är för stor (overflow=%s). "
                         "Trimmar _clip_text på ordgräns: %s -> %s chars",
-                        idx, overflow, before_len, after_len
+                        idx,
+                        overflow,
+                        before_len,
+                        after_len,
                     )
                     if after_len < 400:
-                        raise RuntimeError("Artikeln kan inte trimmas mer och får ändå inte plats i context.")
+                        raise RuntimeError(
+                            "Artikeln kan inte trimmas mer och får ändå inte plats i context."
+                        )
                     continue
-
 
                 target_remove_tokens = overflow + 512
                 target_remove_chars = int(target_remove_tokens * chars_per_token)
