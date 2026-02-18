@@ -135,6 +135,48 @@ def clip_text(s: str, n: int = 5000) -> str:
 def clip_line(s: str, n: int = 200) -> str:
     return clip_text(s=s, n=n)
 
+def trim_text_tail_by_words(text: str, remove_tokens: int, *, chars_per_token: float) -> str:
+    return trim_last_user_word_boundary(messages=[{'foo':text}], remove_tokens=remove_tokens, chars_per_token=chars_per_token)[0]['foo']
+
+def trim_last_user_word_boundary(
+    messages: List[Dict[str, str]],
+    remove_tokens: int,
+    *,
+    chars_per_token: float,
+) -> List[Dict[str, str]]:
+    out = [dict(m) for m in messages]
+    idx = None
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") == "user":
+            idx = i
+            break
+    if idx is None:
+        return out
+
+    content = out[idx].get("content") or ""
+    if not content:
+        return out
+
+    remove_chars = int(max(1, remove_tokens) * chars_per_token)
+    if remove_chars >= len(content):
+        out[idx]["content"] = "[TRUNCATED FOR CONTEXT WINDOW]\n"
+        return out
+
+    target = len(content) - remove_chars
+    if target < 0:
+        target = 0
+
+    cut_space = content.rfind(" ", 0, target)
+    cut_nl = content.rfind("\n", 0, target)
+    cut_tab = content.rfind("\t", 0, target)
+    cut = max(cut_space, cut_nl, cut_tab)
+    if cut <= 0:
+        cut = target
+
+    out[idx]["content"] = (
+        content[:cut].rstrip() + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
+    )
+    return out
 
 class RateLimitError(Exception):
     def __init__(

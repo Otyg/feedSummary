@@ -100,7 +100,7 @@ def _is_status(exc: Exception, code: int) -> bool:
     return isinstance(st, int) and st == code
 
 
-class OllamaCloudGemmaClient:
+class OllamaCloudClient:
     """
     LLMClient-implementation för Ollama Cloud API med gemma3:270m.
 
@@ -121,7 +121,7 @@ class OllamaCloudGemmaClient:
             api_key=_resolve_env(str(llm_cfg.get("api_key", ""))),
             preflight=bool(quota_cfg.get("preflight", True)),
             min_interval_seconds=float(quota_cfg.get("min_interval_seconds", 1.0)),
-            timeout_seconds=float(llm_cfg.get("timeout_seconds", 180.0)),
+            timeout_seconds=float(llm_cfg.get("timeout_seconds", 360.0)),
         )
 
         if not self.cfg.api_key:

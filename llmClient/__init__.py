@@ -49,13 +49,13 @@ class LLMClient(Protocol):
 def _create_single_llm(llm_cfg: Dict[str, Any]):
     provider = (llm_cfg.get("provider") or "ollama").lower()
 
-    if provider == "ollama_cloud_gemma3_270m":
-        from llmClient.ollama_cloud import OllamaCloudGemmaClient
+    if provider == "ollama_cloud":
+        from llmClient.ollama_cloud import OllamaCloudClient
 
-        return OllamaCloudGemmaClient(llm_cfg)
+        return OllamaCloudClient(llm_cfg)
 
-    if provider == "ollama":
-        from llmClient.ollama_local import OllamaClient, OllamaConfig
+    if provider == "ollama_local":
+        from llmClient.ollama_local import OllamaLocalClient, OllamaConfig
 
         cfg = OllamaConfig(
             base_url=str(llm_cfg.get("base_url", "http://localhost:11434")),
@@ -66,7 +66,7 @@ def _create_single_llm(llm_cfg: Dict[str, Any]):
             progress_log_every_s=float(llm_cfg.get("progress_log_every_s", 2.0)),
             max_retries=int(llm_cfg.get("max_retries", 3)),
         )
-        return OllamaClient(cfg)
+        return OllamaLocalClient(cfg)
 
     raise ValueError(f"Unsupported LLM provider: {provider}")
 

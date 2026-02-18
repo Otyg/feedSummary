@@ -71,7 +71,7 @@ class OllamaConfig:
     max_retries: int = 3
 
 
-class OllamaClient:
+class OllamaLocalClient:
     """
     Ollama chat client using /api/chat with NDJSON streaming.
 

@@ -45,7 +45,6 @@ import trafilatura
 import yaml
 from aiolimiter import AsyncLimiter
 from tenacity import (
-    RetryError,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
@@ -70,35 +69,12 @@ from summarizer.token_budget import enforce_budget
 
 setup_logging()
 logger = logging.getLogger(__name__)
-trace = aiohttp.TraceConfig()
-
-
-@trace.on_request_start
-async def on_request_start(session, context, params):
-    logger.debug("HTTP START %s %s", params.method, params.url)
-
-
-@trace.on_request_end
-async def on_request_end(session, context, params):
-    logger.debug(
-        "HTTP END %s %s -> %s", params.method, params.url, params.response.status
-    )
-
-
-@trace.on_request_exception
-async def on_request_exception(session, context, params):
-    logger.warning("HTTP EXC %s %s -> %r", params.method, params.url, params.exception)
-
-
-trace.on_request_start.append(on_request_start)
-trace.on_request_end.append(on_request_end)
-trace.on_request_exception.append(on_request_exception)
 
 _PROMPT_TOO_LONG_RE = re.compile(
     r"exceeded max context length by\s+(\d+)\s+tokens", re.IGNORECASE
 )
 
-_DURATION_RE = re.compile(r"^\s*(\d+)\s*([mhdwy])\s*$", re.IGNORECASE)
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([mhdw])\s*$", re.IGNORECASE)
 
 
 def _extract_overflow_tokens(err: Exception) -> Optional[int]:
@@ -124,21 +100,14 @@ def parse_lookback_to_seconds(s: str) -> int:
         )
     n = int(m.group(1))
     unit = m.group(2).lower()
-    HOURS = 60 * 60
-    DAYS = 24 * HOURS
-    WEEKS = 7 * DAYS
-    MONTHS = 4 * WEEKS
-    YEARS = 12 * MONTHS
-    if unit == "h":
-        return n * HOURS
-    if unit == "d":
-        return n * DAYS
-    if unit == "w":
-        return n * WEEKS
     if unit == "m":
-        return n * MONTHS
-    if unit == "y":
-        return n * YEARS
+        return n * 60
+    if unit == "h":
+        return n * 60 * 60
+    if unit == "d":
+        return n * 60 * 60 * 24
+    if unit == "w":
+        return n * 60 * 60 * 24 * 7
     raise ValueError(f"Okänd enhet: {unit}")
 
 
@@ -165,21 +134,31 @@ def entry_published_ts(entry: feedparser.FeedParserDict) -> Optional[int]:
                 return int(dt.timestamp())
             except Exception:
                 pass
+
     return None
 
 
+# ----------------------------
+# Prompt loader (from config)
+# ----------------------------
 def load_prompts(config: Dict[str, Any]) -> Dict[str, str]:
     defaults = {
-        "batch_system": "",
-        "batch_user_template": "",
-        "meta_system": "",
-        "meta_user_template": "",
+        "batch_system": None,
+        "batch_user_template": None,
+        "meta_system": None,
+        "meta_user_template": None,
     }
+
     p = config.get("prompts", {}) or {}
     out = {k: str(p.get(k, defaults[k])) for k in defaults.keys()}
+    if None in out:
+        raise
     return out
 
 
+# ----------------------------
+# Fetch/extract
+# ----------------------------
 async def fetch_rss(
     feed_url: str, session: aiohttp.ClientSession
 ) -> feedparser.FeedParserDict:
@@ -199,28 +178,14 @@ def extract_text_from_html(html: str, url: str) -> str:
 async def fetch_article_html(
     url: str, session: aiohttp.ClientSession, timeout_s: int
 ) -> str:
-    async with session.get(
-        url, timeout=aiohttp.ClientTimeout(total=timeout_s), allow_redirects=True
-    ) as resp:
-        text = await resp.text(errors="ignore")
-        logger.info("HTTP %s for %s", resp.status, url)
-        # Logga alltid status för felsökning
-        if resp.status >= 400:
-            logger.warning(
-                "HTTP %s for %s (final_url=%s) body_snippet=%r",
-                resp.status,
-                url,
-                str(resp.url),
-                text[:300],
-            )
-
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
         if resp.status == 429:
             ra = resp.headers.get("Retry-After")
             retry_after = float(ra) if ra and ra.isdigit() else None
-            raise RateLimitError(429, retry_after=retry_after, body=text[:500])
-
+            body = await resp.text(errors="ignore")
+            raise RateLimitError(429, retry_after=retry_after, body=body[:500])
         resp.raise_for_status()
-        return text
+        return await resp.text(errors="ignore")
 
 
 @retry(
@@ -237,14 +202,15 @@ async def guarded_fetch_article(
 ) -> str:
     try:
         return await fetch_article_html(url, session, timeout_s)
-    except Exception as e:
-        logger.warning("Fetch attempt failed for %s: %r (%s)", url, e, type(e).__name__)
-        if isinstance(e, RateLimitError):
-            if e.retry_after:
-                await asyncio.sleep(min(e.retry_after, 60))
+    except RateLimitError as e:
+        if e.retry_after:
+            await asyncio.sleep(min(e.retry_after, 60))
         raise
 
 
+# ----------------------------
+# Ingest (RSS -> article text -> store)
+# ----------------------------
 async def gather_articles_to_store(
     config: Dict[str, Any],
     store: NewsStore,
@@ -252,9 +218,10 @@ async def gather_articles_to_store(
 ) -> Tuple[int, int]:
     """
     Ingest (RSS -> article text -> store)
-    - config.ingest.lookback: "24h", "3d", "2w", "90m"
-    - max_items_per_feed används som safety cap
-    - om lookback saknas: gammalt beteende (entries[:max_items])
+
+    - config.ingest.lookback: "24h", "3d", "2w", "90m" osv.
+    - max_items_per_feed används fortfarande som safety cap.
+    - Om lookback saknas: bakåtkompatibelt (entries[:max_items]).
     """
 
     def set_job(msg: str):
@@ -263,26 +230,19 @@ async def gather_articles_to_store(
 
     feeds = config.get("feeds", [])
     ingest_cfg = config.get("ingest") or {}
-    lookback = ingest_cfg.get("lookback")  # t.ex. "24h", "3d"
+    lookback = ingest_cfg.get("lookback")
     max_items = int(
         ingest_cfg.get("max_items_per_feed", config.get("max_items_per_feed", 8))
     )
-    timeout_s = int(config.get("article_timeout_s", 20))
 
+    timeout_s = int(config.get("article_timeout_s", 20))
     http_limiter = AsyncLimiter(max_rate=6, time_period=1)
-    headers = {"User-Agent": "news-summarizer/2.2 (personal; rate-limited)"}
+    headers = {"User-Agent": "news-summarizer/2.1 (personal; rate-limited)"}
 
     inserted = 0
     updated = 0
-    connector = aiohttp.TCPConnector(limit=50, ttl_dns_cache=300)
-    async with aiohttp.ClientSession(
-        headers=headers,
-        connector=connector,
-        # höj maxstorlek för headers (bytes)
-        max_line_size=16384,
-        max_field_size=32768,
-        trace_configs=[trace],
-    ) as session:
+
+    async with aiohttp.ClientSession(headers=headers) as session:
         for f in feeds:
             name = f["name"]
             feed_url = f["url"]
@@ -301,6 +261,7 @@ async def gather_articles_to_store(
             if lookback:
                 now = int(time.time())
                 cutoff_ts = now - parse_lookback_to_seconds(str(lookback))
+
                 filtered: List[feedparser.FeedParserDict] = []
                 for entry in entries:
                     ts = entry_published_ts(entry)
@@ -308,9 +269,11 @@ async def gather_articles_to_store(
                         continue
                     if ts >= cutoff_ts:
                         filtered.append(entry)
+
                 filtered.sort(key=lambda e: entry_published_ts(e) or 0, reverse=True)
                 if max_items and len(filtered) > max_items:
                     filtered = filtered[:max_items]
+
                 logger.info(
                     "RSS %s: %d entries (filtered=%d, lookback=%s, cap=%s)",
                     name,
@@ -340,7 +303,7 @@ async def gather_articles_to_store(
                     getattr(entry, "published", "")
                     or getattr(entry, "updated", "")
                     or ""
-                ).strip()
+                )
 
                 existing = store.get_article(aid)
 
@@ -379,32 +342,14 @@ async def gather_articles_to_store(
                             logger.info(f"Uppdaterade {title} från {name} som {aid}")
 
                 except Exception as e:
-                    if isinstance(e, RetryError):
-                        last = e.last_attempt.exception()
-                        logger.warning(
-                            "Artikel misslyckades: %s -> RetryError; last_exc=%r type=%s",
-                            link,
-                            last,
-                            type(last).__name__,
-                        )
-                        # Om det är ClientResponseError kan du logga status + url:
-                        try:
-                            if isinstance(last, aiohttp.ClientResponseError):
-                                logger.warning(
-                                    "Last ClientResponseError: status=%s message=%s url=%s headers=%s",
-                                    last.status,
-                                    last.message,
-                                    getattr(last.request_info, "real_url", None),
-                                    dict(getattr(last, "headers", {}) or {}),
-                                )
-                        except Exception:
-                            pass
-                    else:
-                        logger.warning(f"Artikel misslyckades: {link} -> {e}")
+                    logger.warning(f"Artikel misslyckades: {link} -> {e}")
 
     return inserted, updated
 
 
+# ----------------------------
+# Batching
+# ----------------------------
 def batch_articles(
     articles: List[dict],
     max_chars_per_batch: int,
@@ -443,23 +388,66 @@ def batch_articles(
     return batches
 
 
+# ----------------------------
+# Prompt-too-long helpers + stable resume helpers
+# ----------------------------
+class PromptTooLongStructural(Exception):
+    def __init__(self, overflow_tokens: int):
+        super().__init__(f"prompt too long (structural), overflow={overflow_tokens}")
+        self.overflow_tokens = overflow_tokens
+
+
+def _choose_trim_action(overflow_tokens: int, structural_threshold: int) -> str:
+    if overflow_tokens <= 200:
+        return "word_trim"
+    if overflow_tokens <= structural_threshold:
+        return "drop_one_article"
+    return "drop_multiple_articles"
+
+
+def trim_text_tail_by_words(text: str, remove_tokens: int, *, chars_per_token: float) -> str:
+    """
+    Tar bort från slutet men alltid på whitespace (ordgräns).
+    """
+    s = text or ""
+    if not s:
+        return s
+
+    remove_chars = int(max(1, remove_tokens) * chars_per_token)
+    if remove_chars >= len(s):
+        return ""
+
+    target = max(0, len(s) - remove_chars)
+    cut = max(s.rfind(" ", 0, target), s.rfind("\n", 0, target), s.rfind("\t", 0, target))
+    if cut <= 0:
+        cut = target
+
+    return s[:cut].rstrip() + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
+
+
+def _trim_last_user_word_boundary(messages: List[Dict[str, str]], remove_tokens: int, *, chars_per_token: float) -> List[Dict[str, str]]:
+    out = [dict(m) for m in messages]
+    idx = None
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") == "user":
+            idx = i
+            break
+    if idx is None:
+        return out
+    content = out[idx].get("content") or ""
+    out[idx]["content"] = trim_text_tail_by_words(content, remove_tokens, chars_per_token=chars_per_token)
+    return out
+
+
 def _estimate_article_chars(a: dict) -> int:
-    return (
-        len(a.get("text", "")) + len(a.get("title", "")) + len(a.get("url", "")) + 200
-    )
+    return len(a.get("text", "") or "") + len(a.get("title", "") or "") + len(a.get("url", "") or "") + 200
 
 
 def _batch_chars(batch: List[dict]) -> int:
     return sum(_estimate_article_chars(x) for x in batch)
 
 
-def _can_fit_in_batch(
-    batch: List[dict],
-    a: dict,
-    *,
-    max_chars_per_batch: int,
-    max_articles_per_batch: int,
-) -> bool:
+def _can_fit_in_batch(batch: List[dict], a: dict, *, max_chars_per_batch: int, max_articles_per_batch: int) -> bool:
     if max_articles_per_batch and len(batch) >= max_articles_per_batch:
         return False
     return (_batch_chars(batch) + _estimate_article_chars(a)) <= max_chars_per_batch
@@ -471,77 +459,174 @@ def _move_article_to_tail_batch(
     *,
     max_chars_per_batch: int,
     max_articles_per_batch: int,
+    avoid_batch: Optional[List[dict]] = None,
 ) -> None:
+    """
+    Flytta till sista batch om plats, annars ny batch.
+    Viktigt: undvik att lägga tillbaka i samma batch (tail-loop).
+    """
     if not batches:
         batches.append([a])
         return
+
     last = batches[-1]
-    if _can_fit_in_batch(
-        last,
-        a,
-        max_chars_per_batch=max_chars_per_batch,
-        max_articles_per_batch=max_articles_per_batch,
-    ):
+    if avoid_batch is not None and last is avoid_batch:
+        batches.append([a])
+        return
+
+    if _can_fit_in_batch(last, a, max_chars_per_batch=max_chars_per_batch, max_articles_per_batch=max_articles_per_batch):
         last.append(a)
     else:
         batches.append([a])
 
 
-def _choose_trim_action(overflow_tokens: int, structural_threshold: int) -> str:
-    """
-    Väljer strategi baserat på overflow.
-    - small overflow: word_trim
-    - medium: drop_one_article
-    - large: drop_multiple_articles
-    """
-    if overflow_tokens <= 200:
-        return "word_trim"
-    if overflow_tokens <= structural_threshold:
-        return "drop_one_article"
-    return "drop_multiple_articles"
-
-
-def _trim_last_user_word_boundary(
-    messages: List[Dict[str, str]],
-    remove_tokens: int,
-    *,
-    chars_per_token: float,
-) -> List[Dict[str, str]]:
-    out = [dict(m) for m in messages]
-    idx = None
-    for i in range(len(out) - 1, -1, -1):
-        if out[i].get("role") == "user":
-            idx = i
-            break
-    if idx is None:
-        return out
-
-    content = out[idx].get("content") or ""
-    if not content:
-        return out
-
-    remove_chars = int(max(1, remove_tokens) * chars_per_token)
-    if remove_chars >= len(content):
-        out[idx]["content"] = "[TRUNCATED FOR CONTEXT WINDOW]\n"
-        return out
-
-    target = len(content) - remove_chars
-    if target < 0:
-        target = 0
-
-    cut_space = content.rfind(" ", 0, target)
-    cut_nl = content.rfind("\n", 0, target)
-    cut_tab = content.rfind("\t", 0, target)
-    cut = max(cut_space, cut_nl, cut_tab)
-    if cut <= 0:
-        cut = target
-
-    out[idx]["content"] = (
-        content[:cut].rstrip() + "\n\n[TRUNCATED FOR CONTEXT WINDOW]\n"
-    )
+def _batch_article_ids_map(batches_local: List[List[dict]]) -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    for i, b in enumerate(batches_local, start=1):
+        out[str(i)] = [str(a.get("id", "")) for a in b if a.get("id")]
     return out
 
 
+def _done_batches_payload(done_map_local: Dict[int, str], batches_local: List[List[dict]]) -> Dict[str, Dict[str, Any]]:
+    ids_map = _batch_article_ids_map(batches_local)
+    payload: Dict[str, Dict[str, Any]] = {}
+    for k, v in sorted(done_map_local.items()):
+        sk = str(k)
+        payload[sk] = {"article_ids": ids_map.get(sk, []), "summary": v}
+    return payload
+
+
+def _done_map_from_done_batches(cp_done_batches: Dict[str, Any]) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    if not isinstance(cp_done_batches, dict):
+        return out
+    for k, entry in cp_done_batches.items():
+        try:
+            idx = int(k)
+        except Exception:
+            continue
+        if isinstance(entry, dict) and isinstance(entry.get("summary"), str):
+            out[idx] = entry["summary"]
+    return out
+
+
+def _build_batches_from_checkpoint(
+    batch_article_ids: Dict[str, Any],
+    all_articles: List[dict],
+    *,
+    clip_chars: int,
+) -> List[List[dict]]:
+    """
+    Återskapa batch-indelning EXAKT från checkpointens batch_article_ids.
+    """
+    by_id: Dict[str, dict] = {}
+    for a in all_articles:
+        aid = a.get("id")
+        if aid:
+            by_id[str(aid)] = a
+
+    def key_int(k: str) -> int:
+        try:
+            return int(k)
+        except Exception:
+            return 10**9
+
+    rebuilt: List[List[dict]] = []
+    missing: List[str] = []
+
+    for k in sorted(batch_article_ids.keys(), key=key_int):
+        ids = batch_article_ids.get(k)
+        if not isinstance(ids, list):
+            continue
+
+        batch: List[dict] = []
+        for aid in ids:
+            aid_s = str(aid)
+            a = by_id.get(aid_s)
+            if not a:
+                missing.append(aid_s)
+                continue
+            a2 = dict(a)
+            a2["text"] = text_clip(a2.get("text", ""), clip_chars)
+            batch.append(a2)
+
+        if batch:
+            rebuilt.append(batch)
+
+    if missing:
+        logger.warning(
+            "Resume: %d article_ids saknas i store (hoppas över). Ex: %s",
+            len(missing),
+            ", ".join(missing[:5]),
+        )
+
+    if not rebuilt:
+        raise RuntimeError("Resume: batch_article_ids fanns men inga batcher kunde återskapas.")
+
+    return rebuilt
+
+
+def _budgeted_meta_user(
+    *,
+    prompts: Dict[str, str],
+    batch_summaries: List[Tuple[int, str]],
+    sources_text: str,
+    max_ctx: int,
+    max_out: int,
+    margin: int,
+    chars_per_token: float,
+) -> str:
+    """
+    Bygg meta-user inom budget: fyll på batch-summaries tills det inte ryms.
+    Skalar ner via clip-levels, käll-clip och decimering.
+    """
+    def est_tokens(s: str) -> int:
+        return max(1, int(len(s) / chars_per_token))
+
+    budget = max(512, max_ctx - max_out - margin)
+
+    def render(batch_block: str, src: str) -> str:
+        return prompts["meta_user_template"].format(batch_summaries=batch_block, sources_list=src)
+
+    sources_levels = [len(sources_text), 6000, 3500, 2000, 1200]
+    clip_levels = [4200, 3200, 2400, 1800, 1200, 900, 700, 500, 350]
+    decimations = [1, 2, 3, 4]  # 1=alla, 2=varannan, ...
+
+    summaries_desc = sorted(batch_summaries, key=lambda x: x[0], reverse=True)
+
+    for src_lim in sources_levels:
+        src2 = sources_text if len(sources_text) <= src_lim else (sources_text[:src_lim].rstrip() + "…")
+
+        for dec in decimations:
+            subset = summaries_desc[::dec]
+
+            for clip_n in clip_levels:
+                parts: List[str] = []
+                for i, s in subset:
+                    s2 = s.strip()
+                    if len(s2) > clip_n:
+                        s2 = s2[:clip_n].rstrip() + "…"
+
+                    candidate_parts = parts + [f"Batch {i}:\n{s2}"]
+                    candidate_block = "\n\n====================\n\n".join(candidate_parts)
+                    candidate_user = render(candidate_block, src2)
+
+                    if est_tokens(candidate_user) <= budget:
+                        parts = candidate_parts
+                    else:
+                        if parts:
+                            break
+                        continue
+
+                if parts:
+                    return render("\n\n====================\n\n".join(parts), src2)
+
+    return render("[Inga batch-summaries kunde inkluderas inom context-budget.]", (sources_text[:1200] + "…") if len(sources_text) > 1200 else sources_text)
+
+
+# ----------------------------
+# Summarization (LLM + stable checkpoint/resume + budgeted meta)
+# ----------------------------
 async def summarize_batches_then_meta(
     config: Dict[str, Any],
     articles: List[dict],
@@ -550,14 +635,10 @@ async def summarize_batches_then_meta(
     job_id: Optional[int] = None,
 ) -> str:
     """
-    Summerar artiklar i batcher + metasammanfattning.
-
-    Patchar:
-    - checkpointing (batch + meta)
-    - token budget (best effort)
-    - prompt-too-long: välj strategi baserat på overflow
-        * liten overflow -> word-boundary trim
-        * större overflow -> flytta ut hela artiklar från batchens slut till sista batchen / ny batch
+    - checkpoint efter varje batch (inkl. batch_article_ids + done_batches)
+    - HELT stabil resume: återskapar batches från checkpointens batch_article_ids
+    - robust prompt-too-long: flytta artiklar (undvik tail-loop) och trimma single-article batch vid ordgräns
+    - meta byggs budgeterat för att hålla context
     """
 
     def set_job(msg: str):
@@ -569,34 +650,25 @@ async def summarize_batches_then_meta(
     batching = config.get("batching", {}) or {}
     max_chars = int(batching.get("max_chars_per_batch", 18000))
     max_n = int(batching.get("max_articles_per_batch", 10))
-
     article_clip_chars = int(batching.get("article_clip_chars", 6000))
-    meta_batch_clip_chars = int(batching.get("meta_batch_clip_chars", 3500))
     meta_sources_clip_chars = int(batching.get("meta_sources_clip_chars", 140))
-
-    def clip_text(s: str, n: int) -> str:
-        s = (s or "").strip()
-        return s if len(s) <= n else s[:n] + "…"
-
-    def clip_line(s: str, n: int) -> str:
-        s = (s or "").strip()
-        return s if len(s) <= n else s[:n] + "…"
 
     llm_cfg = config.get("llm") or {}
     max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
     max_out = int(llm_cfg.get("max_output_tokens", 700))
     margin = int(llm_cfg.get("prompt_safety_margin", 1024))
-
     chars_per_token = float(llm_cfg.get("token_chars_per_token", 2.4))
     max_attempts = int(llm_cfg.get("prompt_too_long_max_attempts", 6))
-    structural_threshold = int(
-        llm_cfg.get("prompt_too_long_structural_threshold_tokens", 1200)
-    )
+    structural_threshold = int(llm_cfg.get("prompt_too_long_structural_threshold_tokens", 1200))
 
-    async def chat_guarded(
-        messages: List[Dict[str, str]], *, temperature: float = 0.2
-    ) -> str:
-        msgs2, est, budget = enforce_budget(
+    async def chat_guarded(messages: List[Dict[str, str]], *, temperature: float = 0.2) -> str:
+        """
+        - enforce_budget (best effort) + log
+        - om overflow <= 200 => trim sista user (word boundary) och retry
+        - annars => raise PromptTooLongStructural för batch/meta-logik
+        """
+        attempt = 1
+        current, est, budget = enforce_budget(
             messages,
             max_context_tokens=max_ctx,
             max_output_tokens=max_out,
@@ -604,8 +676,6 @@ async def summarize_batches_then_meta(
         )
         logger.info(f"LLM budget: est_prompt_tokens={est} budget_tokens={budget}")
 
-        attempt = 1
-        current = msgs2
         while True:
             try:
                 return await llm.chat(current, temperature=temperature)
@@ -613,71 +683,44 @@ async def summarize_batches_then_meta(
                 msg = str(e).lower()
                 overflow = _extract_overflow_tokens(e)
 
-                if (
-                    "prompt too long" in msg
-                    or "max context" in msg
-                    or "context length" in msg
-                ):
+                if ("prompt too long" in msg or "max context" in msg or "context length" in msg):
                     if attempt >= max_attempts:
                         raise
 
-                    if overflow:
-                        action = _choose_trim_action(
-                            int(overflow), structural_threshold
+                    if overflow is None:
+                        # okänt overflow: trim schablon
+                        current = _trim_last_user_word_boundary(current, 2048, chars_per_token=chars_per_token)
+                        attempt += 1
+                        continue
+
+                    overflow_i = int(overflow)
+                    action = _choose_trim_action(overflow_i, structural_threshold)
+
+                    if action == "word_trim":
+                        remove_tokens = overflow_i + 1024
+                        logger.warning(
+                            "LLM prompt too long: overflow=%s action=word_trim attempt=%s/%s",
+                            overflow_i, attempt, max_attempts
                         )
+                        current = _trim_last_user_word_boundary(current, remove_tokens, chars_per_token=chars_per_token)
+                        attempt += 1
+                        continue
 
-                        if action == "word_trim":
-                            remove_tokens = int(overflow) + 512
-                            logger.warning(
-                                "LLM prompt too long: overflow=%s. action=word_trim attempt=%s/%s remove_tokens~%s",
-                                overflow,
-                                attempt,
-                                max_attempts,
-                                remove_tokens,
-                            )
-                            current = _trim_last_user_word_boundary(
-                                current, remove_tokens, chars_per_token=chars_per_token
-                            )
-                            attempt += 1
-                            continue
-
-                        # För medium/large vill vi göra strukturell justering i batch-loop (inte här),
-                        # så vi signalerar med en special-exception.
-                        raise PromptTooLongStructural(int(overflow))
-
-                    # overflow okänd → word_trim schablon
-                    logger.warning(
-                        "LLM prompt too long (no overflow parsed): action=word_trim_fixed attempt=%s/%s",
-                        attempt,
-                        max_attempts,
-                    )
-                    current = _trim_last_user_word_boundary(
-                        current, 1024, chars_per_token=chars_per_token
-                    )
-                    attempt += 1
-                    continue
+                    raise PromptTooLongStructural(overflow_i)
 
                 raise
 
-    class PromptTooLongStructural(Exception):
-        def __init__(self, overflow_tokens: int):
-            super().__init__(
-                f"prompt too long (structural), overflow={overflow_tokens}"
-            )
-            self.overflow_tokens = overflow_tokens
-
-    # --- checkpoint setup ---
+    # ---- checkpoint setup ----
     cp_cfg = config.get("checkpointing") or {}
     cp_enabled = bool(cp_cfg.get("enabled", True))
     cp_key = _checkpoint_key(job_id, articles)
     cp_path: Optional[Path] = _checkpoint_path(config, cp_key) if cp_enabled else None
     meta_path: Optional[Path] = _meta_ckpt_path(config, cp_key) if cp_enabled else None
 
-    batches = batch_articles(
-        articles, max_chars, max_n, article_clip_chars=article_clip_chars
-    )
+    # default-batches
+    batches = batch_articles(articles, max_chars, max_n, article_clip_chars=article_clip_chars)
 
-    # Resume meta if done
+    # meta resume (om redan klar)
     if cp_enabled and meta_path is not None:
         meta_cp = _load_checkpoint(meta_path)
         if meta_cp and meta_cp.get("kind") == "meta_result":
@@ -686,29 +729,43 @@ async def summarize_batches_then_meta(
                 set_job("Återupptar: meta redan klar (från checkpoint).")
                 return cached
 
-    # Resume batch summaries
+    # batch resume
     done_map: Dict[int, str] = {}
-    if cp_enabled and cp_path is not None:
-        cp = _load_checkpoint(cp_path)
-        if cp and cp.get("kind") == "batch_summaries":
-            # OBS: batch_total måste matcha för att vi säkert ska kunna mappa index
-            if cp.get("batch_total") == len(batches):
-                done = cp.get("done") or {}
+    cp = _load_checkpoint(cp_path) if (cp_enabled and cp_path is not None) else None
+
+    # HELT stabil resume: återskapa batches från checkpointens batch_article_ids
+    if cp and cp.get("kind") == "batch_summaries":
+        cp_batch_article_ids = cp.get("batch_article_ids") or {}
+        cp_done_batches = cp.get("done_batches") or {}
+
+        if isinstance(cp_batch_article_ids, dict) and cp_batch_article_ids:
+            try:
+                batches = _build_batches_from_checkpoint(cp_batch_article_ids, articles, clip_chars=article_clip_chars)
+                done_map = _done_map_from_done_batches(cp_done_batches)
+                set_job(f"Återupptar stabilt från checkpoint: {len(done_map)}/{len(batches)} batcher klara.")
+            except Exception as e:
+                logger.warning("Resume: kunde inte återskapa batches från checkpoint (%s). Faller tillbaka.", e)
+                done_map = {}
+
+        if not done_map:
+            # fallback för äldre checkpointformat (index-match)
+            done = cp.get("done") or {}
+            if isinstance(done, dict) and cp.get("batch_total") == len(batches):
                 try:
                     for k, v in done.items():
                         done_map[int(k)] = str(v)
                     if done_map:
-                        set_job(
-                            f"Återupptar från checkpoint: {len(done_map)}/{len(batches)} batcher klara."
-                        )
+                        set_job(f"Återupptar från checkpoint (index): {len(done_map)}/{len(batches)} batcher klara.")
                 except Exception:
                     done_map = {}
 
-    batch_summaries: List[Tuple[int, str]] = [
-        (i, done_map[i]) for i in sorted(done_map.keys())
-    ]
+    batch_summaries: List[Tuple[int, str]] = [(i, done_map[i]) for i in sorted(done_map.keys())]
 
-    # ---- RUN batches with structural trimming ----
+    def clip_line(s: str, n: int) -> str:
+        s = (s or "").strip()
+        return s if len(s) <= n else s[:n].rstrip() + "…"
+
+    # --- kör batches (med structural trim + tail-loop-skydd) ---
     idx = 1
     while idx <= len(batches):
         if idx in done_map:
@@ -718,9 +775,7 @@ async def summarize_batches_then_meta(
         batch = batches[idx - 1]
         set_job(f"Summerar batch {idx}/{len(batches)}...")
 
-        def build_messages_for_batch(
-            batch_index: int, batch_items: List[dict]
-        ) -> List[Dict[str, str]]:
+        def build_messages_for_batch(batch_index: int, batch_items: List[dict]) -> List[Dict[str, str]]:
             parts = []
             for i, a in enumerate(batch_items, start=1):
                 parts.append(
@@ -728,7 +783,7 @@ async def summarize_batches_then_meta(
                     f"Källa: {a.get('source', '')}\n"
                     f"Publicerad: {a.get('published', '')}\n"
                     f"URL: {a.get('url', '')}\n\n"
-                    f"{clip_text(a.get('text', ''), article_clip_chars)}"
+                    f"{a.get('text', '')}"
                 )
             corpus = "\n\n---\n\n".join(parts)
             user_content = prompts["batch_user_template"].format(
@@ -741,32 +796,33 @@ async def summarize_batches_then_meta(
                 {"role": "user", "content": user_content},
             ]
 
-        attempts_here = 0
+        # retry-loop för samma batch vid PromptTooLongStructural
         while True:
-            attempts_here += 1
-            messages = build_messages_for_batch(idx, batch)
             try:
-                summary = await chat_guarded(messages, temperature=0.2)
+                summary = await chat_guarded(build_messages_for_batch(idx, batch), temperature=0.2)
                 break
             except PromptTooLongStructural as e:
                 overflow = int(getattr(e, "overflow_tokens", 0) or 0)
                 action = _choose_trim_action(overflow, structural_threshold)
 
+                # Single-article batch: trimma artikeln, inte flytta
                 if len(batch) <= 1:
-                    # Batch med 1 artikel: kan inte flytta artikel → klipp artikeln hårdare och retry
-                    logger.warning(
-                        "Batch %s har 1 artikel men overflow=%s. Klipper article text hårdare och retry.",
-                        idx,
-                        overflow,
-                    )
                     a0 = batch[0]
-                    a0["text"] = clip_text(
-                        a0.get("text", ""), max(800, int(article_clip_chars * 0.6))
+                    remove_tokens = (overflow + 2048) if overflow else 4096
+                    before_len = len(a0.get("text", "") or "")
+                    a0["text"] = trim_text_tail_by_words(
+                        a0.get("text", "") or "",
+                        remove_tokens,
+                        chars_per_token=chars_per_token,
+                    )
+                    after_len = len(a0["text"])
+                    logger.warning(
+                        "Single-article batch %s too long (overflow=%s). Trim by words: %s -> %s chars",
+                        idx, overflow, before_len, after_len
                     )
                     continue
 
-                # Hur mycket vi behöver minska? overflow + buffert.
-                target_remove_tokens = overflow + 512
+                target_remove_tokens = overflow + 1024
                 target_remove_chars = int(target_remove_tokens * chars_per_token)
 
                 removed_count = 0
@@ -781,9 +837,9 @@ async def summarize_batches_then_meta(
                         a,
                         max_chars_per_batch=max_chars,
                         max_articles_per_batch=max_n,
+                        avoid_batch=batch,
                     )
                 else:
-                    # drop_multiple_articles tills vi tror vi sparat nog
                     while len(batch) > 1 and removed_chars < target_remove_chars:
                         a = batch.pop()
                         removed_count += 1
@@ -793,24 +849,20 @@ async def summarize_batches_then_meta(
                             a,
                             max_chars_per_batch=max_chars,
                             max_articles_per_batch=max_n,
+                            avoid_batch=batch,
                         )
 
                 logger.warning(
                     "Prompt too long structural: overflow=%s action=%s removed=%s (chars~%s) from batch=%s. "
                     "Moved to tail. Retrying same batch.",
-                    overflow,
-                    action,
-                    removed_count,
-                    removed_chars,
-                    idx,
+                    overflow, action, removed_count, removed_chars, idx
                 )
-
-                # retry samma idx med reducerad batch
                 continue
 
         done_map[idx] = summary
         batch_summaries.append((idx, summary))
 
+        # checkpoint efter varje batch
         if cp_enabled and cp_path is not None:
             payload = {
                 "kind": "batch_summaries",
@@ -818,33 +870,36 @@ async def summarize_batches_then_meta(
                 "job_id": job_id,
                 "checkpoint_key": cp_key,
                 "batch_total": len(batches),
-                "done": {str(k): v for k, v in sorted(done_map.items())},
+                "done": {str(k): v for k, v in sorted(done_map.items())},  # bakåtkomp
+                "done_batches": _done_batches_payload(done_map, batches),
+                "batch_article_ids": _batch_article_ids_map(batches),
                 "article_ids": [a.get("id", "") for a in articles],
             }
             _atomic_write_json(cp_path, payload)
 
         idx += 1
 
-    # ---- META ----
+    # --- META (budgeterad) ---
     set_job("Skapar metasammanfattning...")
 
-    sources_list = [
-        f"- {clip_line(a.get('title', ''), meta_sources_clip_chars)} — {a.get('url', '').strip()}"
-        for a in articles
-    ]
+    sources_list = []
+    for a in articles:
+        title = clip_line(a.get("title", ""), meta_sources_clip_chars)
+        url = (a.get("url") or "").strip()
+        sources_list.append(f"- {title} — {url}")
     sources_text = "\n".join(sources_list)
 
-    batch_text = "\n\n====================\n\n".join(
-        [
-            f"Batch {i}:\n{clip_text(s, meta_batch_clip_chars)}"
-            for i, s in sorted(batch_summaries, key=lambda x: x[0])
-        ]
+    meta_user = _budgeted_meta_user(
+        prompts=prompts,
+        batch_summaries=batch_summaries,
+        sources_text=sources_text,
+        max_ctx=max_ctx,
+        max_out=max_out,
+        margin=margin,
+        chars_per_token=chars_per_token,
     )
 
-    meta_user = prompts["meta_user_template"].format(
-        batch_summaries=batch_text, sources_list=sources_text
-    )
-
+    # checkpoint meta-input
     if cp_enabled and meta_path is not None:
         _atomic_write_json(
             meta_path,
@@ -857,6 +912,8 @@ async def summarize_batches_then_meta(
                 "article_ids": [a.get("id", "") for a in articles],
                 "meta_system": prompts["meta_system"],
                 "meta_user": meta_user,
+                "batch_article_ids": _batch_article_ids_map(batches),
+                "done_batches": _done_batches_payload(done_map, batches),
             },
         )
 
@@ -865,21 +922,33 @@ async def summarize_batches_then_meta(
         {"role": "user", "content": meta_user},
     ]
 
-    # Meta: vid prompt-too-long kör vi word-trim i chat_guarded (structural triggas men batch flytt gäller ej meta),
-    # så vi fångar PromptTooLongStructural och gör word-trim retry lokalt.
     try:
         meta = await chat_guarded(meta_messages, temperature=0.2)
     except PromptTooLongStructural as e:
         overflow = int(getattr(e, "overflow_tokens", 0) or 0)
         logger.warning(
-            "Meta prompt too long structural overflow=%s. Faller tillbaka till word-trim i meta.",
+            "Meta prompt too long structural overflow=%s. Rebuilding meta_user more aggressively.",
             overflow,
         )
-        trimmed = _trim_last_user_word_boundary(
-            meta_messages, overflow + 2048, chars_per_token=chars_per_token
-        )
-        meta = await llm.chat(trimmed, temperature=0.2)
 
+        meta_user2 = _budgeted_meta_user(
+            prompts=prompts,
+            batch_summaries=batch_summaries,
+            sources_text=(sources_text[:1200] + "…") if len(sources_text) > 1200 else sources_text,
+            max_ctx=max_ctx,
+            max_out=max_out,
+            margin=margin + 1024,
+            chars_per_token=chars_per_token,
+        )
+        meta = await llm.chat(
+            [
+                {"role": "system", "content": prompts["meta_system"]},
+                {"role": "user", "content": meta_user2},
+            ],
+            temperature=0.2,
+        )
+
+    # checkpoint meta-result
     if cp_enabled and meta_path is not None:
         _atomic_write_json(
             meta_path,
@@ -891,9 +960,12 @@ async def summarize_batches_then_meta(
                 "batch_total": len(batches),
                 "article_ids": [a.get("id", "") for a in articles],
                 "meta": meta,
+                "batch_article_ids": _batch_article_ids_map(batches),
+                "done_batches": _done_batches_payload(done_map, batches),
             },
         )
 
+    # cleanup checkpoints on success
     if cp_enabled:
         try:
             if cp_path is not None:
@@ -910,6 +982,38 @@ async def summarize_batches_then_meta(
     return meta
 
 
+async def run_resume_from_checkpoint(
+    config: Dict[str, Any],
+    store: NewsStore,
+    llm: LLMClient,
+    job_id: int,
+) -> str:
+    """
+    Resume: läs checkpoint för job_id, ladda article_ids från store, kör summarize_batches_then_meta.
+    """
+    cp_key = _checkpoint_key(job_id, [])
+    cp_path = _checkpoint_path(config, cp_key)
+    cp = _load_checkpoint(cp_path)
+    if not cp:
+        raise RuntimeError(f"Ingen checkpoint hittades för job {job_id} ({cp_path})")
+
+    article_ids = cp.get("article_ids") or []
+    if not article_ids:
+        raise RuntimeError(f"Checkpoint saknar article_ids för job {job_id}")
+
+    articles = store.get_articles_by_ids(article_ids)
+    if not articles:
+        raise RuntimeError("Kunde inte ladda artiklar från store för checkpointens article_ids")
+
+    by_id = {str(a.get("id")): a for a in articles if a.get("id")}
+    ordered = [by_id[i] for i in article_ids if i in by_id]
+
+    return await summarize_batches_then_meta(config, ordered, llm=llm, store=store, job_id=job_id)
+
+
+# ----------------------------
+# Pipeline (orchestrates only)
+# ----------------------------
 async def run_pipeline(
     config_path: str = "config.yaml", job_id: Optional[int] = None
 ) -> Optional[int]:

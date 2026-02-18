@@ -36,6 +36,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+from summarizer.helpers import trim_last_user_word_boundary, trim_text_tail_by_words
+
 logger = logging.getLogger("FeedSummarizer")
 
 _PROMPT_TOO_LONG_RE = re.compile(
@@ -311,17 +313,27 @@ async def run_promptlab_summarization(
                 action = _choose_trim_action(overflow, structural_threshold)
 
                 if len(batch) <= 1:
-                    # batch med 1 artikel → klipp text hårdare
                     a0 = batch[0]
-                    t = a0.get("_clip_text", "") or ""
-                    new_len = max(800, int(len(t) * 0.6))
-                    a0["_clip_text"] = _clip(t, new_len)
-                    logger.warning(
-                        "Prompt-lab batch %s: 1 artikel overflow=%s. Klipper text hårdare och retry.",
-                        idx,
-                        overflow,
+                    overflow = int(getattr(e, "overflow_tokens", 0) or 0)
+                    remove_tokens = (overflow + 1024) if overflow else 2048
+
+                    before_len = len(a0.get("_clip_text", "") or "")
+                    a0["_clip_text"] = trim_text_tail_by_words(
+                        a0.get("_clip_text", "") or "",
+                        remove_tokens,
+                        chars_per_token=chars_per_token,
                     )
+                    after_len = len(a0["_clip_text"])
+
+                    logger.warning(
+                        "Prompt-lab batch %s har 1 artikel och prompten är för stor (overflow=%s). "
+                        "Trimmar _clip_text på ordgräns: %s -> %s chars",
+                        idx, overflow, before_len, after_len
+                    )
+                    if after_len < 400:
+                        raise RuntimeError("Artikeln kan inte trimmas mer och får ändå inte plats i context.")
                     continue
+
 
                 target_remove_tokens = overflow + 512
                 target_remove_chars = int(target_remove_tokens * chars_per_token)
