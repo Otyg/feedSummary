@@ -1,6 +1,45 @@
+# LICENSE HEADER MANAGED BY add-license-header
+#
+# BSD 3-Clause License
+#
+# Copyright (c) 2026, Martin Vesterlund
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
 # ----------------------------
 # Summarization (LLM + stable checkpoint/resume + budgeted meta)
 # ----------------------------
+from __future__ import annotations
+
+import logging
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 from llmClient import LLMClient
 from persistence import NewsStore
 from summarizer.batching import (
@@ -31,26 +70,25 @@ from summarizer.helpers import (
     load_prompts,
     set_job,
 )
-import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-import logging
 
 logger = logging.getLogger(__name__)
 
 
-async def summarize_batches_then_meta(
+async def summarize_batches_then_meta_with_stats(
     config: Dict[str, Any],
     articles: List[dict],
     llm: LLMClient,
     store: NewsStore,
     job_id: Optional[int] = None,
-) -> str:
+) -> Tuple[str, Dict[str, Any]]:
     """
+    Returnerar (meta_text, stats).
+
     - checkpoint efter varje batch (inkl. batch_article_ids + done_batches)
     - HELT stabil resume: återskapar batches från checkpointens batch_article_ids
     - robust prompt-too-long: flytta artiklar (undvik tail-loop) och trimma single-article batch vid ordgräns
-    - meta byggs budgeterat för att hålla context
+    - meta byggs adaptivt budgeterad för att hålla context
+    - BAKÅTKOMP: summarize_batches_then_meta(...) finns kvar och returnerar bara str
     """
     prompts = load_prompts(config)
 
@@ -69,6 +107,10 @@ async def summarize_batches_then_meta(
     structural_threshold = int(
         llm_cfg.get("prompt_too_long_structural_threshold_tokens", 1200)
     )
+
+    trims_count = 0
+    drops_count = 0
+    meta_budget_tokens_final = 0
 
     # ---- checkpoint setup ----
     cp_cfg = config.get("checkpointing") or {}
@@ -89,7 +131,13 @@ async def summarize_batches_then_meta(
             cached = (meta_cp.get("meta") or "").strip()
             if cached:
                 set_job("Återupptar: meta redan klar (från checkpoint).", job_id, store)
-                return cached
+                stats = {
+                    "batch_total": int(meta_cp.get("batch_total") or len(batches)),
+                    "trims": int(meta_cp.get("trims") or 0),
+                    "drops": int(meta_cp.get("drops") or 0),
+                    "meta_budget_tokens": int(meta_cp.get("meta_budget_tokens") or 0),
+                }
+                return cached, stats
 
     # batch resume
     done_map: Dict[int, str] = {}
@@ -183,6 +231,7 @@ async def summarize_batches_then_meta(
                         chars_per_token=chars_per_token,
                     )
                     after_len = len(a0["text"])
+                    trims_count += 1
                     logger.warning(
                         "Single-article batch %s too long (overflow=%s). Trim by words: %s -> %s chars",
                         idx,
@@ -202,6 +251,7 @@ async def summarize_batches_then_meta(
                     a = batch.pop()
                     removed_count = 1
                     removed_chars = _estimate_article_chars(a)
+                    drops_count += 1
                     _move_article_to_tail_batch(
                         batches,
                         a,
@@ -214,6 +264,7 @@ async def summarize_batches_then_meta(
                         a = batch.pop()
                         removed_count += 1
                         removed_chars += _estimate_article_chars(a)
+                        drops_count += 1
                         _move_article_to_tail_batch(
                             batches,
                             a,
@@ -248,6 +299,8 @@ async def summarize_batches_then_meta(
                 "done_batches": _done_batches_payload(done_map, batches),
                 "batch_article_ids": _batch_article_ids_map(batches),
                 "article_ids": [a.get("id", "") for a in articles],
+                "trims": trims_count,
+                "drops": drops_count,
             }
             _atomic_write_json(cp_path, payload)
 
@@ -294,6 +347,8 @@ async def summarize_batches_then_meta(
                     "meta_budget_tokens": budget_tokens,
                     "batch_article_ids": _batch_article_ids_map(batches),
                     "done_batches": _done_batches_payload(done_map, batches),
+                    "trims": trims_count,
+                    "drops": drops_count,
                 },
             )
 
@@ -303,9 +358,9 @@ async def summarize_batches_then_meta(
         ]
 
         try:
-            # använd llm.chat direkt här (chat_guarded kan annars kasta PromptTooLongStructural
-            # baserat på din estimator som bevisligen inte matchar servern för meta)
+            # llm.chat direkt här (för meta: estimator != server tokenizer)
             meta = await llm.chat(meta_messages, temperature=0.2)
+            meta_budget_tokens_final = budget_tokens
             break
 
         except Exception as e:
@@ -326,10 +381,10 @@ async def summarize_batches_then_meta(
             overflow_i = int(overflow)
             est_prompt = _est_user_tokens(meta_user, chars_per_token)
 
-            # approx: ctx_limit ≈ est_prompt - overflow (enligt serverns error)
+            # approx: ctx_limit ≈ est_prompt - overflow
             ctx_limit_est = max(2048, est_prompt - overflow_i)
 
-            # sänk budget aggressivt + rejäl buffert (eftersom estimator != server tokenizer)
+            # sänk budget aggressivt + buffert
             new_budget = max(512, ctx_limit_est - 1200)
 
             logger.warning(
@@ -344,7 +399,7 @@ async def summarize_batches_then_meta(
                 meta_attempts,
             )
 
-            # om vi inte sjunker, halvera för att undvika loop
+            # om vi inte sjunker, skala ner mer för att undvika loop
             if new_budget >= budget_tokens:
                 new_budget = max(512, int(budget_tokens * 0.6))
 
@@ -366,9 +421,11 @@ async def summarize_batches_then_meta(
                 "batch_total": len(batches),
                 "article_ids": [a.get("id", "") for a in articles],
                 "meta": meta,
-                "meta_budget_tokens": budget_tokens,
+                "meta_budget_tokens": meta_budget_tokens_final,
                 "batch_article_ids": _batch_article_ids_map(batches),
                 "done_batches": _done_batches_payload(done_map, batches),
+                "trims": trims_count,
+                "drops": drops_count,
             },
         )
 
@@ -386,17 +443,45 @@ async def summarize_batches_then_meta(
             pass
 
     logger.info("Summary done")
+    stats = {
+        "batch_total": len(batches),
+        "trims": trims_count,
+        "drops": drops_count,
+        "meta_budget_tokens": meta_budget_tokens_final,
+    }
+    return meta, stats
+
+
+async def summarize_batches_then_meta(
+    config: Dict[str, Any],
+    articles: List[dict],
+    llm: LLMClient,
+    store: NewsStore,
+    job_id: Optional[int] = None,
+) -> str:
+    """
+    Backward-compatible wrapper used by prompt_lab (for now).
+    Returns only the meta markdown text.
+    """
+    meta, _stats = await summarize_batches_then_meta_with_stats(
+        config=config,
+        articles=articles,
+        llm=llm,
+        store=store,
+        job_id=job_id,
+    )
     return meta
 
 
-async def run_resume_from_checkpoint(
+async def run_resume_from_checkpoint_with_stats(
     config: Dict[str, Any],
     store: NewsStore,
     llm: LLMClient,
     job_id: int,
-) -> str:
+) -> Tuple[str, Dict[str, Any]]:
     """
-    Resume: läs checkpoint för job_id, ladda article_ids från store, kör summarize_batches_then_meta.
+    Resume: läs checkpoint för job_id, ladda article_ids från store,
+    kör summarize_batches_then_meta_with_stats.
     """
     cp_key = _checkpoint_key(job_id, [])
     cp_path = _checkpoint_path(config, cp_key)
@@ -417,6 +502,24 @@ async def run_resume_from_checkpoint(
     by_id = {str(a.get("id")): a for a in articles if a.get("id")}
     ordered = [by_id[i] for i in article_ids if i in by_id]
 
-    return await summarize_batches_then_meta(
+    return await summarize_batches_then_meta_with_stats(
         config, ordered, llm=llm, store=store, job_id=job_id
     )
+
+
+async def run_resume_from_checkpoint(
+    config: Dict[str, Any],
+    store: NewsStore,
+    llm: LLMClient,
+    job_id: int,
+) -> str:
+    """
+    Backward-compatible resume: returns only text.
+    """
+    meta, _stats = await run_resume_from_checkpoint_with_stats(
+        config=config,
+        store=store,
+        llm=llm,
+        job_id=job_id,
+    )
+    return meta

@@ -30,6 +30,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
+# (Samma innehåll som i develop just nu)
+# https://github.com/Otyg/feedSummary/blob/develop/persistence/TinyDbStore.py
+
 from __future__ import annotations
 
 import logging
@@ -255,7 +258,9 @@ class TinyDBStore:
         t.upsert(doc, T.job_id == job_id)
         db.close()
 
-    def save_temp_summary(self, job_id: int, summary_text: str, meta: Dict[str, Any]) -> None:
+    def save_temp_summary(
+        self, job_id: int, summary_text: str, meta: Dict[str, Any]
+    ) -> None:
         """Backward-compatible helper: saves summary/meta in the temp payload."""
         self.put_temp_summary(job_id, {"summary": summary_text, "meta": meta or {}})
 

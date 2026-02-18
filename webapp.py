@@ -38,7 +38,7 @@ import logging
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import markdown as md
 import yaml
@@ -103,10 +103,137 @@ def format_ts(ts: Optional[int]) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
+# ----------------------------
+# Summary compatibility layer (legacy summaries + new summary_docs)
+# ----------------------------
+def _summary_doc_to_legacy_like(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normaliserar ett summary_doc till samma nycklar som templates redan använder.
+    Templates förväntar typiskt: id, created_at, summary, article_ids
+    """
+    created = doc.get("created") or doc.get("created_at") or 0
+    sources = doc.get("sources") or doc.get("article_ids") or []
+    return {
+        "id": doc.get("id"),
+        "created_at": int(created) if created else 0,
+        "summary": doc.get("summary", ""),
+        "article_ids": sources,
+        "_kind": doc.get("kind", "summary"),
+        "_raw": doc,
+    }
+
+
+def _get_latest_summary_compat(store: NewsStore) -> Optional[Dict[str, Any]]:
+    """
+    Försök först new-format (summary_docs), annars legacy.
+    Returnerar alltid en legacy-like dict.
+    """
+    # new format
+    fn = getattr(store, "get_latest_summary_doc", None)
+    if callable(fn):
+        try:
+            doc = fn()
+            if doc:
+                return _summary_doc_to_legacy_like(doc)
+        except Exception:
+            pass
+
+    # legacy
+    try:
+        latest = store.get_latest_summary()
+        if latest:
+            return latest
+    except Exception:
+        pass
+
+    return None
+
+
+def _list_summaries_compat(store: NewsStore) -> List[Dict[str, Any]]:
+    """
+    Slå ihop legacy summaries och nya summary_docs (om de finns).
+    Returnerar legacy-like items och sorterar på created_at desc.
+    """
+    items: List[Dict[str, Any]] = []
+
+    # new format
+    fn_list_docs = getattr(store, "list_summary_docs", None)
+    if callable(fn_list_docs):
+        try:
+            docs = fn_list_docs() or []
+            for d in docs:
+                if isinstance(d, dict):
+                    items.append(_summary_doc_to_legacy_like(d))
+        except Exception:
+            pass
+
+    # legacy
+    try:
+        legacy = store.list_summaries() or []
+        for s in legacy:
+            if isinstance(s, dict):
+                items.append(s)
+    except Exception:
+        pass
+
+    # dedupe by id (prefer first occurrence i.e. summary_docs first)
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        sid = it.get("id")
+        if sid in seen:
+            continue
+        seen.add(sid)
+        out.append(it)
+
+    out.sort(key=lambda r: int(r.get("created_at") or 0), reverse=True)
+    return out
+
+
+def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str, Any]]:
+    """
+    summary_id kan vara int (legacy) eller str (new doc id).
+    Returnerar en legacy-like dict (med summary/article_ids/created_at).
+    """
+    # legacy first if numeric
+    if summary_id.isdigit():
+        try:
+            s = store.get_summary(int(summary_id))
+            if s:
+                return s
+        except Exception:
+            pass
+
+    # new format
+    fn_get_doc = getattr(store, "get_summary_doc", None)
+    if callable(fn_get_doc):
+        try:
+            d = fn_get_doc(summary_id)
+            if d:
+                return _summary_doc_to_legacy_like(d)
+        except Exception:
+            pass
+
+    # some stores may expose get_summary_document alias
+    fn_get_doc2 = getattr(store, "get_summary_document", None)
+    if callable(fn_get_doc2):
+        try:
+            d = fn_get_doc2(summary_id)
+            if d:
+                return _summary_doc_to_legacy_like(d)
+        except Exception:
+            pass
+
+    return None
+
+
+# ----------------------------
+# Routes
+# ----------------------------
 @app.get("/")
 def index():
     store = get_store()
-    latest = store.get_latest_summary()
+    latest = _get_latest_summary_compat(store)
 
     if not latest:
         return render_template("index.html", summary=None)
@@ -141,7 +268,7 @@ def index():
 @app.get("/history")
 def history():
     store = get_store()
-    summaries = store.list_summaries()
+    summaries = _list_summaries_compat(store)
 
     items = [
         {
@@ -155,10 +282,11 @@ def history():
     return render_template("history.html", items=items)
 
 
-@app.get("/summary/<int:summary_id>")
-def view_summary(summary_id: int):
+# NOTE: changed from <int:summary_id> to <summary_id> to support new doc ids
+@app.get("/summary/<summary_id>")
+def view_summary(summary_id: str):
     store = get_store()
-    s = store.get_summary(summary_id)
+    s = _get_summary_compat(store, summary_id)
     if not s:
         return redirect(url_for("history"))
 
@@ -235,7 +363,6 @@ def resume():
             {"status": "error", "message": "Saknar job. Använd /resume?job=<id>"}
         ), 400
 
-    # Markera jobbet som running igen
     store.update_job(
         job_id,
         status="running",
@@ -292,7 +419,7 @@ def api_status(job_id: int):
             "created_at": job.get("created_at"),
             "started_at": job.get("started_at"),
             "finished_at": job.get("finished_at"),
-            "summary_id": job.get("summary_id"),
+            "summary_id": job.get("summary_id"),  # can be int or str
         }
     )
 
@@ -302,7 +429,7 @@ def prompt_lab():
     cfg = load_config()
     store = get_store()
 
-    # Lista summaries att välja som underlag
+    # Lista summaries att välja som underlag (prompt_lab lämnas orörd)
     summaries = store.list_summaries()
     items = [
         {
@@ -324,10 +451,8 @@ def prompt_lab():
     prompts = _get_promptlab_prompts(cfg, form=None)
 
     if job_or_result:
-        # Temp payload sparas via store.put_temp_summary(job_id, payload)
         temp = store.get_temp_summary(job_or_result)
 
-        # Om temp innehåller prompts från körningen, visa dem i UI (så de inte "hoppar tillbaka")
         if temp and isinstance(temp, dict):
             meta = temp.get("meta") or {}
             tp = meta.get("prompts")
@@ -336,7 +461,6 @@ def prompt_lab():
                     if k in tp and isinstance(tp[k], str):
                         prompts[k] = tp[k]
 
-            # Rendera markdown till HTML om summary finns
             if temp.get("summary"):
                 temp_html = md.markdown(str(temp["summary"]), extensions=["extra"])
 
@@ -357,13 +481,10 @@ def prompt_lab_run():
     cfg = load_config()
     store = get_store()
 
-    # Hämta summary_id från form (valfritt)
     summary_id = request.form.get("summary_id", type=int)
 
-    # Plocka prompts från form (behåller användarens inmatning)
     prompts = _get_promptlab_prompts(cfg, form=request.form)
 
-    # Skapa job
     job_id = store.create_job()
     store.update_job(
         job_id,
@@ -372,7 +493,6 @@ def prompt_lab_run():
         message="Prompt-lab: startar...",
     )
 
-    # Skapa LLM (respekterar llm/llm_fallback via din factory)
     llm = create_llm_client(cfg)
 
     def worker(jid: int):
@@ -386,7 +506,6 @@ def prompt_lab_run():
             return
 
         try:
-            # Välj underlag: angiven summary eller senaste
             if summary_id is None:
                 s = store.get_latest_summary()
                 if not s:
@@ -407,7 +526,6 @@ def prompt_lab_run():
                 message=f"Prompt-lab: använder summary {source_summary_id} ({len(articles)} artiklar)",
             )
 
-            # Kör prompt-lab. Den sparar partial + final i temp store via put_temp_summary(job_id, payload)
             asyncio.run(
                 run_promptlab_summarization(
                     config=cfg,
@@ -438,7 +556,6 @@ def prompt_lab_run():
 
     threading.Thread(target=worker, args=(job_id,), daemon=True).start()
 
-    # Redirect till prompt-lab med ?job=... (JS byter sedan till ?result=... när done)
     return redirect(url_for("prompt_lab", job=job_id, summary_id=summary_id))
 
 
@@ -493,7 +610,7 @@ def api_status_stream(job_id: int):
                 "created_at": job.get("created_at"),
                 "started_at": job.get("started_at"),
                 "finished_at": job.get("finished_at"),
-                "summary_id": job.get("summary_id"),
+                "summary_id": job.get("summary_id"),  # can be int or str
             }
 
             now = time.time()

@@ -47,7 +47,7 @@ from summarizer.helpers import (
     setup_logging,
 )
 from summarizer.ingest import gather_articles_to_store
-from summarizer.summarizer import summarize_batches_then_meta
+from summarizer.summarizer import summarize_batches_then_meta_with_stats
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -78,16 +78,28 @@ def _summary_doc_id(created_ts: int, job_id: Optional[int]) -> str:
     return f"{base}_job{job_id}" if job_id is not None else base
 
 
-def _extract_llm_doc(config: Dict[str, Any], llm: Any, temperature: float) -> Dict[str, Any]:
+def _extract_llm_doc(
+    config: Dict[str, Any], llm: Any, temperature: float
+) -> Dict[str, Any]:
     llm_cfg = config.get("llm") or {}
-    provider = str(llm_cfg.get("provider") or llm_cfg.get("type") or llm_cfg.get("client") or "")
+    provider = str(
+        llm_cfg.get("provider") or llm_cfg.get("type") or llm_cfg.get("client") or ""
+    )
     model = str(llm_cfg.get("model") or llm_cfg.get("name") or "")
 
     # fallback: om klienten exponerar cfg/model/provider
     if not provider:
-        provider = str(getattr(getattr(llm, "cfg", None), "provider", "") or getattr(llm, "provider", "") or "")
+        provider = str(
+            getattr(getattr(llm, "cfg", None), "provider", "")
+            or getattr(llm, "provider", "")
+            or ""
+        )
     if not model:
-        model = str(getattr(getattr(llm, "cfg", None), "model", "") or getattr(llm, "model", "") or "")
+        model = str(
+            getattr(getattr(llm, "cfg", None), "model", "")
+            or getattr(llm, "model", "")
+            or ""
+        )
 
     return {
         "provider": provider or "unknown",
@@ -128,7 +140,12 @@ def _persist_summary_doc(store: NewsStore, doc: Dict[str, Any]) -> Any:
     Försök spara summary-dokumentet via ny API (om den finns).
     Annars: fallback till save_summary(summary_text, ids) för bakåtkomp.
     """
-    for name in ("save_summary_doc", "save_summary_document", "put_summary_doc", "insert_summary_doc"):
+    for name in (
+        "save_summary_doc",
+        "save_summary_document",
+        "put_summary_doc",
+        "insert_summary_doc",
+    ):
         fn = getattr(store, name, None)
         if callable(fn):
             return fn(doc)
@@ -197,7 +214,7 @@ async def run_pipeline(
         return None
 
     # 1) Summarize (batch+meta) – returns markdown text
-    meta_text = await summarize_batches_then_meta(
+    meta_text, stats = await summarize_batches_then_meta_with_stats(
         config, to_sum, llm=llm, store=store, job_id=job_id
     )
 
@@ -248,7 +265,7 @@ async def run_pipeline(
     summary_id = _persist_summary_doc(store, summary_doc)
 
     # 4) Mark summarized in global corpus
-    store.mark_articles_summarized(ids) # type: ignore
+    store.mark_articles_summarized(ids)  # type: ignore
 
     if job_id is not None:
         store.update_job(
