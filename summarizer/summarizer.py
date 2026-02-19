@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -74,6 +75,108 @@ from summarizer.helpers import (
 logger = logging.getLogger(__name__)
 
 
+# ----------------------------
+# Small helpers for summary_doc persistence (used by resume persist)
+# ----------------------------
+def _summary_doc_id(created_ts: int, job_id: Optional[int]) -> str:
+    dt = datetime.fromtimestamp(created_ts)
+    base = dt.strftime("sum_%Y%m%d_%H%M")
+    return f"{base}_job{job_id}" if job_id is not None else base
+
+
+def _published_ts(a: dict) -> int:
+    ts = a.get("published_ts")
+    if isinstance(ts, int) and ts > 0:
+        return ts
+    fa = a.get("fetched_at")
+    if isinstance(fa, int) and fa > 0:
+        return fa
+    return 0
+
+
+def _sources_snapshots(articles: List[dict]) -> List[dict]:
+    snaps: List[dict] = []
+    for a in articles:
+        snaps.append(
+            {
+                "id": a.get("id"),
+                "title": a.get("title", ""),
+                "url": a.get("url", ""),
+                "source": a.get("source", ""),
+                "published_ts": _published_ts(a),
+                "content_hash": a.get("content_hash", ""),
+            }
+        )
+    return snaps
+
+
+def _persist_summary_doc(store: NewsStore, doc: Dict[str, Any]) -> Any:
+    for name in ("save_summary_doc", "save_summary_document", "put_summary_doc", "insert_summary_doc"):
+        fn = getattr(store, name, None)
+        if callable(fn):
+            return fn(doc)
+    raise RuntimeError("Store saknar metod för att spara summary-dokument (summary_docs).")
+
+
+def _extract_llm_doc(config: Dict[str, Any], llm: LLMClient, temperature: float) -> Dict[str, Any]:
+    llm_cfg = config.get("llm") or {}
+    provider = str(llm_cfg.get("provider") or llm_cfg.get("type") or "")
+    model = str(llm_cfg.get("model") or llm_cfg.get("name") or "")
+
+    if not provider:
+        provider = str(getattr(getattr(llm, "cfg", None), "provider", "") or getattr(llm, "provider", "") or "")
+    if not model:
+        model = str(getattr(getattr(llm, "cfg", None), "model", "") or getattr(llm, "model", "") or "")
+
+    return {
+        "provider": provider or "unknown",
+        "model": model or "unknown",
+        "temperature": temperature,
+        "max_output_tokens": int(llm_cfg.get("max_output_tokens") or 0),
+    }
+
+
+def _extract_batching_doc(config: Dict[str, Any]) -> Dict[str, Any]:
+    b = config.get("batching", {}) or {}
+    return {
+        "ordering": str(b.get("ordering") or "source_interleave_oldest_first"),
+        "max_articles_per_batch": int(b.get("max_articles_per_batch") or 0),
+        "max_chars_per_batch": int(b.get("max_chars_per_batch") or 0),
+        "article_clip_chars": int(b.get("article_clip_chars") or 0),
+    }
+
+
+def _load_ordered_articles_from_checkpoint(
+    config: Dict[str, Any],
+    store: NewsStore,
+    job_id: int,
+) -> Tuple[List[str], List[dict]]:
+    """
+    Read checkpoint for job_id and return (article_ids, ordered_articles).
+    Ordered articles follow the checkpoint article_ids order (stable corpus).
+    """
+    cp_key = _checkpoint_key(job_id, [])
+    cp_path = _checkpoint_path(config, cp_key)
+    cp = _load_checkpoint(cp_path)
+    if not cp:
+        raise RuntimeError(f"Ingen checkpoint hittades för job {job_id} ({cp_path})")
+
+    article_ids = cp.get("article_ids") or []
+    if not article_ids:
+        raise RuntimeError(f"Checkpoint saknar article_ids för job {job_id}")
+
+    articles = store.get_articles_by_ids(article_ids)
+    if not articles:
+        raise RuntimeError("Kunde inte ladda artiklar från store för checkpointens article_ids")
+
+    by_id = {str(a.get("id")): a for a in articles if a.get("id")}
+    ordered = [by_id[i] for i in article_ids if i in by_id]
+    return article_ids, ordered
+
+
+# ----------------------------
+# Main summarization: batches -> meta (+ checkpoints)
+# ----------------------------
 async def summarize_batches_then_meta_with_stats(
     config: Dict[str, Any],
     articles: List[dict],
@@ -405,9 +508,7 @@ async def summarize_batches_then_meta_with_stats(
 
             budget_tokens = new_budget
     else:
-        raise RuntimeError(
-            f"Meta misslyckades efter {meta_attempts} försök: {last_err}"
-        )
+        raise RuntimeError(f"Meta misslyckades efter {meta_attempts} försök: {last_err}")
 
     # checkpoint meta-result
     if cp_enabled and meta_path is not None:
@@ -473,6 +574,9 @@ async def summarize_batches_then_meta(
     return meta
 
 
+# ----------------------------
+# Resume helpers
+# ----------------------------
 async def run_resume_from_checkpoint_with_stats(
     config: Dict[str, Any],
     store: NewsStore,
@@ -483,25 +587,9 @@ async def run_resume_from_checkpoint_with_stats(
     Resume: läs checkpoint för job_id, ladda article_ids från store,
     kör summarize_batches_then_meta_with_stats.
     """
-    cp_key = _checkpoint_key(job_id, [])
-    cp_path = _checkpoint_path(config, cp_key)
-    cp = _load_checkpoint(cp_path)
-    if not cp:
-        raise RuntimeError(f"Ingen checkpoint hittades för job {job_id} ({cp_path})")
+    article_ids, ordered = _load_ordered_articles_from_checkpoint(config, store, job_id)
 
-    article_ids = cp.get("article_ids") or []
-    if not article_ids:
-        raise RuntimeError(f"Checkpoint saknar article_ids för job {job_id}")
-
-    articles = store.get_articles_by_ids(article_ids)
-    if not articles:
-        raise RuntimeError(
-            "Kunde inte ladda artiklar från store för checkpointens article_ids"
-        )
-
-    by_id = {str(a.get("id")): a for a in articles if a.get("id")}
-    ordered = [by_id[i] for i in article_ids if i in by_id]
-
+    # ordered already follows article_ids
     return await summarize_batches_then_meta_with_stats(
         config, ordered, llm=llm, store=store, job_id=job_id
     )
@@ -523,3 +611,93 @@ async def run_resume_from_checkpoint(
         job_id=job_id,
     )
     return meta
+
+
+# ----------------------------
+# NEW: Resume + persist summary (fixes "resume doesn't save")
+# ----------------------------
+async def run_resume_and_persist_summary(
+    config: Dict[str, Any],
+    store: NewsStore,
+    llm: LLMClient,
+    job_id: int,
+) -> str:
+    """
+    Kör resume från checkpoint och sparar resultatet på samma sätt som refresh/main-pipeline:
+      - summary_doc (nya formatet)
+      - legacy summary (bakåtkomp)
+      - mark_articles_summarized
+      - uppdaterar job.summary_id
+    Returnerar summary_doc_id (str).
+    """
+    # load corpus (stable order)
+    article_ids, ordered = _load_ordered_articles_from_checkpoint(config, store, job_id)
+
+    # run resume summarization
+    meta_text, stats = await summarize_batches_then_meta_with_stats(
+        config=config,
+        articles=ordered,
+        llm=llm,
+        store=store,
+        job_id=job_id,
+    )
+
+    created_ts = int(time.time())
+    sources = [a.get("id") for a in ordered if a.get("id")]
+
+    pts = [_published_ts(a) for a in ordered]
+    pts2 = [p for p in pts if p > 0]
+    from_ts = min(pts2) if pts2 else 0
+    to_ts = max(pts2) if pts2 else 0
+
+    temperature = 0.2
+
+    summary_doc: Dict[str, Any] = {
+        "id": _summary_doc_id(created_ts, job_id),
+        "created": created_ts,
+        "kind": "summary",
+        "llm": _extract_llm_doc(config, llm, temperature=temperature),
+        "prompts": load_prompts(config),
+        "batching": _extract_batching_doc(config),
+        "sources": sources,
+        "sources_snapshots": _sources_snapshots(ordered),
+        "from": from_ts,
+        "to": to_ts,
+        "summary": meta_text,
+        "meta": {
+            "batch_total": int(stats.get("batch_total") or 0),
+            "trims": int(stats.get("trims") or 0),
+            "drops": int(stats.get("drops") or 0),
+            "meta_budget_tokens": int(stats.get("meta_budget_tokens") or 0),
+        },
+    }
+
+    summary_doc_id = str(_persist_summary_doc(store, summary_doc))
+
+    # legacy save (optional)
+    legacy_summary_id = None
+    try:
+        legacy_summary_id = store.save_summary(meta_text, sources)
+    except Exception:
+        legacy_summary_id = None
+
+    # mark summarized
+    try:
+        store.mark_articles_summarized(sources)
+    except Exception as e:
+        logger.warning("Resume: kunde inte markera artiklar som summerade: %s", e)
+
+    # update job
+    try:
+        store.update_job(
+            job_id,
+            status="done",
+            finished_at=int(time.time()),
+            message=f"Resume klart: summerade {len(sources)} artiklar.",
+            summary_id=summary_doc_id,
+            legacy_summary_id=legacy_summary_id,
+        )
+    except Exception:
+        pass
+
+    return summary_doc_id

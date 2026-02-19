@@ -16,10 +16,6 @@ standard_sv:
   meta_user_template: |
     Här är batch-sammanfattningar:
     {batch_summaries}
-
-    Källor:
-    {sources_text}
-
     Skapa en sammanhängande metasammanfattning i markdown.
 
 compact_sv:

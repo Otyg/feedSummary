@@ -26,7 +26,7 @@ from llmClient import create_llm_client
 from persistence import NewsStore, create_store
 from summarizer.helpers import setup_logging
 from summarizer.main import run_pipeline
-from summarizer.summarizer import run_resume_from_checkpoint
+from summarizer.summarizer import run_resume_and_persist_summary, run_resume_from_checkpoint
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -34,8 +34,12 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 pipeline_lock = threading.Lock()
 
+# Allow overriding config path (helps when running from other cwd)
+CONFIG_PATH = os.environ.get("FEEDSUMMARY_CONFIG", "config.yaml")
+CONFIG_DIR = os.path.dirname(os.path.abspath(CONFIG_PATH)) or "."
 
-def load_config(path: str = "config.yaml") -> Dict[str, Any]:
+
+def load_config(path: str = CONFIG_PATH) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
@@ -88,19 +92,45 @@ def _build_source_options(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     out.sort(key=lambda x: x["name"].lower())
     return out
 
+
+def _resolve_path(p: str) -> str:
+    """
+    Expand env + ~ and resolve relative paths relative to config.yaml location.
+    """
+    p2 = os.path.expanduser(os.path.expandvars(p))
+    if not os.path.isabs(p2):
+        p2 = os.path.join(CONFIG_DIR, p2)
+    return p2
+
+
 def _load_prompt_packages(cfg: Dict[str, Any]) -> List[str]:
+    """
+    Reads config.prompts.path (default: config/prompts.yaml) and returns package names.
+    Logs warnings if file is missing/invalid so the UI doesn't fail silently.
+    """
     p_cfg = cfg.get("prompts") or {}
     if not isinstance(p_cfg, dict):
         return []
-    path = os.path.expanduser(os.path.expandvars(str(p_cfg.get("path") or "config/prompts.yaml")))
+
+    raw_path = str(p_cfg.get("path") or "config/prompts.yaml")
+    path = _resolve_path(raw_path)
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             all_pkgs = yaml.safe_load(f) or {}
-        if isinstance(all_pkgs, dict):
+        if isinstance(all_pkgs, dict) and all_pkgs:
+            logger.info("prompts.yaml loaded: %s", path)
             return sorted([str(k) for k in all_pkgs.keys()])
-    except Exception:
+        logger.warning("prompts.yaml loaded but empty or not a dict: %s", path)
         return []
-    return []
+    except FileNotFoundError:
+        logger.warning("prompts.yaml not found: %s (from prompts.path=%s)", path, raw_path)
+        return []
+    except Exception as e:
+        logger.warning("failed to read prompts.yaml: %s -> %s", path, e)
+        return []
+
+
 # ----------------------------
 # Summary compatibility layer (legacy summaries + new summary_docs)
 # ----------------------------
@@ -208,6 +238,8 @@ def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str,
 def index():
     store = get_store()
     cfg = load_config()
+
+    # always compute prompt packages (even if there is no summary yet)
     prompt_packages = _load_prompt_packages(cfg)
     p_cfg = cfg.get("prompts") or {}
     default_prompt_pkg = ""
@@ -215,6 +247,7 @@ def index():
         default_prompt_pkg = str(p_cfg.get("selected") or p_cfg.get("default_package") or "").strip()
     if not default_prompt_pkg and prompt_packages:
         default_prompt_pkg = prompt_packages[0]
+
     all_summaries = _list_summaries_compat(store)
     sidebar_items = [
         {
@@ -232,10 +265,8 @@ def index():
     if not selected:
         selected = _get_latest_summary_compat(store)
 
-    # modal defaults
     ingest = cfg.get("ingest") or {}
     default_lookback = str(ingest.get("lookback") or "24h")
-    # split "24h" -> ("24","h")
     lb_val = "".join([c for c in default_lookback if c.isdigit()]) or "24"
     lb_unit = "".join([c for c in default_lookback if not c.isdigit()]).strip() or "h"
 
@@ -250,6 +281,8 @@ def index():
             source_options=source_options,
             default_lb_value=lb_val,
             default_lb_unit=lb_unit,
+            prompt_packages=prompt_packages,
+            default_prompt_package=default_prompt_pkg,
         )
 
     summary_text = selected.get("summary", "")
@@ -277,11 +310,6 @@ def index():
 
 @app.post("/refresh")
 def refresh():
-    """
-    Refresh med overrides från modal:
-      - lookback_value + lookback_unit => lookback string
-      - sources[] => valda källnamn
-    """
     store = get_store()
     cfg = load_config()
 
@@ -291,7 +319,7 @@ def refresh():
     lookback_unit = (request.form.get("lookback_unit") or "").strip().lower()
     selected_sources = request.form.getlist("sources") or []
     prompt_package = (request.form.get("prompt_package") or "").strip()
-    
+
     overrides: Dict[str, Any] = {}
     if prompt_package:
         overrides["prompt_package"] = prompt_package
@@ -300,12 +328,11 @@ def refresh():
     if selected_sources:
         overrides["sources"] = selected_sources
 
-    # log in job for traceability
     store.update_job(
         job_id,
         status="running",
         started_at=int(time.time()),
-        message=f"Startar refresh… (lookback={overrides.get('lookback','default')}, sources={len(selected_sources) or 'default'})",
+        message=f"Startar refresh… (lookback={overrides.get('lookback','default')}, sources={len(selected_sources) or 'default'}, prompts={prompt_package or 'default'})",
     )
 
     def worker(jid: int):
@@ -318,7 +345,7 @@ def refresh():
             )
             return
         try:
-            asyncio.run(run_pipeline("config.yaml", job_id=jid, overrides=overrides, config_dict=cfg))
+            asyncio.run(run_pipeline(CONFIG_PATH, job_id=jid, overrides=overrides, config_dict=cfg))
         except Exception as e:
             store.update_job(
                 jid,
@@ -363,7 +390,7 @@ def resume():
             return
 
         try:
-            asyncio.run(run_resume_from_checkpoint(cfg, store, llm, jid))
+            asyncio.run(run_resume_and_persist_summary(cfg, store, llm, jid))
             store.update_job(
                 jid,
                 status="done",
