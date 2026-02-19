@@ -5,13 +5,13 @@ import copy
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
 from llmClient import create_llm_client
 from persistence import NewsStore, create_store
-from summarizer.helpers import setup_logging, load_prompts
+from summarizer.helpers import setup_logging, load_prompts, parse_lookback_to_seconds
 from summarizer.ingest import gather_articles_to_store
 from summarizer.summarizer import summarize_batches_then_meta_with_stats
 
@@ -143,6 +143,7 @@ def _apply_overrides(config: Dict[str, Any], overrides: Optional[Dict[str, Any]]
     overrides:
       - lookback: str   ex: "24h", "3d"
       - sources: List[str]  list of source names to include
+      - prompt_package: str
     """
     if not overrides:
         return config
@@ -160,19 +161,78 @@ def _apply_overrides(config: Dict[str, Any], overrides: Optional[Dict[str, Any]]
         selected_set = {str(x) for x in selected if str(x).strip()}
         all_sources = _get_config_sources(cfg)
         if all_sources:
+
             def _name_of(s: Dict[str, Any]) -> str:
                 return str(s.get("name") or s.get("title") or s.get("label") or "").strip()
 
             filtered = [s for s in all_sources if _name_of(s) in selected_set]
             _set_config_sources(cfg, filtered)
-    
+
     prompt_pkg = overrides.get("prompt_package")
     if isinstance(prompt_pkg, str) and prompt_pkg.strip():
         p = cfg.setdefault("prompts", {})
         if isinstance(p, dict):
             p["selected"] = prompt_pkg.strip()
-    
+
     return cfg
+
+
+def _selected_source_names(config: Dict[str, Any]) -> List[str]:
+    srcs = _get_config_sources(config)
+    out: List[str] = []
+
+    def _name_of(s: Dict[str, Any]) -> str:
+        return str(s.get("name") or s.get("title") or s.get("label") or "").strip()
+
+    for s in srcs:
+        n = _name_of(s)
+        if n:
+            out.append(n)
+    return out
+
+
+def _select_articles_for_summary(config: Dict[str, Any], store: NewsStore, *, limit: int = 2000) -> List[dict]:
+    """
+    Välj artiklar baserat på:
+      - ingest.lookback (default-värde, men överstyrbart från UI via overrides)
+      - valda källor (config feeds/sources filtreras av overrides från UI)
+
+    Viktigt: urvalet ignorerar 'summarized'-flagga helt.
+    """
+    ingest = config.get("ingest") or {}
+    lookback = str(ingest.get("lookback") or "").strip()
+    sources = _selected_source_names(config)
+
+    now = int(time.time())
+    since_ts = 0
+    if lookback:
+        since_ts = now - parse_lookback_to_seconds(lookback)
+
+    # Föredra store-filter om det finns
+    list_by_filter = getattr(store, "list_articles_by_filter", None)
+    if callable(list_by_filter) and since_ts > 0 and sources:
+        rows = list_by_filter(sources=sources, since_ts=since_ts, until_ts=now, limit=limit)
+        # säkra ordning: äldsta först
+        rows.sort(key=_published_ts)
+        return rows
+
+    # fallback: hämta allt och filtrera i minnet
+    list_articles = getattr(store, "list_articles", None)
+    if callable(list_articles):
+        rows = list_articles(limit=limit)
+    else:
+        # sista utväg
+        rows = store.list_unsummarized_articles(limit=limit)
+
+    if sources:
+        srcset = set(sources)
+        rows = [a for a in rows if a.get("source") in srcset]
+
+    if since_ts > 0:
+        rows = [a for a in rows if _published_ts(a) >= since_ts]
+
+    rows.sort(key=_published_ts)
+    return rows[:limit]
 
 
 async def run_pipeline(
@@ -184,7 +244,8 @@ async def run_pipeline(
     """
     Orchestrator.
     - config.yaml values are defaults
-    - overrides (from webapp) can set ingest.lookback + chosen sources
+    - overrides (from webapp) can set ingest.lookback + chosen sources + prompt_package
+    - article store contains only articles; summary selection is based on lookback/sources (NOT summarized flag)
     """
     if config_dict is None:
         with open(config_path, "r", encoding="utf-8") as f:
@@ -215,14 +276,16 @@ async def run_pipeline(
             message=f"Ingest klart. Inserted={ins}, Updated={upd}. Förbereder summering...",
         )
 
-    to_sum = store.list_unsummarized_articles(limit=200)
+    # ✅ NYTT: urval styrs av lookback + valda källor (från UI overrides)
+    to_sum = _select_articles_for_summary(config, store, limit=2000)
+
     if not to_sum:
         if job_id is not None:
             store.update_job(
                 job_id,
                 status="done",
                 finished_at=int(time.time()),
-                message="Klart: inga nya/ändrade artiklar att summera.",
+                message="Klart: inga artiklar matchade urvalet (lookback/källor).",
             )
         return None
 
@@ -270,14 +333,15 @@ async def run_pipeline(
     except Exception:
         legacy_summary_id = None
 
-    store.mark_articles_summarized(ids)
+    # ✅ VIKTIGT: vi markerar INTE artiklar som "summarized" längre.
+    # Det är sammanfattningslogikens urval (lookback/källor) som avgör.
 
     if job_id is not None:
         store.update_job(
             job_id,
             status="done",
             finished_at=int(time.time()),
-            message=f"Klart: summerade {len(ids)} artiklar.",
+            message=f"Klart: summerade {len(ids)} artiklar (urval: lookback/källor).",
             summary_id=summary_doc_id,
             legacy_summary_id=legacy_summary_id,
         )

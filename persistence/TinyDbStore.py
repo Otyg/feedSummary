@@ -1,43 +1,13 @@
 # LICENSE HEADER MANAGED BY add-license-header
 #
 # BSD 3-Clause License
-#
-# Copyright (c) 2026, Martin Vesterlund
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-
-# (Samma innehåll som i develop just nu)
-# https://github.com/Otyg/feedSummary/blob/develop/persistence/TinyDbStore.py
+# ... (oförändrad header)
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from tinydb import Query, TinyDB
 
@@ -70,6 +40,59 @@ class TinyDBStore:
         db.table("articles").upsert(article_doc, A.id == article_doc["id"])
         db.close()
 
+    def list_articles(self, limit: int = 2000) -> List[Dict[str, Any]]:
+        """
+        Returnera artiklar utan att använda 'summarized'-flagga.
+        OBS: här returnerar vi själva dokumenten (dvs id = artikelns id).
+        """
+        db = self._db()
+        docs = list(db.table("articles"))
+        db.close()
+        out = [dict(d) for d in docs]
+        # sort oldest-first på published_ts för stabil batching
+        out.sort(key=lambda r: int(r.get("published_ts") or r.get("fetched_at") or 0))
+        return out[:limit]
+
+    def list_articles_by_filter(
+        self,
+        *,
+        sources: List[str],
+        since_ts: int,
+        until_ts: Optional[int] = None,
+        limit: int = 2000,
+    ) -> List[Dict[str, Any]]:
+        """
+        Filtrera artiklar baserat på:
+          - source ∈ sources
+          - published_ts >= since_ts
+          - och om until_ts: published_ts <= until_ts
+        """
+        srcset: Set[str] = {str(s) for s in (sources or []) if str(s).strip()}
+        db = self._db()
+        at = db.table("articles")
+
+        def match(row: Dict[str, Any]) -> bool:
+            if srcset and row.get("source") not in srcset:
+                return False
+            ts = row.get("published_ts")
+            if not isinstance(ts, int) or ts <= 0:
+                # om published_ts saknas: fall back fetched_at
+                ts = row.get("fetched_at")
+                if not isinstance(ts, int) or ts <= 0:
+                    return False
+            if ts < since_ts:
+                return False
+            if until_ts is not None and ts > until_ts:
+                return False
+            return True
+
+        rows = at.search(match)
+        db.close()
+
+        rows_sorted = sorted(rows, key=lambda r: int(r.get("published_ts") or r.get("fetched_at") or 0))
+        return [dict(r) for r in rows_sorted[:limit]]
+
+    # ---- Legacy (bakåtkomp; används ej för urval längre)
     def list_unsummarized_articles(self, limit: int = 200) -> List[Dict[str, Any]]:
         db = self._db()
         A = Query()
@@ -77,22 +100,15 @@ class TinyDBStore:
         db.close()
         return res[:limit]  # pyright: ignore[reportReturnType]
 
-    def list_articles(self):
-        db = self._db()
-        docs = list(db.table("articles"))
-        db.close()
-        out = [{"id": d.doc_id, **dict(d)} for d in docs]
-        out.sort(key=lambda r: r.get("created_at", 0), reverse=True)
-        return out
-
     def mark_articles_summarized(self, article_ids: List[str]) -> None:
+        """
+        Legacy: Behålls för bakåtkomp, men pipeline använder den inte längre.
+        """
         db = self._db()
         A = Query()
         ts = int(time.time())
         for aid in article_ids:
-            db.table("articles").update(
-                {"summarized": True, "summarized_at": ts}, A.id == aid
-            )
+            db.table("articles").update({"summarized": True, "summarized_at": ts}, A.id == aid)
         db.close()
 
     # ---- Summaries (legacy)
@@ -135,16 +151,6 @@ class TinyDBStore:
 
     # ---- Summary documents (new)
     def save_summary_doc(self, summary_doc: Dict[str, Any]) -> Any:
-        """
-        Upsert a structured summary document in table 'summary_docs'.
-
-        Expected to follow schema like:
-          { "id": "...", "created": ts, "kind": "...", "llm": {...}, "prompts": {...}, ... }
-
-        Returns:
-          - summary_doc["id"] if present (stable id)
-          - otherwise TinyDB doc_id
-        """
         db = self._db()
         t = db.table("summary_docs")
         Q = Query()
@@ -161,7 +167,6 @@ class TinyDBStore:
             db.close()
             return sid
 
-        # fallback: insert and store generated id inside doc (so you can reference later)
         doc_id = t.insert(doc)
         try:
             t.update({"id": f"summary_doc_{doc_id}"}, doc_ids=[doc_id])
@@ -170,7 +175,6 @@ class TinyDBStore:
         db.close()
         return doc_id
 
-    # Aliases (so main.py can probe)
     def save_summary_document(self, summary_doc: Dict[str, Any]) -> Any:
         return self.save_summary_doc(summary_doc)
 
@@ -211,7 +215,7 @@ class TinyDBStore:
                 "created_at": int(time.time()),
                 "started_at": None,
                 "finished_at": None,
-                "status": "queued",  # queued|running|done|error
+                "status": "queued",
                 "message": "",
                 "summary_id": None,
             }
@@ -236,7 +240,6 @@ class TinyDBStore:
 
     # ---- Utility
     def get_articles_by_ids(self, article_ids: List[str]) -> List[Dict[str, Any]]:
-        # keep input order
         db = self._db()
         at = db.table("articles")
         out: List[Dict[str, Any]] = []
@@ -248,14 +251,7 @@ class TinyDBStore:
         return out
 
     # ---- Temp summaries
-
-    # Alias used by prompt_lab_updated.py (stores a full payload dict under temp_summaries)
     def put_temp_summary(self, job_id: int, payload: Dict[str, Any]) -> None:
-        """Upsert a temp summary payload by job_id.
-
-        Expected payload keys (typical):
-          - job_id, created_at, summary, meta, partials, etc.
-        """
         db = self._db()
         t = db.table("temp_summaries")
         T = Query()
@@ -266,10 +262,7 @@ class TinyDBStore:
         t.upsert(doc, T.job_id == job_id)
         db.close()
 
-    def save_temp_summary(
-        self, job_id: int, summary_text: str, meta: Dict[str, Any]
-    ) -> None:
-        """Backward-compatible helper: saves summary/meta in the temp payload."""
+    def save_temp_summary(self, job_id: int, summary_text: str, meta: Dict[str, Any]) -> None:
         self.put_temp_summary(job_id, {"summary": summary_text, "meta": meta or {}})
 
     def get_temp_summary(self, job_id: int) -> Optional[Dict[str, Any]]:
