@@ -55,3 +55,5 @@
 - name: TV4
   url: https://www.tv4.se/rss
   category_include:["Inrikes", "Utrikes"]
+- name: Der Spiegel
+  url: https://www.spiegel.de/international/index.rss

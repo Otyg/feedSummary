@@ -1,93 +1,53 @@
 store:
   provider: tinydb
   path: ~/.local/share/FeedSummary/news_docs.json
+checkpointing:
+  enabled: true
+  dir: ~/.local/share/FeedSummary/checkpoints
+prompts:
+  path: "config/prompts.yaml"
+  default_package: "SecurityAnalyst"
+  selected: ""   # (tom => använd default; webapp sätter override per körning)
 feeds:
-  - name: "Recorded Future"
-    url: https://therecord.media/feed
-  - name: "Mandiant (Google)"
-    url: https://www.mandiant.com/resources/blog/rss.xml
-  - name: "Cisco Talos - Global Threat Intelligence"
-    url: https://blog.talosintelligence.com/feeds/posts/default
-  - name: "Unit 42 (Palo Alto)"
-    url: https://unit42.paloaltonetworks.com/feed/
-  - name: "Microsoft Security Blog"
-    url: https://www.microsoft.com/en-us/security/blog/feed/
-  - name: "DataBreaches.net"
-    url: https://www.databreaches.net/feed/
-  - name: "Troy Hunt (Have I Been Pwned)"
-    url: https://www.troyhunt.com/rss/
-  - name: "BleepingComputer"
-    url: https://www.bleepingcomputer.com/feed/
-  - name: "Cybernews"
-    url: https://cybernews.com/news/feed/
-  - name: "Krebs on Security"
-    url: https://krebsonsecurity.com/feed/
-  - name: "Enforcement Tracker"
-    url: https://www.enforcementtracker.com/feed/
-  - name: "IAPP (Privacy Advisor)"
-    url: https://iapp.org/rss/news/
-  - name: "Hunton Privacy Blog"
-    url: https://www.huntonprivacyblog.com/feed/
-  - name: "Lawfare (Cybersecurity)"
-    url: https://www.lawfaremedia.org/sections/cybersecurity/feed
-  - name: "CERT-SE"
-    url: https://www.cert.se/feed.rss
-  - name: "IMY"
-    url: https://www.imy.se/rss-floden/nyheter/
-  - name: "Rapid7 Blog"
-    url: https://www.rapid7.com/blog/rss/
-  - name: "SANS Internet Storm Center"
-    url: https://isc.sans.edu/rssfeed.xml
-  - name: "The Register Security"
-    url: https://www.theregister.com/security/headlines.atom
-  - name: "Threatpost"
-    url: https://threatpost.com/feed/
-  - name: "CVE Latest High/Critical"
-    url: https://cvefeed.io/rssfeed/severity/high.xml
+  path: "config/feeds.yaml"
 ingest:
-  lookback: "24h"   # h=hours, d=days, w=weeks, m=minutes
-  max_items_per_feed: 10
+  lookback: 1d
+  max_items_per_feed: 100
   article_timeout_s: 20
 article_timeout_s: 20
 batching:
-  max_chars_per_batch: 8000
-  max_articles_per_batch: 4
-  article_clip_chars: 2000
+  max_articles_per_batch: 15
+  max_chars_per_batch: 14500
+  article_clip_chars: 3500
+  meta_batch_clip_chars: 1500
+  meta_sources_clip_chars: 100
   retry_user_clip_chars: 9000
-  meta_batch_clip_chars: 1800
-  meta_sources_clip_chars: 140
 llm:
-  provider: "ollama_cloud_gemma3_270m"
-  host: "https://ollama.com"
-  model: "gemma3:27b"
-  api_key: "$OLLAMA_KEY"
+  provider: ollama_cloud
+  host: https://ollama.com
+  model: gemma3:27b-cloud
+  api_key: CHANGE-ME-CHANGE-ME
+  context_window_tokens: 24576
+  max_output_tokens: 500
+  prompt_safety_margin: 1600
+  token_chars_per_token: 2.4
+  prompt_too_long_max_attempts: 6
+  prompt_too_long_structural_threshold_tokens: 1200
   quota:
     preflight: true
     min_interval_seconds: 2
 llm_fallback:
-  provider: ollama
-  model: llama3.1
+  provider: ollama_local
+  model:  gemma3:1b
   base_url: http://localhost:11434
   max_rps: 1
   timeout_s: 6000
   sock_read_timeout_s: 360
   max_retries: 3
   retry_backoff_s: 2.0
-checkpointing:
-  enabled: true
-  dir: ~/.local/share/FeedSummary/checkpoints
-prompts:
-  batch_system: "Du är en svensk nyhetsredaktör. Summera artiklarna i denna batch.\r\
-    \nKrav:\r\n- Slå ihop duplicerade nyheter och notera om flera källor rapporterar\
-    \ samma sak.\r\n- Texten ska vara löpande och källhänvisningar ska vävas in naturligt\r\
-    \n- Gruppera nyheter tematiskt"
-  batch_user_template: "Batch {batch_index}/{batch_total}. Här är artiklarna:\r\n\r\
-    \n{articles_corpus}\r\n"
-  meta_system: "Du är en svensk nyhetsredaktör. Skapa en sammanfattning över ALLA\
-    \ batch-sammanfattningar.\r\nKrav:\r\n1) Deduplicera: om samma nyhet finns i flera\
-    \ batcher, slå ihop.\r\n2) Texten ska vara löpande med nyheterna grupperade efter\
-    \ tema\r\n3) Var informativ, men kortfattad, hela sammanfattningen ska vara på\
-    \ cirka tusen ord.\r\n4) Avsluta med \"Källor\" som en numrerad lista över alla\
-    \ artiklar (titel + URL) som du använt.\r\n"
-  meta_user_template: "Här är batch-sammanfattningarna:\r\n\r\n{batch_summaries}\r\
-    \n\r\nHär är den fullständiga källistan (använd denna för \"Källor\"):\r\n{sources_list}"
+  context_window_tokens: 24576
+  max_output_tokens: 500
+  prompt_safety_margin: 1600
+  token_chars_per_token: 2.4
+  prompt_too_long_max_attempts: 6
+  prompt_too_long_structural_threshold_tokens: 1200
