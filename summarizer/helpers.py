@@ -62,7 +62,9 @@ def setup_logging():
     h.setFormatter(formatter)
     root.addHandler(h)
 
+
 logger = logging.getLogger(__name__)
+
 
 def _expand_path(p: str) -> str:
     return os.path.expandvars(os.path.expanduser(p))
@@ -399,6 +401,7 @@ def set_job(msg: str, job_id, store):
     if job_id is not None:
         store.update_job(job_id, message=msg)
 
+
 def _resolve_path(base_config_path: str, p: str) -> str:
     """
     Expand env + ~ and resolve relative paths relative to config.yaml location.
@@ -409,7 +412,10 @@ def _resolve_path(base_config_path: str, p: str) -> str:
     base_dir = os.path.dirname(os.path.abspath(base_config_path)) or "."
     return os.path.join(base_dir, p2)
 
-def load_feeds_into_config(config: Dict[str, Any], *, base_config_path: str = "config.yaml") -> Dict[str, Any]:
+
+def load_feeds_into_config(
+    config: Dict[str, Any], *, base_config_path: str = "config.yaml"
+) -> Dict[str, Any]:
     """
     Ensures config["feeds"] is a list loaded from config/feeds.yaml (default),
     unless config already has a list in "feeds".
@@ -445,12 +451,16 @@ def load_feeds_into_config(config: Dict[str, Any], *, base_config_path: str = "c
         # Minimal validation: expect dict items
         for i, item in enumerate(loaded):
             if not isinstance(item, dict):
-                raise ValueError(f"feeds.yaml item {i} must be a dict, got {type(item)}")
+                raise ValueError(
+                    f"feeds.yaml item {i} must be a dict, got {type(item)}"
+                )
 
         config["feeds"] = loaded
         return config
     except FileNotFoundError:
-        logger.warning("feeds.yaml not found: %s (configure feeds.path or feeds_path)", path)
+        logger.warning(
+            "feeds.yaml not found: %s (configure feeds.path or feeds_path)", path
+        )
         config["feeds"] = []
         return config
     except Exception as e:

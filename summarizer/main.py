@@ -41,11 +41,18 @@ def _summary_doc_id(created_ts: int, job_id: Optional[int]) -> str:
 
 
 def _persist_summary_doc(store: NewsStore, doc: Dict[str, Any]) -> Any:
-    for name in ("save_summary_doc", "save_summary_document", "put_summary_doc", "insert_summary_doc"):
+    for name in (
+        "save_summary_doc",
+        "save_summary_document",
+        "put_summary_doc",
+        "insert_summary_doc",
+    ):
         fn = getattr(store, name, None)
         if callable(fn):
             return fn(doc)
-    raise RuntimeError("Store saknar metod för att spara summary-dokument (summary_docs).")
+    raise RuntimeError(
+        "Store saknar metod för att spara summary-dokument (summary_docs)."
+    )
 
 
 def _get_config_sources(config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -60,7 +67,9 @@ def _set_config_sources(config: Dict[str, Any], sources: List[Dict[str, Any]]) -
     config["feeds"] = sources
 
 
-def _apply_overrides(config: Dict[str, Any], overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _apply_overrides(
+    config: Dict[str, Any], overrides: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
     if not overrides:
         return config
 
@@ -106,7 +115,9 @@ def _selected_source_names(config: Dict[str, Any]) -> List[str]:
     return out
 
 
-def _select_articles_for_summary(config: Dict[str, Any], store: NewsStore, *, limit: int = 2000) -> List[dict]:
+def _select_articles_for_summary(
+    config: Dict[str, Any], store: NewsStore, *, limit: int = 2000
+) -> List[dict]:
     ingest = config.get("ingest") or {}
     lookback = str(ingest.get("lookback") or "").strip()
     sources = _selected_source_names(config)
@@ -118,7 +129,9 @@ def _select_articles_for_summary(config: Dict[str, Any], store: NewsStore, *, li
 
     list_by_filter = getattr(store, "list_articles_by_filter", None)
     if callable(list_by_filter) and since_ts > 0 and sources:
-        rows = list_by_filter(sources=sources, since_ts=since_ts, until_ts=now, limit=limit)
+        rows = list_by_filter(
+            sources=sources, since_ts=since_ts, until_ts=now, limit=limit
+        )
         rows.sort(key=_published_ts)  # äldsta först
         return rows
 
@@ -160,19 +173,34 @@ async def run_pipeline(
     llm = create_llm_client(config)
 
     if job_id is not None:
-        store.update_job(job_id, status="running", started_at=int(time.time()), message="Startar ingest...")
+        store.update_job(
+            job_id,
+            status="running",
+            started_at=int(time.time()),
+            message="Startar ingest...",
+        )
         if overrides:
-            store.update_job(job_id, message=f"Startar ingest... (overrides: {overrides})")
+            store.update_job(
+                job_id, message=f"Startar ingest... (overrides: {overrides})"
+            )
 
     ins, upd = await gather_articles_to_store(config, store, job_id=job_id)
 
     if job_id is not None:
-        store.update_job(job_id, message=f"Ingest klart. Inserted={ins}, Updated={upd}. Förbereder summering...")
+        store.update_job(
+            job_id,
+            message=f"Ingest klart. Inserted={ins}, Updated={upd}. Förbereder summering...",
+        )
 
     to_sum = _select_articles_for_summary(config, store, limit=2000)
     if not to_sum:
         if job_id is not None:
-            store.update_job(job_id, status="done", finished_at=int(time.time()), message="Klart: inga artiklar matchade urvalet (lookback/källor).")
+            store.update_job(
+                job_id,
+                status="done",
+                finished_at=int(time.time()),
+                message="Klart: inga artiklar matchade urvalet (lookback/källor).",
+            )
         return None
 
     meta_text, stats = await summarize_batches_then_meta_with_stats(
@@ -195,7 +223,9 @@ async def run_pipeline(
             "provider": (config.get("llm") or {}).get("provider", "unknown"),
             "model": (config.get("llm") or {}).get("model", "unknown"),
             "temperature": 0.2,
-            "max_output_tokens": int((config.get("llm") or {}).get("max_output_tokens") or 0),
+            "max_output_tokens": int(
+                (config.get("llm") or {}).get("max_output_tokens") or 0
+            ),
         },
         "prompts": load_prompts(config),
         "batching": config.get("batching", {}) or {},
@@ -223,7 +253,14 @@ async def run_pipeline(
         "selection": {
             "lookback": str((config.get("ingest") or {}).get("lookback") or ""),
             "sources": _selected_source_names(config),
-            "prompt_package": str(((config.get("prompts") or {}) if isinstance(config.get("prompts"), dict) else {}).get("selected") or ""),
+            "prompt_package": str(
+                (
+                    (config.get("prompts") or {})
+                    if isinstance(config.get("prompts"), dict)
+                    else {}
+                ).get("selected")
+                or ""
+            ),
         },
     }
 
