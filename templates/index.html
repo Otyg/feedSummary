@@ -82,6 +82,7 @@
             <span class="muted">Ex: 24h, 3d</span>
           </div>
         </div>
+
         <div class="form-row">
           <label class="form-label">Prompt-paket</label>
           <div class="form-inline">
@@ -98,7 +99,14 @@
 
         <div class="form-row">
           <label class="form-label">Källor</label>
-          <div class="source-grid">
+
+          <!-- NEW: select/deselect all -->
+          <div class="form-inline" style="margin: 6px 0 10px 0;">
+            <button class="btn" type="button" id="selectAllSources">Markera alla</button>
+            <button class="btn" type="button" id="deselectAllSources">Avmarkera alla</button>
+          </div>
+
+          <div class="source-grid" id="sourceGrid">
             {% for s in source_options %}
               <label class="chk">
                 <input type="checkbox" name="sources" value="{{ s.name }}" {% if s.default_checked %}checked{% endif %} />
@@ -149,6 +157,20 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeModal();
   });
+
+  // --- NEW: select/deselect all sources in modal ---
+  const sourceGrid = document.getElementById("sourceGrid");
+  const btnAll = document.getElementById("selectAllSources");
+  const btnNone = document.getElementById("deselectAllSources");
+
+  function setAllSources(checked) {
+    if (!sourceGrid) return;
+    const boxes = sourceGrid.querySelectorAll('input[type="checkbox"][name="sources"]');
+    boxes.forEach((b) => { b.checked = !!checked; });
+  }
+
+  btnAll?.addEventListener("click", () => setAllSources(true));
+  btnNone?.addEventListener("click", () => setAllSources(false));
 
   // --- SSE status (same as before) ---
   const params = new URLSearchParams(window.location.search);

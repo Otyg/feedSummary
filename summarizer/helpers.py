@@ -62,6 +62,7 @@ def setup_logging():
     h.setFormatter(formatter)
     root.addHandler(h)
 
+logger = logging.getLogger(__name__)
 
 def _expand_path(p: str) -> str:
     return os.path.expandvars(os.path.expanduser(p))
@@ -397,3 +398,62 @@ def load_prompts(
 def set_job(msg: str, job_id, store):
     if job_id is not None:
         store.update_job(job_id, message=msg)
+
+def _resolve_path(base_config_path: str, p: str) -> str:
+    """
+    Expand env + ~ and resolve relative paths relative to config.yaml location.
+    """
+    p2 = os.path.expanduser(os.path.expandvars(p))
+    if os.path.isabs(p2):
+        return p2
+    base_dir = os.path.dirname(os.path.abspath(base_config_path)) or "."
+    return os.path.join(base_dir, p2)
+
+def load_feeds_into_config(config: Dict[str, Any], *, base_config_path: str = "config.yaml") -> Dict[str, Any]:
+    """
+    Ensures config["feeds"] is a list loaded from config/feeds.yaml (default),
+    unless config already has a list in "feeds".
+
+    Supported config patterns:
+      - config["feeds"] is already a list -> keep as-is
+      - config["feeds"] is a dict with {"path": "..."} -> load that file
+      - config["feeds_path"] = "..." -> load that file
+      - default file path: "config/feeds.yaml" (relative to config.yaml)
+    """
+    # already list -> keep
+    feeds = config.get("feeds")
+    if isinstance(feeds, list):
+        return config
+
+    # path from config
+    feeds_path: Optional[str] = None
+    if isinstance(feeds, dict) and isinstance(feeds.get("path"), str):
+        feeds_path = feeds["path"]
+    elif isinstance(config.get("feeds_path"), str):
+        feeds_path = str(config["feeds_path"])
+    else:
+        feeds_path = "config/feeds.yaml"
+
+    path = _resolve_path(base_config_path, feeds_path)
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or []
+        if not isinstance(loaded, list):
+            raise ValueError(f"feeds.yaml must be a list, got {type(loaded)}")
+
+        # Minimal validation: expect dict items
+        for i, item in enumerate(loaded):
+            if not isinstance(item, dict):
+                raise ValueError(f"feeds.yaml item {i} must be a dict, got {type(item)}")
+
+        config["feeds"] = loaded
+        return config
+    except FileNotFoundError:
+        logger.warning("feeds.yaml not found: %s (configure feeds.path or feeds_path)", path)
+        config["feeds"] = []
+        return config
+    except Exception as e:
+        logger.warning("failed to read feeds.yaml: %s -> %s", path, e)
+        config["feeds"] = []
+        return config

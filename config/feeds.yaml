@@ -1,0 +1,57 @@
+- name: Greynoise
+  url: https://www.greynoise.io/blog/rss.xml
+- name: Recorded Future
+  url: https://therecord.media/feed
+- name: Mandiant (Google)
+  url: https://www.mandiant.com/resources/blog/rss.xml
+- name: Cisco Talos - Global Threat Intelligence
+  url: https://blog.talosintelligence.com/rss/
+- name: Unit 42 (Palo Alto)
+  url: https://unit42.paloaltonetworks.com/feed/
+- name: Microsoft Security Blog
+  url: https://www.microsoft.com/en-us/security/blog/feed/
+- name: DataBreaches.net
+  url: https://www.databreaches.net/feed/
+- name: Troy Hunt (Have I Been Pwned)
+  url: https://www.troyhunt.com/rss/
+- name: BleepingComputer
+  url: https://www.bleepingcomputer.com/feed/
+- name: Cybernews
+  url: https://cybernews.com/news/feed/
+- name: Krebs on Security
+  url: https://krebsonsecurity.com/feed/
+- name: Enforcement Tracker
+  url: https://www.enforcementtracker.com/feed/
+- name: IAPP (Privacy Advisor)
+  url: https://iapp.org/rss/news/
+- name: Hunton Privacy Blog
+  url: https://www.huntonprivacyblog.com/feed/
+- name: Lawfare (Cybersecurity)
+  url: https://www.lawfaremedia.org/sections/cybersecurity/feed
+- name: CERT-SE
+  url: https://www.cert.se/feed.rss
+- name: IMY Nyheter
+  url: https://www.imy.se/nyheter/rss
+- name: IMY Tillsyner och beslut
+  url: https://www.imy.se/tillsyner/rss
+- name: IMY Bloggen
+  url: https://www.imy.se/blogg/rss
+- name: Rapid7 Blog
+  url: https://www.rapid7.com/blog/rss/
+- name: SANS Internet Storm Center
+  url: https://isc.sans.edu/rssfeed.xml
+- name: The Register Security
+  url: https://www.theregister.com/security/headlines.atom
+- name: Threatpost
+  url: https://threatpost.com/feed/
+- name: CVE Latest High/Critical
+  url: https://cvefeed.io/rssfeed/severity/high.xml
+- name: SVT
+  url: https://www.svt.se/rss.xml
+- name: The Guardian Europe
+  url: https://www.theguardian.com/europe/rss
+- name: The Guardian World
+  url: https://www.theguardian.com/world/rss
+- name: TV4
+  url: https://www.tv4.se/rss
+  category_include:["Inrikes", "Utrikes"]

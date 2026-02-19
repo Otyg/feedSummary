@@ -38,11 +38,12 @@ pipeline_lock = threading.Lock()
 CONFIG_PATH = os.environ.get("FEEDSUMMARY_CONFIG", "config.yaml")
 CONFIG_DIR = os.path.dirname(os.path.abspath(CONFIG_PATH)) or "."
 
-
 def load_config(path: str = CONFIG_PATH) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
+        cfg = yaml.safe_load(f)
+    from summarizer.helpers import load_feeds_into_config
+    cfg = load_feeds_into_config(cfg, base_config_path=path)
+    return cfg
 
 def get_store() -> NewsStore:
     cfg = load_config()

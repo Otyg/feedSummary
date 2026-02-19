@@ -50,6 +50,7 @@ from summarizer.helpers import (
     RateLimitError,
     compute_content_hash,
     entry_published_ts,
+    load_feeds_into_config,
     parse_lookback_to_seconds,
     set_job,
     stable_id,
@@ -198,6 +199,7 @@ async def gather_articles_to_store(
     ✅ Artikel-store ska bara hålla artiklar:
       - vi sätter inte summarized/summarized_at här längre
     """
+    config = load_feeds_into_config(config, base_config_path="config.yaml")
     feeds = config.get("feeds", [])
     ingest_cfg = config.get("ingest") or {}
     lookback = ingest_cfg.get("lookback")
