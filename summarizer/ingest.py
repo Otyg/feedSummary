@@ -331,14 +331,12 @@ async def gather_articles_to_store(
                     if existing is None:
                         store.upsert_article(doc)
                         inserted += 1
-                        logger.info(f"Inserted {title} från {name} som {aid}")
                     else:
                         if existing.get("content_hash") != chash:
                             store.upsert_article(doc)
                             updated += 1
-                            logger.info(f"Uppdaterade {title} från {name} som {aid}")
 
                 except Exception as e:
                     logger.warning(f"Artikel misslyckades: {link} -> {e}")
-
+    logger.info(f"Articles: {str(inserted)} inserted, {str(updated)} updated")
     return inserted, updated

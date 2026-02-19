@@ -426,6 +426,7 @@ def load_feeds_into_config(
       - config["feeds_path"] = "..." -> load that file
       - default file path: "config/feeds.yaml" (relative to config.yaml)
     """
+    logger.info("Reading feed-configs")
     # already list -> keep
     feeds = config.get("feeds")
     if isinstance(feeds, list):
@@ -444,7 +445,7 @@ def load_feeds_into_config(
 
     try:
         with open(path, "r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f) or []
+            loaded = yaml.safe_load(f) or None
         if not isinstance(loaded, list):
             raise ValueError(f"feeds.yaml must be a list, got {type(loaded)}")
 
@@ -457,13 +458,13 @@ def load_feeds_into_config(
 
         config["feeds"] = loaded
         return config
-    except FileNotFoundError:
-        logger.warning(
+    except FileNotFoundError as e:
+        logger.error(
             "feeds.yaml not found: %s (configure feeds.path or feeds_path)", path
         )
         config["feeds"] = []
-        return config
+        raise e
     except Exception as e:
-        logger.warning("failed to read feeds.yaml: %s -> %s", path, e)
+        logger.error("failed to read feeds.yaml: %s -> %s", path, e)
         config["feeds"] = []
-        return config
+        raise e

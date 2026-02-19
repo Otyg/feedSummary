@@ -26,8 +26,6 @@
   url: https://iapp.org/rss/news/
 - name: Hunton Privacy Blog
   url: https://www.huntonprivacyblog.com/feed/
-- name: Lawfare (Cybersecurity)
-  url: https://www.lawfaremedia.org/sections/cybersecurity/feed
 - name: CERT-SE
   url: https://www.cert.se/feed.rss
 - name: IMY Nyheter
@@ -54,6 +52,6 @@
   url: https://www.theguardian.com/world/rss
 - name: TV4
   url: https://www.tv4.se/rss
-  category_include:["Inrikes", "Utrikes"]
+  category_include: ["Inrikes", "Utrikes"]
 - name: Der Spiegel
   url: https://www.spiegel.de/international/index.rss
