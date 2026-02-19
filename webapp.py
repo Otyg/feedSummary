@@ -26,7 +26,7 @@ from llmClient import create_llm_client
 from persistence import NewsStore, create_store
 from summarizer.helpers import setup_logging
 from summarizer.main import run_pipeline
-from summarizer.summarizer import run_resume_and_persist_summary, run_resume_from_checkpoint
+from summarizer.summarizer import run_resume_and_persist_summary
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -124,7 +124,9 @@ def _load_prompt_packages(cfg: Dict[str, Any]) -> List[str]:
         logger.warning("prompts.yaml loaded but empty or not a dict: %s", path)
         return []
     except FileNotFoundError:
-        logger.warning("prompts.yaml not found: %s (from prompts.path=%s)", path, raw_path)
+        logger.warning(
+            "prompts.yaml not found: %s (from prompts.path=%s)", path, raw_path
+        )
         return []
     except Exception as e:
         logger.warning("failed to read prompts.yaml: %s -> %s", path, e)
@@ -244,7 +246,9 @@ def index():
     p_cfg = cfg.get("prompts") or {}
     default_prompt_pkg = ""
     if isinstance(p_cfg, dict):
-        default_prompt_pkg = str(p_cfg.get("selected") or p_cfg.get("default_package") or "").strip()
+        default_prompt_pkg = str(
+            p_cfg.get("selected") or p_cfg.get("default_package") or ""
+        ).strip()
     if not default_prompt_pkg and prompt_packages:
         default_prompt_pkg = prompt_packages[0]
 
@@ -332,7 +336,7 @@ def refresh():
         job_id,
         status="running",
         started_at=int(time.time()),
-        message=f"Startar refresh… (lookback={overrides.get('lookback','default')}, sources={len(selected_sources) or 'default'}, prompts={prompt_package or 'default'})",
+        message=f"Startar refresh… (lookback={overrides.get('lookback', 'default')}, sources={len(selected_sources) or 'default'}, prompts={prompt_package or 'default'})",
     )
 
     def worker(jid: int):
@@ -345,7 +349,11 @@ def refresh():
             )
             return
         try:
-            asyncio.run(run_pipeline(CONFIG_PATH, job_id=jid, overrides=overrides, config_dict=cfg))
+            asyncio.run(
+                run_pipeline(
+                    CONFIG_PATH, job_id=jid, overrides=overrides, config_dict=cfg
+                )
+            )
         except Exception as e:
             store.update_job(
                 jid,
@@ -368,7 +376,9 @@ def resume():
 
     job_id = request.args.get("job", type=int)
     if not job_id:
-        return jsonify({"status": "error", "message": "Saknar job. Använd /resume?job=<id>"}), 400
+        return jsonify(
+            {"status": "error", "message": "Saknar job. Använd /resume?job=<id>"}
+        ), 400
 
     store.update_job(
         job_id,
@@ -461,6 +471,7 @@ def api_status_stream(job_id: int):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
+
 @app.get("/articles")
 def list_articles():
     store = get_store()
@@ -481,5 +492,7 @@ def list_articles():
         "articles.html",
         articles=view_articles,
     )
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)

@@ -111,22 +111,39 @@ def _sources_snapshots(articles: List[dict]) -> List[dict]:
 
 
 def _persist_summary_doc(store: NewsStore, doc: Dict[str, Any]) -> Any:
-    for name in ("save_summary_doc", "save_summary_document", "put_summary_doc", "insert_summary_doc"):
+    for name in (
+        "save_summary_doc",
+        "save_summary_document",
+        "put_summary_doc",
+        "insert_summary_doc",
+    ):
         fn = getattr(store, name, None)
         if callable(fn):
             return fn(doc)
-    raise RuntimeError("Store saknar metod för att spara summary-dokument (summary_docs).")
+    raise RuntimeError(
+        "Store saknar metod för att spara summary-dokument (summary_docs)."
+    )
 
 
-def _extract_llm_doc(config: Dict[str, Any], llm: LLMClient, temperature: float) -> Dict[str, Any]:
+def _extract_llm_doc(
+    config: Dict[str, Any], llm: LLMClient, temperature: float
+) -> Dict[str, Any]:
     llm_cfg = config.get("llm") or {}
     provider = str(llm_cfg.get("provider") or llm_cfg.get("type") or "")
     model = str(llm_cfg.get("model") or llm_cfg.get("name") or "")
 
     if not provider:
-        provider = str(getattr(getattr(llm, "cfg", None), "provider", "") or getattr(llm, "provider", "") or "")
+        provider = str(
+            getattr(getattr(llm, "cfg", None), "provider", "")
+            or getattr(llm, "provider", "")
+            or ""
+        )
     if not model:
-        model = str(getattr(getattr(llm, "cfg", None), "model", "") or getattr(llm, "model", "") or "")
+        model = str(
+            getattr(getattr(llm, "cfg", None), "model", "")
+            or getattr(llm, "model", "")
+            or ""
+        )
 
     return {
         "provider": provider or "unknown",
@@ -167,7 +184,9 @@ def _load_ordered_articles_from_checkpoint(
 
     articles = store.get_articles_by_ids(article_ids)
     if not articles:
-        raise RuntimeError("Kunde inte ladda artiklar från store för checkpointens article_ids")
+        raise RuntimeError(
+            "Kunde inte ladda artiklar från store för checkpointens article_ids"
+        )
 
     by_id = {str(a.get("id")): a for a in articles if a.get("id")}
     ordered = [by_id[i] for i in article_ids if i in by_id]
@@ -508,7 +527,9 @@ async def summarize_batches_then_meta_with_stats(
 
             budget_tokens = new_budget
     else:
-        raise RuntimeError(f"Meta misslyckades efter {meta_attempts} försök: {last_err}")
+        raise RuntimeError(
+            f"Meta misslyckades efter {meta_attempts} försök: {last_err}"
+        )
 
     # checkpoint meta-result
     if cp_enabled and meta_path is not None:

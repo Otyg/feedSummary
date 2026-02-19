@@ -328,7 +328,9 @@ def entry_published_ts(entry: feedparser.FeedParserDict) -> Optional[int]:
 # ----------------------------
 # Prompt loader (from config)
 # ----------------------------
-def load_prompts(config: Dict[str, Any], package: Optional[str] = None) -> Dict[str, str]:
+def load_prompts(
+    config: Dict[str, Any], package: Optional[str] = None
+) -> Dict[str, str]:
     """
     1) NYTT: läsa promptpaket från config/prompts.yaml
        config.yaml:
@@ -342,7 +344,12 @@ def load_prompts(config: Dict[str, Any], package: Optional[str] = None) -> Dict[
     p_cfg = config.get("prompts") or {}
 
     # Backward compat: prompts directly embedded in config.yaml
-    embedded_keys = ("batch_system", "batch_user_template", "meta_system", "meta_user_template")
+    embedded_keys = (
+        "batch_system",
+        "batch_user_template",
+        "meta_system",
+        "meta_user_template",
+    )
     if isinstance(p_cfg, dict) and any(k in p_cfg for k in embedded_keys):
         return {k: str(p_cfg.get(k, "")) for k in embedded_keys}
 

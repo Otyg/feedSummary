@@ -1,3 +1,35 @@
+# LICENSE HEADER MANAGED BY add-license-header
+#
+# BSD 3-Clause License
+#
+# Copyright (c) 2026, Martin Vesterlund
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
 from __future__ import annotations
 
 import asyncio
@@ -5,7 +37,7 @@ import copy
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -44,15 +76,27 @@ def _summary_doc_id(created_ts: int, job_id: Optional[int]) -> str:
     return f"{base}_job{job_id}" if job_id is not None else base
 
 
-def _extract_llm_doc(config: Dict[str, Any], llm: Any, temperature: float) -> Dict[str, Any]:
+def _extract_llm_doc(
+    config: Dict[str, Any], llm: Any, temperature: float
+) -> Dict[str, Any]:
     llm_cfg = config.get("llm") or {}
-    provider = str(llm_cfg.get("provider") or llm_cfg.get("type") or llm_cfg.get("client") or "")
+    provider = str(
+        llm_cfg.get("provider") or llm_cfg.get("type") or llm_cfg.get("client") or ""
+    )
     model = str(llm_cfg.get("model") or llm_cfg.get("name") or "")
 
     if not provider:
-        provider = str(getattr(getattr(llm, "cfg", None), "provider", "") or getattr(llm, "provider", "") or "")
+        provider = str(
+            getattr(getattr(llm, "cfg", None), "provider", "")
+            or getattr(llm, "provider", "")
+            or ""
+        )
     if not model:
-        model = str(getattr(getattr(llm, "cfg", None), "model", "") or getattr(llm, "model", "") or "")
+        model = str(
+            getattr(getattr(llm, "cfg", None), "model", "")
+            or getattr(llm, "model", "")
+            or ""
+        )
 
     return {
         "provider": provider or "unknown",
@@ -89,11 +133,18 @@ def _sources_snapshots(articles: List[dict]) -> List[dict]:
 
 
 def _persist_summary_doc(store: NewsStore, doc: Dict[str, Any]) -> Any:
-    for name in ("save_summary_doc", "save_summary_document", "put_summary_doc", "insert_summary_doc"):
+    for name in (
+        "save_summary_doc",
+        "save_summary_document",
+        "put_summary_doc",
+        "insert_summary_doc",
+    ):
         fn = getattr(store, name, None)
         if callable(fn):
             return fn(doc)
-    raise RuntimeError("Store saknar metod för att spara summary-dokument (summary_docs).")
+    raise RuntimeError(
+        "Store saknar metod för att spara summary-dokument (summary_docs)."
+    )
 
 
 def _get_config_sources(config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -138,7 +189,9 @@ def _set_config_sources(config: Dict[str, Any], sources: List[Dict[str, Any]]) -
     config["sources"] = sources
 
 
-def _apply_overrides(config: Dict[str, Any], overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _apply_overrides(
+    config: Dict[str, Any], overrides: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
     """
     overrides:
       - lookback: str   ex: "24h", "3d"
@@ -163,7 +216,9 @@ def _apply_overrides(config: Dict[str, Any], overrides: Optional[Dict[str, Any]]
         if all_sources:
 
             def _name_of(s: Dict[str, Any]) -> str:
-                return str(s.get("name") or s.get("title") or s.get("label") or "").strip()
+                return str(
+                    s.get("name") or s.get("title") or s.get("label") or ""
+                ).strip()
 
             filtered = [s for s in all_sources if _name_of(s) in selected_set]
             _set_config_sources(cfg, filtered)
@@ -191,7 +246,9 @@ def _selected_source_names(config: Dict[str, Any]) -> List[str]:
     return out
 
 
-def _select_articles_for_summary(config: Dict[str, Any], store: NewsStore, *, limit: int = 2000) -> List[dict]:
+def _select_articles_for_summary(
+    config: Dict[str, Any], store: NewsStore, *, limit: int = 2000
+) -> List[dict]:
     """
     Välj artiklar baserat på:
       - ingest.lookback (default-värde, men överstyrbart från UI via overrides)
@@ -211,7 +268,9 @@ def _select_articles_for_summary(config: Dict[str, Any], store: NewsStore, *, li
     # Föredra store-filter om det finns
     list_by_filter = getattr(store, "list_articles_by_filter", None)
     if callable(list_by_filter) and since_ts > 0 and sources:
-        rows = list_by_filter(sources=sources, since_ts=since_ts, until_ts=now, limit=limit)
+        rows = list_by_filter(
+            sources=sources, since_ts=since_ts, until_ts=now, limit=limit
+        )
         # säkra ordning: äldsta först
         rows.sort(key=_published_ts)
         return rows
@@ -266,7 +325,9 @@ async def run_pipeline(
             message="Startar ingest...",
         )
         if overrides:
-            store.update_job(job_id, message=f"Startar ingest... (overrides: {overrides})")
+            store.update_job(
+                job_id, message=f"Startar ingest... (overrides: {overrides})"
+            )
 
     ins, upd = await gather_articles_to_store(config, store, job_id=job_id)
 
