@@ -1,36 +1,7 @@
-# LICENSE HEADER MANAGED BY add-license-header
-#
-# BSD 3-Clause License
-#
-# Copyright (c) 2026, Martin Vesterlund
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
+from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from datetime import datetime
@@ -40,12 +11,7 @@ import yaml
 
 from llmClient import create_llm_client
 from persistence import NewsStore, create_store
-from summarizer.batching import batch_articles
-from summarizer.helpers import (
-    interleave_by_source_oldest_first,
-    load_prompts,
-    setup_logging,
-)
+from summarizer.helpers import setup_logging, load_prompts
 from summarizer.ingest import gather_articles_to_store
 from summarizer.summarizer import summarize_batches_then_meta_with_stats
 
@@ -78,28 +44,15 @@ def _summary_doc_id(created_ts: int, job_id: Optional[int]) -> str:
     return f"{base}_job{job_id}" if job_id is not None else base
 
 
-def _extract_llm_doc(
-    config: Dict[str, Any], llm: Any, temperature: float
-) -> Dict[str, Any]:
+def _extract_llm_doc(config: Dict[str, Any], llm: Any, temperature: float) -> Dict[str, Any]:
     llm_cfg = config.get("llm") or {}
-    provider = str(
-        llm_cfg.get("provider") or llm_cfg.get("type") or llm_cfg.get("client") or ""
-    )
+    provider = str(llm_cfg.get("provider") or llm_cfg.get("type") or llm_cfg.get("client") or "")
     model = str(llm_cfg.get("model") or llm_cfg.get("name") or "")
 
-    # fallback: om klienten exponerar cfg/model/provider
     if not provider:
-        provider = str(
-            getattr(getattr(llm, "cfg", None), "provider", "")
-            or getattr(llm, "provider", "")
-            or ""
-        )
+        provider = str(getattr(getattr(llm, "cfg", None), "provider", "") or getattr(llm, "provider", "") or "")
     if not model:
-        model = str(
-            getattr(getattr(llm, "cfg", None), "model", "")
-            or getattr(llm, "model", "")
-            or ""
-        )
+        model = str(getattr(getattr(llm, "cfg", None), "model", "") or getattr(llm, "model", "") or "")
 
     return {
         "provider": provider or "unknown",
@@ -136,51 +89,110 @@ def _sources_snapshots(articles: List[dict]) -> List[dict]:
 
 
 def _persist_summary_doc(store: NewsStore, doc: Dict[str, Any]) -> Any:
-    """
-    Försök spara summary-dokumentet via ny API (om den finns).
-    Annars: fallback till save_summary(summary_text, ids) för bakåtkomp.
-    """
-    for name in (
-        "save_summary_doc",
-        "save_summary_document",
-        "put_summary_doc",
-        "insert_summary_doc",
-    ):
+    for name in ("save_summary_doc", "save_summary_document", "put_summary_doc", "insert_summary_doc"):
         fn = getattr(store, name, None)
         if callable(fn):
             return fn(doc)
-
-    fn2 = getattr(store, "save_summary", None)
-    if callable(fn2):
-        # håll web/UI kompatibelt (förväntar ofta text + ids)
-        return fn2(doc.get("summary", ""), doc.get("sources") or [])
-
-    raise RuntimeError("Store saknar metod för att spara summary-dokument.")
+    raise RuntimeError("Store saknar metod för att spara summary-dokument (summary_docs).")
 
 
-def _estimate_batch_total(config: Dict[str, Any], articles: List[dict]) -> int:
+def _get_config_sources(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    summarize_batches_then_meta kan trimma/move/droppa och därmed ändra batchform under körning.
-    Men för metadata i summary_doc räcker oftast att räkna 'default batch_total' deterministiskt.
+    Försök hitta sources-lista i vanliga nycklar.
+    Vi förväntar oss listor av dictar med åtminstone name+url (eller title+url).
     """
-    batching = config.get("batching", {}) or {}
-    max_chars = int(batching.get("max_chars_per_batch", 18000))
-    max_n = int(batching.get("max_articles_per_batch", 10))
-    clip_chars = int(batching.get("article_clip_chars", 6000))
+    candidates = [
+        config.get("sources"),
+        config.get("feeds"),
+        config.get("rss_sources"),
+        (config.get("ingest") or {}).get("sources"),
+        (config.get("ingest") or {}).get("feeds"),
+    ]
+    for c in candidates:
+        if isinstance(c, list) and c and all(isinstance(x, dict) for x in c):
+            return c  # type: ignore[return-value]
+    return []
 
-    ordered = interleave_by_source_oldest_first(articles)
-    batches = batch_articles(ordered, max_chars, max_n, article_clip_chars=clip_chars)
-    return len(batches)
+
+def _set_config_sources(config: Dict[str, Any], sources: List[Dict[str, Any]]) -> None:
+    """
+    Sätt sources tillbaka där de redan låg (prioritet), annars i config["sources"].
+    """
+    if isinstance(config.get("sources"), list):
+        config["sources"] = sources
+        return
+    if isinstance(config.get("feeds"), list):
+        config["feeds"] = sources
+        return
+    if isinstance(config.get("rss_sources"), list):
+        config["rss_sources"] = sources
+        return
+    ingest = config.setdefault("ingest", {})
+    if isinstance(ingest, dict):
+        if isinstance(ingest.get("sources"), list):
+            ingest["sources"] = sources
+            return
+        if isinstance(ingest.get("feeds"), list):
+            ingest["feeds"] = sources
+            return
+    config["sources"] = sources
 
 
-# ----------------------------
-# Pipeline (orchestrates only)
-# ----------------------------
+def _apply_overrides(config: Dict[str, Any], overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    overrides:
+      - lookback: str   ex: "24h", "3d"
+      - sources: List[str]  list of source names to include
+    """
+    if not overrides:
+        return config
+
+    cfg = copy.deepcopy(config)
+
+    lookback = overrides.get("lookback")
+    if isinstance(lookback, str) and lookback.strip():
+        ingest = cfg.setdefault("ingest", {})
+        if isinstance(ingest, dict):
+            ingest["lookback"] = lookback.strip()
+
+    selected = overrides.get("sources")
+    if isinstance(selected, list) and selected:
+        selected_set = {str(x) for x in selected if str(x).strip()}
+        all_sources = _get_config_sources(cfg)
+        if all_sources:
+            def _name_of(s: Dict[str, Any]) -> str:
+                return str(s.get("name") or s.get("title") or s.get("label") or "").strip()
+
+            filtered = [s for s in all_sources if _name_of(s) in selected_set]
+            _set_config_sources(cfg, filtered)
+    
+    prompt_pkg = overrides.get("prompt_package")
+    if isinstance(prompt_pkg, str) and prompt_pkg.strip():
+        p = cfg.setdefault("prompts", {})
+        if isinstance(p, dict):
+            p["selected"] = prompt_pkg.strip()
+    
+    return cfg
+
+
 async def run_pipeline(
-    config_path: str = "config.yaml", job_id: Optional[int] = None
+    config_path: str = "config.yaml",
+    job_id: Optional[int] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+    config_dict: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    """
+    Orchestrator.
+    - config.yaml values are defaults
+    - overrides (from webapp) can set ingest.lookback + chosen sources
+    """
+    if config_dict is None:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+    else:
+        config = config_dict
+
+    config = _apply_overrides(config, overrides)
 
     store = create_store(config.get("store", {}))
     llm = create_llm_client(config)
@@ -192,7 +204,8 @@ async def run_pipeline(
             started_at=int(time.time()),
             message="Startar ingest...",
         )
-        logger.info("Startar ingest job %s", job_id)
+        if overrides:
+            store.update_job(job_id, message=f"Startar ingest... (overrides: {overrides})")
 
     ins, upd = await gather_articles_to_store(config, store, job_id=job_id)
 
@@ -213,12 +226,10 @@ async def run_pipeline(
             )
         return None
 
-    # 1) Summarize (batch+meta) – returns markdown text
     meta_text, stats = await summarize_batches_then_meta_with_stats(
         config, to_sum, llm=llm, store=store, job_id=job_id
     )
 
-    # 2) Build summary document (your schema)
     created_ts = int(time.time())
     ids = [a.get("id") for a in to_sum if a.get("id")]
 
@@ -227,19 +238,9 @@ async def run_pipeline(
     from_ts = min(pts2) if pts2 else 0
     to_ts = max(pts2) if pts2 else 0
 
-    temperature = 0.2  # matchar summarize_batches_then_meta i summarizer.py
+    temperature = 0.2
     llm_doc = _extract_llm_doc(config, llm, temperature=temperature)
     batching_doc = _extract_batching_doc(config)
-
-    # Best-effort meta stats (summarizer.py returnerar ej stats idag)
-    batch_total = _estimate_batch_total(config, to_sum)
-
-    llm_cfg = config.get("llm") or {}
-    max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
-    max_out = int(llm_cfg.get("max_output_tokens", 700))
-    margin = int(llm_cfg.get("prompt_safety_margin", 1024))
-    # "budget" här är startbudget, inte adaptiv slutbudget (best-effort)
-    meta_budget_tokens = max(0, max_ctx - max_out - margin)
 
     summary_doc: Dict[str, Any] = {
         "id": _summary_doc_id(created_ts, job_id),
@@ -254,18 +255,22 @@ async def run_pipeline(
         "to": to_ts,
         "summary": meta_text,
         "meta": {
-            "batch_total": batch_total,
-            "trims": 0,  # kräver att summarizer.py returnerar stats
-            "drops": 0,  # kräver att summarizer.py returnerar stats
-            "meta_budget_tokens": meta_budget_tokens,  # best-effort
+            "batch_total": int(stats.get("batch_total") or 0),
+            "trims": int(stats.get("trims") or 0),
+            "drops": int(stats.get("drops") or 0),
+            "meta_budget_tokens": int(stats.get("meta_budget_tokens") or 0),
         },
     }
 
-    # 3) Persist summary doc (prefers new API if present)
-    summary_id = _persist_summary_doc(store, summary_doc)
+    summary_doc_id = _persist_summary_doc(store, summary_doc)
 
-    # 4) Mark summarized in global corpus
-    store.mark_articles_summarized(ids)  # type: ignore
+    legacy_summary_id = None
+    try:
+        legacy_summary_id = store.save_summary(meta_text, ids)
+    except Exception:
+        legacy_summary_id = None
+
+    store.mark_articles_summarized(ids)
 
     if job_id is not None:
         store.update_job(
@@ -273,10 +278,11 @@ async def run_pipeline(
             status="done",
             finished_at=int(time.time()),
             message=f"Klart: summerade {len(ids)} artiklar.",
-            summary_id=summary_id,
+            summary_id=summary_doc_id,
+            legacy_summary_id=legacy_summary_id,
         )
 
-    return summary_id
+    return summary_doc_id
 
 
 if __name__ == "__main__":

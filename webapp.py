@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime
@@ -25,7 +26,6 @@ from llmClient import create_llm_client
 from persistence import NewsStore, create_store
 from summarizer.helpers import setup_logging
 from summarizer.main import run_pipeline
-from summarizer.prompt_lab import run_promptlab_summarization
 from summarizer.summarizer import run_resume_from_checkpoint
 
 setup_logging()
@@ -52,6 +52,56 @@ def format_ts(ts: Optional[int]) -> str:
 
 
 # ----------------------------
+# Config sources (for UI)
+# ----------------------------
+def _get_config_sources(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    candidates = [
+        cfg.get("sources"),
+        cfg.get("feeds"),
+        cfg.get("rss_sources"),
+        (cfg.get("ingest") or {}).get("sources"),
+        (cfg.get("ingest") or {}).get("feeds"),
+    ]
+    for c in candidates:
+        if isinstance(c, list) and c and all(isinstance(x, dict) for x in c):
+            return c  # type: ignore[return-value]
+    return []
+
+
+def _source_name(s: Dict[str, Any]) -> str:
+    return str(s.get("name") or s.get("title") or s.get("label") or "").strip()
+
+
+def _build_source_options(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for s in _get_config_sources(cfg):
+        name = _source_name(s)
+        if not name:
+            continue
+        out.append(
+            {
+                "name": name,
+                "url": str(s.get("url") or s.get("href") or s.get("rss") or ""),
+                "default_checked": bool(s.get("enabled", True)),
+            }
+        )
+    out.sort(key=lambda x: x["name"].lower())
+    return out
+
+def _load_prompt_packages(cfg: Dict[str, Any]) -> List[str]:
+    p_cfg = cfg.get("prompts") or {}
+    if not isinstance(p_cfg, dict):
+        return []
+    path = os.path.expanduser(os.path.expandvars(str(p_cfg.get("path") or "config/prompts.yaml")))
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            all_pkgs = yaml.safe_load(f) or {}
+        if isinstance(all_pkgs, dict):
+            return sorted([str(k) for k in all_pkgs.keys()])
+    except Exception:
+        return []
+    return []
+# ----------------------------
 # Summary compatibility layer (legacy summaries + new summary_docs)
 # ----------------------------
 def _summary_doc_to_legacy_like(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -73,7 +123,7 @@ def _get_latest_summary_compat(store: NewsStore) -> Optional[Dict[str, Any]]:
         try:
             doc = fn()
             if doc:
-                return _summary_doc_to_legacy_like(doc) # type: ignore
+                return _summary_doc_to_legacy_like(doc)
         except Exception:
             pass
 
@@ -94,7 +144,7 @@ def _list_summaries_compat(store: NewsStore) -> List[Dict[str, Any]]:
     if callable(fn_list_docs):
         try:
             docs = fn_list_docs() or []
-            for d in docs: # type: ignore
+            for d in docs:
                 if isinstance(d, dict):
                     items.append(_summary_doc_to_legacy_like(d))
         except Exception:
@@ -135,7 +185,7 @@ def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str,
         try:
             d = fn_get_doc(summary_id)
             if d:
-                return _summary_doc_to_legacy_like(d) # type: ignore
+                return _summary_doc_to_legacy_like(d)
         except Exception:
             pass
 
@@ -144,7 +194,7 @@ def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str,
         try:
             d = fn_get_doc2(summary_id)
             if d:
-                return _summary_doc_to_legacy_like(d) # type: ignore
+                return _summary_doc_to_legacy_like(d)
         except Exception:
             pass
 
@@ -157,8 +207,14 @@ def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str,
 @app.get("/")
 def index():
     store = get_store()
-
-    # Left sidebar list
+    cfg = load_config()
+    prompt_packages = _load_prompt_packages(cfg)
+    p_cfg = cfg.get("prompts") or {}
+    default_prompt_pkg = ""
+    if isinstance(p_cfg, dict):
+        default_prompt_pkg = str(p_cfg.get("selected") or p_cfg.get("default_package") or "").strip()
+    if not default_prompt_pkg and prompt_packages:
+        default_prompt_pkg = prompt_packages[0]
     all_summaries = _list_summaries_compat(store)
     sidebar_items = [
         {
@@ -169,15 +225,21 @@ def index():
         for s in all_summaries
     ]
 
-    # Selected summary (from query param) else latest
     selected_id = request.args.get("summary_id")
     selected: Optional[Dict[str, Any]] = None
-
     if selected_id:
         selected = _get_summary_compat(store, str(selected_id))
-
     if not selected:
         selected = _get_latest_summary_compat(store)
+
+    # modal defaults
+    ingest = cfg.get("ingest") or {}
+    default_lookback = str(ingest.get("lookback") or "24h")
+    # split "24h" -> ("24","h")
+    lb_val = "".join([c for c in default_lookback if c.isdigit()]) or "24"
+    lb_unit = "".join([c for c in default_lookback if not c.isdigit()]).strip() or "h"
+
+    source_options = _build_source_options(cfg)
 
     if not selected:
         return render_template(
@@ -185,6 +247,9 @@ def index():
             summary=None,
             summary_list=sidebar_items,
             selected_id=selected_id,
+            source_options=source_options,
+            default_lb_value=lb_val,
+            default_lb_unit=lb_unit,
         )
 
     summary_text = selected.get("summary", "")
@@ -193,17 +258,6 @@ def index():
     selected_id = str(selected.get("id"))
 
     summary_html = md.markdown(summary_text, extensions=["extra"])
-    articles = store.get_articles_by_ids(article_ids)
-
-    view_articles = [
-        {
-            "title": a.get("title", ""),
-            "url": a.get("url", ""),
-            "source": a.get("source", ""),
-            "published": a.get("published", ""),
-        }
-        for a in articles
-    ]
 
     return render_template(
         "index.html",
@@ -211,66 +265,48 @@ def index():
         summary_html=summary_html,
         summary_time=format_ts(created_at),
         n_articles=len(article_ids),
-        articles=view_articles,
         summary_list=sidebar_items,
         selected_id=selected_id,
-    )
-
-
-@app.get("/history")
-def history():
-    store = get_store()
-    summaries = _list_summaries_compat(store)
-
-    items = [
-        {
-            "id": s.get("id"),
-            "time": format_ts(int(s.get("created_at") or 0)),
-            "n_articles": len(s.get("article_ids", []) or []),
-        }
-        for s in summaries
-    ]
-    return render_template("history.html", items=items)
-
-
-@app.get("/summary/<summary_id>")
-def view_summary(summary_id: str):
-    # Keep direct route working (uses summary.html, no sidebar)
-    store = get_store()
-    s = _get_summary_compat(store, summary_id)
-    if not s:
-        return redirect(url_for("index"))
-
-    summary_text = s.get("summary", "")
-    created_at = int(s.get("created_at") or 0)
-    article_ids = s.get("article_ids", []) or []
-
-    summary_html = md.markdown(summary_text, extensions=["extra"])
-    articles = store.get_articles_by_ids(article_ids)
-
-    view_articles = [
-        {
-            "title": a.get("title", ""),
-            "url": a.get("url", ""),
-            "source": a.get("source", ""),
-            "published": a.get("published", ""),
-        }
-        for a in articles
-    ]
-
-    return render_template(
-        "summary.html",
-        summary_html=summary_html,
-        summary_time=format_ts(created_at),
-        n_articles=len(article_ids),
-        articles=view_articles,
+        source_options=source_options,
+        default_lb_value=lb_val,
+        default_lb_unit=lb_unit,
+        prompt_packages=prompt_packages,
+        default_prompt_package=default_prompt_pkg,
     )
 
 
 @app.post("/refresh")
 def refresh():
+    """
+    Refresh med overrides från modal:
+      - lookback_value + lookback_unit => lookback string
+      - sources[] => valda källnamn
+    """
     store = get_store()
+    cfg = load_config()
+
     job_id = store.create_job()
+
+    lookback_value = (request.form.get("lookback_value") or "").strip()
+    lookback_unit = (request.form.get("lookback_unit") or "").strip().lower()
+    selected_sources = request.form.getlist("sources") or []
+    prompt_package = (request.form.get("prompt_package") or "").strip()
+    
+    overrides: Dict[str, Any] = {}
+    if prompt_package:
+        overrides["prompt_package"] = prompt_package
+    if lookback_value and lookback_unit:
+        overrides["lookback"] = f"{lookback_value}{lookback_unit}"
+    if selected_sources:
+        overrides["sources"] = selected_sources
+
+    # log in job for traceability
+    store.update_job(
+        job_id,
+        status="running",
+        started_at=int(time.time()),
+        message=f"Startar refresh… (lookback={overrides.get('lookback','default')}, sources={len(selected_sources) or 'default'})",
+    )
 
     def worker(jid: int):
         if not pipeline_lock.acquire(blocking=False):
@@ -281,9 +317,8 @@ def refresh():
                 message="En refresh kör redan. Försök igen om en stund.",
             )
             return
-
         try:
-            asyncio.run(run_pipeline("config.yaml", job_id=jid))
+            asyncio.run(run_pipeline("config.yaml", job_id=jid, overrides=overrides, config_dict=cfg))
         except Exception as e:
             store.update_job(
                 jid,
@@ -306,9 +341,7 @@ def resume():
 
     job_id = request.args.get("job", type=int)
     if not job_id:
-        return jsonify(
-            {"status": "error", "message": "Saknar job. Använd /resume?job=<id>"}
-        ), 400
+        return jsonify({"status": "error", "message": "Saknar job. Använd /resume?job=<id>"}), 400
 
     store.update_job(
         job_id,
@@ -350,25 +383,6 @@ def resume():
 
     threading.Thread(target=worker, args=(job_id,), daemon=True).start()
     return redirect(url_for("index", job=job_id))
-
-
-@app.get("/api/status/<int:job_id>")
-def api_status(job_id: int):
-    store = get_store()
-    job = store.get_job(job_id)
-    if not job:
-        return jsonify({"status": "error", "message": "Jobb hittades inte."}), 404
-
-    return jsonify(
-        {
-            "status": job.get("status"),
-            "message": job.get("message", ""),
-            "created_at": job.get("created_at"),
-            "started_at": job.get("started_at"),
-            "finished_at": job.get("finished_at"),
-            "summary_id": job.get("summary_id"),
-        }
-    )
 
 
 @app.get("/api/status/stream/<int:job_id>")
@@ -420,130 +434,6 @@ def api_status_stream(job_id: int):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
-
-# prompt-lab routes unchanged below (om du har dem kvar)
-@app.get("/prompt-lab")
-def prompt_lab():
-    cfg = load_config()
-    store = get_store()
-
-    summaries = store.list_summaries()
-    items = [
-        {
-            "id": s["id"],
-            "time": format_ts(s.get("created_at")),
-            "n": len(s.get("article_ids", []) or []),
-        }
-        for s in summaries
-    ]
-
-    job = request.args.get("job", type=int)
-    result = request.args.get("result", type=int)
-    selected_summary_id = request.args.get("summary_id", type=int)
-
-    job_or_result = job or result
-
-    temp = None
-    temp_html = None
-
-    if job_or_result:
-        temp = store.get_temp_summary(job_or_result)
-        if temp and isinstance(temp, dict) and temp.get("summary"):
-            temp_html = md.markdown(str(temp["summary"]), extensions=["extra"])
-
-    return render_template(
-        "prompt_lab.html",
-        prompts=cfg.get("prompts", {}),
-        summaries=items,
-        selected_summary_id=selected_summary_id,
-        job_id=job,
-        result_id=result,
-        temp=temp,
-        temp_html=temp_html,
-    )
-
-
-@app.post("/prompt-lab/run")
-def prompt_lab_run():
-    cfg = load_config()
-    store = get_store()
-
-    summary_id = request.form.get("summary_id", type=int)
-    prompts = cfg.get("prompts", {})
-
-    job_id = store.create_job()
-    store.update_job(
-        job_id,
-        status="running",
-        started_at=int(time.time()),
-        message="Prompt-lab: startar...",
-    )
-
-    llm = create_llm_client(cfg)
-
-    def worker(jid: int):
-        if not pipeline_lock.acquire(blocking=False):
-            store.update_job(
-                jid,
-                status="error",
-                finished_at=int(time.time()),
-                message="En körning pågår redan.",
-            )
-            return
-
-        try:
-            if summary_id is None:
-                s = store.get_latest_summary()
-                if not s:
-                    raise RuntimeError(
-                        "Ingen sparad summary finns att använda i prompt-lab."
-                    )
-            else:
-                s = store.get_summary(summary_id)
-                if not s:
-                    raise RuntimeError(f"Kunde inte hitta summary_id={summary_id}")
-
-            source_summary_id = int(s.get("id"))  # type: ignore
-            article_ids = s.get("article_ids", []) or []
-            articles = store.get_articles_by_ids(article_ids)
-
-            store.update_job(
-                jid,
-                message=f"Prompt-lab: använder summary {source_summary_id} ({len(articles)} artiklar)",
-            )
-
-            asyncio.run(
-                run_promptlab_summarization(
-                    config=cfg,
-                    prompts=prompts,
-                    store=store,
-                    llm=llm,
-                    job_id=jid,
-                    source_summary_id=source_summary_id,
-                    articles=articles,
-                )
-            )
-
-            store.update_job(
-                jid,
-                status="done",
-                finished_at=int(time.time()),
-                message="Prompt-lab: klart.",
-            )
-        except Exception as e:
-            store.update_job(
-                jid,
-                status="error",
-                finished_at=int(time.time()),
-                message=f"Prompt-lab misslyckades: {e}",
-            )
-        finally:
-            pipeline_lock.release()
-
-    threading.Thread(target=worker, args=(job_id,), daemon=True).start()
-    return redirect(url_for("prompt_lab", job=job_id, summary_id=summary_id))
-
-
 @app.get("/articles")
 def list_articles():
     store = get_store()
@@ -564,7 +454,5 @@ def list_articles():
         "articles.html",
         articles=view_articles,
     )
-
-
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)

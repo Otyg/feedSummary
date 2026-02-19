@@ -33,15 +33,22 @@
 # ----------------------------
 # Fetch/extract
 # ----------------------------
+import asyncio
+import logging
 import time
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import aiohttp
+import feedparser
+import trafilatura
 from aiolimiter import AsyncLimiter
-from typing import Any, Dict, List, Optional, Tuple
 from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential_jitter,
 )
+
 from persistence import NewsStore
 from summarizer.helpers import (
     RateLimitError,
@@ -51,13 +58,94 @@ from summarizer.helpers import (
     set_job,
     stable_id,
 )
-import logging
-import trafilatura
-import asyncio
-import aiohttp
-import feedparser
 
 logger = logging.getLogger(__name__)
+
+
+def _norm_cat(s: str) -> str:
+    return " ".join((s or "").strip().lower().split())
+
+
+def _entry_categories(entry: feedparser.FeedParserDict) -> Set[str]:
+    """
+    Plocka ut kategorier ur feedparser-entry på ett robust sätt.
+    TV4 brukar hamna i entry.tags[].term när RSS har <category>...</category>.
+    """
+    cats: Set[str] = set()
+
+    # entry.category (string)
+    try:
+        c = getattr(entry, "category", None)
+        if isinstance(c, str) and c.strip():
+            cats.add(_norm_cat(c))
+    except Exception:
+        pass
+
+    # entry.categories (list-like) – ibland förekommer
+    try:
+        cs = getattr(entry, "categories", None)
+        if isinstance(cs, list):
+            for x in cs:
+                if isinstance(x, str) and x.strip():
+                    cats.add(_norm_cat(x))
+                elif isinstance(x, dict):
+                    term = x.get("term") or x.get("label") or x.get("name")
+                    if isinstance(term, str) and term.strip():
+                        cats.add(_norm_cat(term))
+    except Exception:
+        pass
+
+    # entry.tags (list[dict]) – vanligast
+    try:
+        tags = getattr(entry, "tags", None)
+        if isinstance(tags, list):
+            for t in tags:
+                if isinstance(t, dict):
+                    term = t.get("term") or t.get("label") or t.get("name")
+                    if isinstance(term, str) and term.strip():
+                        cats.add(_norm_cat(term))
+    except Exception:
+        pass
+
+    return cats
+
+
+def _passes_category_filter(entry: feedparser.FeedParserDict, feed_cfg: Dict[str, Any]) -> bool:
+    """
+    feed_cfg kan innehålla:
+      - category_include: ["inrikes", "utrikes"]  (om satt: kräver match)
+      - category_exclude: ["sport"]              (om satt: får ej matcha)
+    """
+    inc = feed_cfg.get("category_include") or feed_cfg.get("categories_include")
+    exc = feed_cfg.get("category_exclude") or feed_cfg.get("categories_exclude")
+
+    inc_set: Set[str] = set()
+    exc_set: Set[str] = set()
+
+    if isinstance(inc, list):
+        inc_set = {_norm_cat(str(x)) for x in inc if str(x).strip()}
+    elif isinstance(inc, str) and inc.strip():
+        inc_set = {_norm_cat(inc)}
+
+    if isinstance(exc, list):
+        exc_set = {_norm_cat(str(x)) for x in exc if str(x).strip()}
+    elif isinstance(exc, str) and exc.strip():
+        exc_set = {_norm_cat(exc)}
+
+    if not inc_set and not exc_set:
+        return True
+
+    cats = _entry_categories(entry)
+
+    # exclude wins
+    if exc_set and (cats & exc_set):
+        return False
+
+    # include requires at least one match
+    if inc_set and not (cats & inc_set):
+        return False
+
+    return True
 
 
 async def fetch_rss(
@@ -120,7 +208,8 @@ async def gather_articles_to_store(
 
     - config.ingest.lookback: "24h", "3d", "2w", "90m" osv.
     - max_items_per_feed används fortfarande som safety cap.
-    - Om lookback saknas: bakåtkompatibelt (entries[:max_items]).
+    - Per-feed filter:
+        category_include / category_exclude (matchar entry.tags[].term m.fl.)
     """
 
     feeds = config.get("feeds", [])
@@ -190,6 +279,29 @@ async def gather_articles_to_store(
                     name,
                     len(entries),
                     max_items,
+                )
+
+            # --- NEW: category filter per feed (before fetching article html) ---
+            before_cat = len(entries_to_process)
+            if isinstance(f, dict) and (
+                f.get("category_include")
+                or f.get("categories_include")
+                or f.get("category_exclude")
+                or f.get("categories_exclude")
+            ):
+                tmp: List[feedparser.FeedParserDict] = []
+                for e in entries_to_process:
+                    if _passes_category_filter(e, f):
+                        tmp.append(e)
+                entries_to_process = tmp
+
+                logger.info(
+                    "RSS %s: category filter applied (kept=%d/%d include=%s exclude=%s)",
+                    name,
+                    len(entries_to_process),
+                    before_cat,
+                    f.get("category_include") or f.get("categories_include"),
+                    f.get("category_exclude") or f.get("categories_exclude"),
                 )
 
             for entry in entries_to_process:

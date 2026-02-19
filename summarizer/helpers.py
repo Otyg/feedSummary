@@ -45,6 +45,7 @@ import sys
 from collections import defaultdict, deque
 
 import feedparser
+import yaml
 
 
 def setup_logging():
@@ -327,18 +328,62 @@ def entry_published_ts(entry: feedparser.FeedParserDict) -> Optional[int]:
 # ----------------------------
 # Prompt loader (from config)
 # ----------------------------
-def load_prompts(config: Dict[str, Any]) -> Dict[str, str]:
-    defaults = {
-        "batch_system": None,
-        "batch_user_template": None,
-        "meta_system": None,
-        "meta_user_template": None,
-    }
+def load_prompts(config: Dict[str, Any], package: Optional[str] = None) -> Dict[str, str]:
+    """
+    1) NYTT: läsa promptpaket från config/prompts.yaml
+       config.yaml:
+         prompts:
+           path: "config/prompts.yaml"
+           default_package: "standard_sv"
+           selected: ""  (kan sättas av webappen)
+    2) BAKÅTKOMP: om config["prompts"] redan innehåller batch_system/meta_system etc,
+       använd det direkt.
+    """
+    p_cfg = config.get("prompts") or {}
 
-    p = config.get("prompts", {}) or {}
-    out = {k: str(p.get(k, defaults[k])) for k in defaults.keys()}
-    if None in out:
-        raise
+    # Backward compat: prompts directly embedded in config.yaml
+    embedded_keys = ("batch_system", "batch_user_template", "meta_system", "meta_user_template")
+    if isinstance(p_cfg, dict) and any(k in p_cfg for k in embedded_keys):
+        return {k: str(p_cfg.get(k, "")) for k in embedded_keys}
+
+    # New: prompts.yaml packages
+    path = "config/prompts.yaml"
+    default_pkg = "default"
+
+    if isinstance(p_cfg, dict):
+        path = str(p_cfg.get("path") or path)
+        default_pkg = str(p_cfg.get("default_package") or default_pkg)
+        selected = str(p_cfg.get("selected") or "").strip()
+    else:
+        selected = ""
+
+    pkg = (package or selected or default_pkg).strip()
+    if not pkg:
+        pkg = default_pkg
+
+    # Expand env + ~
+    path = os.path.expanduser(os.path.expandvars(path))
+
+    with open(path, "r", encoding="utf-8") as f:
+        all_pkgs = yaml.safe_load(f) or {}
+
+    if pkg not in all_pkgs:
+        # fallback: first key if default missing
+        if isinstance(all_pkgs, dict) and all_pkgs:
+            pkg = next(iter(all_pkgs.keys()))
+        else:
+            raise RuntimeError(f"Inga prompt-paket hittades i {path}")
+
+    blob = all_pkgs.get(pkg) or {}
+    if not isinstance(blob, dict):
+        raise RuntimeError(f"Prompt-paket '{pkg}' i {path} är inte ett dict-objekt")
+
+    out = {}
+    for k in embedded_keys:
+        out[k] = str(blob.get(k, ""))
+
+    # (valfritt) ta med fler nycklar om du vill, men ovan räcker för pipeline
+    out["_package"] = pkg  # bra för spårbarhet/loggning om du vill
     return out
 
 

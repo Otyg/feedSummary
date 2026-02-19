@@ -12,9 +12,7 @@
 {% endblock %}
 
 {% block top_actions %}
-  <form method="POST" action="{{ url_for('refresh') }}" style="margin:0;">
-    <button class="btn btn-primary" type="submit">Refresh</button>
-  </form>
+  <button class="btn btn-primary" type="button" id="openRefresh">Refresh</button>
 {% endblock %}
 
 {% block content %}
@@ -29,10 +27,8 @@
   </div>
 
   <div class="layout">
-    <!-- Sidebar -->
     <div class="card sidebar">
       <h3 style="margin-bottom: 10px;">Sammanfattningar</h3>
-
       {% if summary_list %}
         <ul class="summary-list">
           {% for it in summary_list %}
@@ -49,13 +45,10 @@
       {% endif %}
     </div>
 
-    <!-- Main content -->
     <div>
       {% if summary %}
-        <div class="grid-main">
-          <div class="card">
-            {{ summary_html|safe }}
-          </div>
+        <div class="card">
+          {{ summary_html|safe }}
         </div>
       {% else %}
         <div class="card">
@@ -65,8 +58,99 @@
     </div>
   </div>
 
+  <!-- Refresh Modal -->
+  <div class="modal-backdrop" id="refreshBackdrop" aria-hidden="true"></div>
+  <div class="modal" id="refreshModal" role="dialog" aria-modal="true" aria-labelledby="refreshTitle" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3 id="refreshTitle">Refresh – inställningar</h3>
+        <button class="btn" type="button" id="closeRefresh">Stäng</button>
+      </div>
+
+      <form method="POST" action="{{ url_for('refresh') }}">
+        <div class="form-row">
+          <label class="form-label">Tidsperspektiv</label>
+          <div class="form-inline">
+            <input class="input" name="lookback_value" type="number" min="1" value="{{ default_lb_value }}" style="width:120px;" />
+            <select class="select" name="lookback_unit">
+              <option value="h" {% if default_lb_unit == "h" %}selected{% endif %}>h</option>
+              <option value="d" {% if default_lb_unit == "d" %}selected{% endif %}>d</option>
+              <option value="w" {% if default_lb_unit == "w" %}selected{% endif %}>w</option>
+              <option value="m" {% if default_lb_unit == "m" %}selected{% endif %}>m</option>
+              <option value="y" {% if default_lb_unit == "y" %}selected{% endif %}>y</option>
+            </select>
+            <span class="muted">Ex: 24h, 3d</span>
+          </div>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Prompt-paket</label>
+          <div class="form-inline">
+            <select class="select" name="prompt_package">
+              {% for pkg in prompt_packages %}
+                <option value="{{ pkg }}" {% if default_prompt_package == pkg %}selected{% endif %}>
+                  {{ pkg }}
+                </option>
+              {% endfor %}
+            </select>
+            <span class="muted">Väljs per körning (config.yaml är default).</span>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label">Källor</label>
+          <div class="source-grid">
+            {% for s in source_options %}
+              <label class="chk">
+                <input type="checkbox" name="sources" value="{{ s.name }}" {% if s.default_checked %}checked{% endif %} />
+                <span>
+                  <strong>{{ s.name }}</strong>
+                  {% if s.url %}<span class="muted">· {{ s.url }}</span>{% endif %}
+                </span>
+              </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn" type="button" id="cancelRefresh">Avbryt</button>
+          <button class="btn btn-primary" type="submit">Kör refresh</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
 <script>
 (function() {
+  // --- modal open/close ---
+  const openBtn = document.getElementById("openRefresh");
+  const modal = document.getElementById("refreshModal");
+  const backdrop = document.getElementById("refreshBackdrop");
+  const closeBtn = document.getElementById("closeRefresh");
+  const cancelBtn = document.getElementById("cancelRefresh");
+
+  function openModal() {
+    modal.setAttribute("aria-hidden","false");
+    backdrop.setAttribute("aria-hidden","false");
+    modal.classList.add("open");
+    backdrop.classList.add("open");
+  }
+  function closeModal() {
+    modal.setAttribute("aria-hidden","true");
+    backdrop.setAttribute("aria-hidden","true");
+    modal.classList.remove("open");
+    backdrop.classList.remove("open");
+  }
+
+  openBtn?.addEventListener("click", openModal);
+  closeBtn?.addEventListener("click", closeModal);
+  cancelBtn?.addEventListener("click", closeModal);
+  backdrop?.addEventListener("click", closeModal);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeModal();
+  });
+
+  // --- SSE status (same as before) ---
   const params = new URLSearchParams(window.location.search);
   const jobId = params.get("job");
   const pill = document.getElementById("jobPill");
@@ -113,7 +197,6 @@
 
     if (data.status === "done") {
       es.close();
-      // Behåll ev. summary_id men ta bort job
       const url = new URL(window.location.href);
       url.searchParams.delete("job");
       window.location.replace(url.toString());
