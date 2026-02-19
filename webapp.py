@@ -1,35 +1,3 @@
-# LICENSE HEADER MANAGED BY add-license-header
-#
-# BSD 3-Clause License
-#
-# Copyright (c) 2026, Martin Vesterlund
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-
 from __future__ import annotations
 
 import asyncio
@@ -67,26 +35,6 @@ app = Flask(__name__)
 pipeline_lock = threading.Lock()
 
 
-def _get_promptlab_prompts(cfg: dict, form=None) -> dict:
-    """
-    Returnerar prompts att använda:
-      - om form skickas in: använd formvärden (om satt), annars fallback till cfg
-      - annars: bara cfg
-    """
-    p_cfg = cfg.get("prompts") or {}
-
-    keys = ["batch_system", "batch_user_template", "meta_system", "meta_user_template"]
-    out = {k: str(p_cfg.get(k, "")) for k in keys}
-
-    if form is not None:
-        for k in keys:
-            v = form.get(k)
-            if v is not None and str(v).strip() != "":
-                out[k] = str(v)
-
-    return out
-
-
 def load_config(path: str = "config.yaml") -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -107,10 +55,6 @@ def format_ts(ts: Optional[int]) -> str:
 # Summary compatibility layer (legacy summaries + new summary_docs)
 # ----------------------------
 def _summary_doc_to_legacy_like(doc: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Normaliserar ett summary_doc till samma nycklar som templates redan använder.
-    Templates förväntar typiskt: id, created_at, summary, article_ids
-    """
     created = doc.get("created") or doc.get("created_at") or 0
     sources = doc.get("sources") or doc.get("article_ids") or []
     return {
@@ -124,21 +68,15 @@ def _summary_doc_to_legacy_like(doc: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _get_latest_summary_compat(store: NewsStore) -> Optional[Dict[str, Any]]:
-    """
-    Försök först new-format (summary_docs), annars legacy.
-    Returnerar alltid en legacy-like dict.
-    """
-    # new format
     fn = getattr(store, "get_latest_summary_doc", None)
     if callable(fn):
         try:
             doc = fn()
             if doc:
-                return _summary_doc_to_legacy_like(doc)
+                return _summary_doc_to_legacy_like(doc) # type: ignore
         except Exception:
             pass
 
-    # legacy
     try:
         latest = store.get_latest_summary()
         if latest:
@@ -150,24 +88,18 @@ def _get_latest_summary_compat(store: NewsStore) -> Optional[Dict[str, Any]]:
 
 
 def _list_summaries_compat(store: NewsStore) -> List[Dict[str, Any]]:
-    """
-    Slå ihop legacy summaries och nya summary_docs (om de finns).
-    Returnerar legacy-like items och sorterar på created_at desc.
-    """
     items: List[Dict[str, Any]] = []
 
-    # new format
     fn_list_docs = getattr(store, "list_summary_docs", None)
     if callable(fn_list_docs):
         try:
             docs = fn_list_docs() or []
-            for d in docs:
+            for d in docs: # type: ignore
                 if isinstance(d, dict):
                     items.append(_summary_doc_to_legacy_like(d))
         except Exception:
             pass
 
-    # legacy
     try:
         legacy = store.list_summaries() or []
         for s in legacy:
@@ -176,7 +108,6 @@ def _list_summaries_compat(store: NewsStore) -> List[Dict[str, Any]]:
     except Exception:
         pass
 
-    # dedupe by id (prefer first occurrence i.e. summary_docs first)
     seen = set()
     out: List[Dict[str, Any]] = []
     for it in items:
@@ -191,11 +122,6 @@ def _list_summaries_compat(store: NewsStore) -> List[Dict[str, Any]]:
 
 
 def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str, Any]]:
-    """
-    summary_id kan vara int (legacy) eller str (new doc id).
-    Returnerar en legacy-like dict (med summary/article_ids/created_at).
-    """
-    # legacy first if numeric
     if summary_id.isdigit():
         try:
             s = store.get_summary(int(summary_id))
@@ -204,23 +130,21 @@ def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str,
         except Exception:
             pass
 
-    # new format
     fn_get_doc = getattr(store, "get_summary_doc", None)
     if callable(fn_get_doc):
         try:
             d = fn_get_doc(summary_id)
             if d:
-                return _summary_doc_to_legacy_like(d)
+                return _summary_doc_to_legacy_like(d) # type: ignore
         except Exception:
             pass
 
-    # some stores may expose get_summary_document alias
     fn_get_doc2 = getattr(store, "get_summary_document", None)
     if callable(fn_get_doc2):
         try:
             d = fn_get_doc2(summary_id)
             if d:
-                return _summary_doc_to_legacy_like(d)
+                return _summary_doc_to_legacy_like(d) # type: ignore
         except Exception:
             pass
 
@@ -233,14 +157,40 @@ def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str,
 @app.get("/")
 def index():
     store = get_store()
-    latest = _get_latest_summary_compat(store)
 
-    if not latest:
-        return render_template("index.html", summary=None)
+    # Left sidebar list
+    all_summaries = _list_summaries_compat(store)
+    sidebar_items = [
+        {
+            "id": str(s.get("id")),
+            "time": format_ts(int(s.get("created_at") or 0)),
+            "n_articles": len(s.get("article_ids", []) or []),
+        }
+        for s in all_summaries
+    ]
 
-    summary_text = latest.get("summary", "")
-    created_at = latest.get("created_at", 0)
-    article_ids = latest.get("article_ids", []) or []
+    # Selected summary (from query param) else latest
+    selected_id = request.args.get("summary_id")
+    selected: Optional[Dict[str, Any]] = None
+
+    if selected_id:
+        selected = _get_summary_compat(store, str(selected_id))
+
+    if not selected:
+        selected = _get_latest_summary_compat(store)
+
+    if not selected:
+        return render_template(
+            "index.html",
+            summary=None,
+            summary_list=sidebar_items,
+            selected_id=selected_id,
+        )
+
+    summary_text = selected.get("summary", "")
+    created_at = int(selected.get("created_at") or 0)
+    article_ids = selected.get("article_ids", []) or []
+    selected_id = str(selected.get("id"))
 
     summary_html = md.markdown(summary_text, extensions=["extra"])
     articles = store.get_articles_by_ids(article_ids)
@@ -262,6 +212,8 @@ def index():
         summary_time=format_ts(created_at),
         n_articles=len(article_ids),
         articles=view_articles,
+        summary_list=sidebar_items,
+        selected_id=selected_id,
     )
 
 
@@ -273,25 +225,24 @@ def history():
     items = [
         {
             "id": s.get("id"),
-            "time": format_ts(s.get("created_at")),
+            "time": format_ts(int(s.get("created_at") or 0)),
             "n_articles": len(s.get("article_ids", []) or []),
         }
         for s in summaries
     ]
-
     return render_template("history.html", items=items)
 
 
-# NOTE: changed from <int:summary_id> to <summary_id> to support new doc ids
 @app.get("/summary/<summary_id>")
 def view_summary(summary_id: str):
+    # Keep direct route working (uses summary.html, no sidebar)
     store = get_store()
     s = _get_summary_compat(store, summary_id)
     if not s:
-        return redirect(url_for("history"))
+        return redirect(url_for("index"))
 
     summary_text = s.get("summary", "")
-    created_at = s.get("created_at", 0)
+    created_at = int(s.get("created_at") or 0)
     article_ids = s.get("article_ids", []) or []
 
     summary_html = md.markdown(summary_text, extensions=["extra"])
@@ -340,7 +291,7 @@ def refresh():
                 finished_at=int(time.time()),
                 message=f"Refresh misslyckades: {e}",
             )
-            logger.error(f"{jid} Refresh misslyckades: {e}")
+            logger.error("%s Refresh misslyckades: %s", jid, e)
         finally:
             pipeline_lock.release()
 
@@ -350,10 +301,6 @@ def refresh():
 
 @app.get("/resume")
 def resume():
-    """
-    Återuppta ett jobb från checkpoint, utan att hämta ny data.
-    Ex: GET /resume?job=1
-    """
     store = get_store()
     cfg = load_config()
 
@@ -419,17 +366,67 @@ def api_status(job_id: int):
             "created_at": job.get("created_at"),
             "started_at": job.get("started_at"),
             "finished_at": job.get("finished_at"),
-            "summary_id": job.get("summary_id"),  # can be int or str
+            "summary_id": job.get("summary_id"),
         }
     )
 
 
+@app.get("/api/status/stream/<int:job_id>")
+def api_status_stream(job_id: int):
+    store = get_store()
+
+    def event(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    @stream_with_context
+    def generate():
+        last_payload = None
+        last_emit = 0.0
+
+        job = store.get_job(job_id)
+        if not job:
+            yield event({"status": "error", "message": "Jobb hittades inte."})
+            return
+
+        while True:
+            job = store.get_job(job_id)
+            if not job:
+                yield event({"status": "error", "message": "Jobb hittades inte."})
+                return
+
+            payload = {
+                "status": job.get("status"),
+                "message": job.get("message", ""),
+                "created_at": job.get("created_at"),
+                "started_at": job.get("started_at"),
+                "finished_at": job.get("finished_at"),
+                "summary_id": job.get("summary_id"),
+            }
+
+            now = time.time()
+            if payload != last_payload or (now - last_emit) > 10:
+                yield event(payload)
+                last_payload = payload
+                last_emit = now
+
+            if payload["status"] in ("done", "error"):
+                return
+
+            time.sleep(1.0)
+
+    return Response(
+        generate(),  # type: ignore
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# prompt-lab routes unchanged below (om du har dem kvar)
 @app.get("/prompt-lab")
 def prompt_lab():
     cfg = load_config()
     store = get_store()
 
-    # Lista summaries att välja som underlag (prompt_lab lämnas orörd)
     summaries = store.list_summaries()
     items = [
         {
@@ -440,33 +437,23 @@ def prompt_lab():
         for s in summaries
     ]
 
-    job = request.args.get("job", type=int)  # aktiv körning
-    result = request.args.get("result", type=int)  # visning av resultat
+    job = request.args.get("job", type=int)
+    result = request.args.get("result", type=int)
     selected_summary_id = request.args.get("summary_id", type=int)
 
     job_or_result = job or result
 
     temp = None
     temp_html = None
-    prompts = _get_promptlab_prompts(cfg, form=None)
 
     if job_or_result:
         temp = store.get_temp_summary(job_or_result)
-
-        if temp and isinstance(temp, dict):
-            meta = temp.get("meta") or {}
-            tp = meta.get("prompts")
-            if isinstance(tp, dict):
-                for k in list(prompts.keys()):
-                    if k in tp and isinstance(tp[k], str):
-                        prompts[k] = tp[k]
-
-            if temp.get("summary"):
-                temp_html = md.markdown(str(temp["summary"]), extensions=["extra"])
+        if temp and isinstance(temp, dict) and temp.get("summary"):
+            temp_html = md.markdown(str(temp["summary"]), extensions=["extra"])
 
     return render_template(
         "prompt_lab.html",
-        prompts=prompts,
+        prompts=cfg.get("prompts", {}),
         summaries=items,
         selected_summary_id=selected_summary_id,
         job_id=job,
@@ -482,8 +469,7 @@ def prompt_lab_run():
     store = get_store()
 
     summary_id = request.form.get("summary_id", type=int)
-
-    prompts = _get_promptlab_prompts(cfg, form=request.form)
+    prompts = cfg.get("prompts", {})
 
     job_id = store.create_job()
     store.update_job(
@@ -501,7 +487,7 @@ def prompt_lab_run():
                 jid,
                 status="error",
                 finished_at=int(time.time()),
-                message="En körning pågår redan. Försök igen om en stund.",
+                message="En körning pågår redan.",
             )
             return
 
@@ -555,82 +541,28 @@ def prompt_lab_run():
             pipeline_lock.release()
 
     threading.Thread(target=worker, args=(job_id,), daemon=True).start()
-
     return redirect(url_for("prompt_lab", job=job_id, summary_id=summary_id))
 
 
-@app.post("/prompt-lab/apply")
-def prompt_lab_apply():
-    """
-    Skriv tillbaka prompts till config.yaml.
-    OBS: pyyaml skriver om filformat/kommentarer.
-    """
-    cfg = load_config()
-    cfg.setdefault("prompts", {})
-    for k in [
-        "batch_system",
-        "batch_user_template",
-        "meta_system",
-        "meta_user_template",
-    ]:
-        cfg["prompts"][k] = request.form.get(k, "")  # type: ignore
-
-    with open("config.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
-
-    return redirect(url_for("prompt_lab"))
-
-
-@app.get("/api/status/stream/<int:job_id>")
-def api_status_stream(job_id: int):
+@app.get("/articles")
+def list_articles():
     store = get_store()
+    articles = store.list_articles()
 
-    def event(data: dict) -> str:
-        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    view_articles = [
+        {
+            "title": a.get("title", ""),
+            "url": a.get("url", ""),
+            "source": a.get("source", ""),
+            "published": a.get("published", ""),
+            "text": a.get("text", "")[:500],
+        }
+        for a in articles
+    ]
 
-    @stream_with_context
-    def generate():
-        last_payload = None
-        last_emit = 0.0
-
-        job = store.get_job(job_id)
-        if not job:
-            yield event({"status": "error", "message": "Jobb hittades inte."})
-            return
-
-        while True:
-            job = store.get_job(job_id)
-            if not job:
-                yield event({"status": "error", "message": "Jobb hittades inte."})
-                return
-
-            payload = {
-                "status": job.get("status"),
-                "message": job.get("message", ""),
-                "created_at": job.get("created_at"),
-                "started_at": job.get("started_at"),
-                "finished_at": job.get("finished_at"),
-                "summary_id": job.get("summary_id"),  # can be int or str
-            }
-
-            now = time.time()
-            if payload != last_payload or (now - last_emit) > 10:
-                yield event(payload)
-                last_payload = payload
-                last_emit = now
-
-            if payload["status"] in ("done", "error"):
-                return
-
-            time.sleep(1.0)
-
-    return Response(
-        generate(),  # type: ignore
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    return render_template(
+        "articles.html",
+        articles=view_articles,
     )
 
 

@@ -77,6 +77,14 @@ class TinyDBStore:
         db.close()
         return res[:limit]  # pyright: ignore[reportReturnType]
 
+    def list_articles(self):
+        db = self._db()
+        docs = list(db.table("articles"))
+        db.close()
+        out = [{"id": d.doc_id, **dict(d)} for d in docs]
+        out.sort(key=lambda r: r.get("created_at", 0), reverse=True)
+        return out
+
     def mark_articles_summarized(self, article_ids: List[str]) -> None:
         db = self._db()
         A = Query()

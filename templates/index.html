@@ -12,13 +12,13 @@
 {% endblock %}
 
 {% block top_actions %}
-  <a class="btn" href="{{ url_for('history') }}">History</a>
   <form method="POST" action="{{ url_for('refresh') }}" style="margin:0;">
     <button class="btn btn-primary" type="submit">Refresh</button>
   </form>
 {% endblock %}
 
 {% block content %}
+
   <div class="card">
     <div class="status">
       <strong>Status:</strong>
@@ -28,31 +28,42 @@
     <div class="muted" id="jobTimes" style="margin-top:6px;"></div>
   </div>
 
-  {% if summary %}
-    <div class="grid">
-      <div class="card">
-        {{ summary_html|safe }}
-      </div>
+  <div class="layout">
+    <!-- Sidebar -->
+    <div class="card sidebar">
+      <h3 style="margin-bottom: 10px;">Sammanfattningar</h3>
 
-      <div class="card">
-        <h3>Källor</h3>
-        <ul>
-          {% for a in articles %}
-            <li style="margin-bottom: 10px;">
-              <div><strong>{{ a.title }}</strong></div>
-              <div class="muted">{{ a.source }}{% if a.published %} · {{ a.published }}{% endif %}</div>
-              <div><a href="{{ a.url }}" target="_blank" rel="noopener">Öppna</a></div>
+      {% if summary_list %}
+        <ul class="summary-list">
+          {% for it in summary_list %}
+            <li class="summary-item {% if selected_id and it.id == selected_id %}active{% endif %}">
+              <a href="{{ url_for('index') }}?summary_id={{ it.id }}">
+                <div class="summary-item-title">{{ it.time }}</div>
+                <div class="muted">Artiklar: {{ it.n_articles }}</div>
+              </a>
             </li>
           {% endfor %}
         </ul>
-      </div>
+      {% else %}
+        <div class="muted">Inga sammanfattningar ännu.</div>
+      {% endif %}
     </div>
-  {% else %}
-    <div class="card">
-      <p>Tryck <strong>Refresh</strong> för att hämta och summera.</p>
-      <p class="muted">Tips: kör <code>ollama serve</code> och se till att modellen finns (t.ex. <code>ollama pull llama3.1</code>).</p>
+
+    <!-- Main content -->
+    <div>
+      {% if summary %}
+        <div class="grid-main">
+          <div class="card">
+            {{ summary_html|safe }}
+          </div>
+        </div>
+      {% else %}
+        <div class="card">
+          <p>Tryck <strong>Refresh</strong> för att hämta och summera.</p>
+        </div>
+      {% endif %}
     </div>
-  {% endif %}
+  </div>
 
 <script>
 (function() {
@@ -102,6 +113,7 @@
 
     if (data.status === "done") {
       es.close();
+      // Behåll ev. summary_id men ta bort job
       const url = new URL(window.location.href);
       url.searchParams.delete("job");
       window.location.replace(url.toString());

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Källor{% endblock %}
+{% block header %}Källor{% endblock %}
+
+{% block content %}
+<div>
+    {% for a in articles %}
+        <div class="card">
+            <div><strong><a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.title }}</a></strong></div>
+            <div class="muted">{{ a.source }}{% if a.published %} · {{ a.published }}{% endif %}</div>
+            <p>{{ a.text }}</p>
+        </div>
+    {% endfor %}
+</div>
+{% endblock %}
