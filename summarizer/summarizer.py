@@ -111,18 +111,10 @@ def _sources_snapshots(articles: List[dict]) -> List[dict]:
 
 
 def _persist_summary_doc(store: NewsStore, doc: Dict[str, Any]) -> Any:
-    for name in (
-        "save_summary_doc",
-        "save_summary_document",
-        "put_summary_doc",
-        "insert_summary_doc",
-    ):
-        fn = getattr(store, name, None)
-        if callable(fn):
-            return fn(doc)
-    raise RuntimeError(
-        "Store saknar metod för att spara summary-dokument (summary_docs)."
-    )
+    fn = getattr(store, "save_summary_doc", None)
+    if not callable(fn):
+        raise RuntimeError("Store saknar save_summary_doc() för summary_docs.")
+    return fn(doc)
 
 
 def _extract_llm_doc(
@@ -527,9 +519,7 @@ async def summarize_batches_then_meta_with_stats(
 
             budget_tokens = new_budget
     else:
-        raise RuntimeError(
-            f"Meta misslyckades efter {meta_attempts} försök: {last_err}"
-        )
+        raise RuntimeError(f"Meta misslyckades efter {meta_attempts} försök: {last_err}")
 
     # checkpoint meta-result
     if cp_enabled and meta_path is not None:
@@ -608,9 +598,8 @@ async def run_resume_from_checkpoint_with_stats(
     Resume: läs checkpoint för job_id, ladda article_ids från store,
     kör summarize_batches_then_meta_with_stats.
     """
-    article_ids, ordered = _load_ordered_articles_from_checkpoint(config, store, job_id)
+    _article_ids, ordered = _load_ordered_articles_from_checkpoint(config, store, job_id)
 
-    # ordered already follows article_ids
     return await summarize_batches_then_meta_with_stats(
         config, ordered, llm=llm, store=store, job_id=job_id
     )
@@ -635,7 +624,7 @@ async def run_resume_from_checkpoint(
 
 
 # ----------------------------
-# NEW: Resume + persist summary (fixes "resume doesn't save")
+# Resume + persist summary_doc (ONLY)
 # ----------------------------
 async def run_resume_and_persist_summary(
     config: Dict[str, Any],
@@ -644,15 +633,11 @@ async def run_resume_and_persist_summary(
     job_id: int,
 ) -> str:
     """
-    Kör resume från checkpoint och sparar resultatet på samma sätt som refresh/main-pipeline:
-      - summary_doc (nya formatet)
-      - legacy summary (bakåtkomp)
-      - mark_articles_summarized
-      - uppdaterar job.summary_id
+    Kör resume från checkpoint och sparar resultatet som summary_doc.
     Returnerar summary_doc_id (str).
     """
     # load corpus (stable order)
-    article_ids, ordered = _load_ordered_articles_from_checkpoint(config, store, job_id)
+    _article_ids, ordered = _load_ordered_articles_from_checkpoint(config, store, job_id)
 
     # run resume summarization
     meta_text, stats = await summarize_batches_then_meta_with_stats(
@@ -695,14 +680,7 @@ async def run_resume_and_persist_summary(
 
     summary_doc_id = str(_persist_summary_doc(store, summary_doc))
 
-    # legacy save (optional)
-    legacy_summary_id = None
-    try:
-        legacy_summary_id = store.save_summary(meta_text, sources)
-    except Exception:
-        legacy_summary_id = None
-
-    # mark summarized
+    # optional: mark summarized (legacy article-flag, but harmless)
     try:
         store.mark_articles_summarized(sources)
     except Exception as e:
@@ -716,9 +694,9 @@ async def run_resume_and_persist_summary(
             finished_at=int(time.time()),
             message=f"Resume klart: summerade {len(sources)} artiklar.",
             summary_id=summary_doc_id,
-            legacy_summary_id=legacy_summary_id,
         )
-    except Exception:
+    except Exception as e:
+        logger.warn(f"{e}")
         pass
 
     return summary_doc_id

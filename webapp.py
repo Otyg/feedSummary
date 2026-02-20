@@ -138,106 +138,6 @@ def _load_prompt_packages(cfg: Dict[str, Any]) -> List[str]:
 
 
 # ----------------------------
-# Summary compatibility layer (legacy summaries + new summary_docs)
-# ----------------------------
-def _summary_doc_to_legacy_like(doc: Dict[str, Any]) -> Dict[str, Any]:
-    created = doc.get("created") or doc.get("created_at") or 0
-    sources = doc.get("sources") or doc.get("article_ids") or []
-    return {
-        "id": doc.get("id"),
-        "created_at": int(created) if created else 0,
-        "summary": doc.get("summary", ""),
-        "article_ids": sources,
-        "_kind": doc.get("kind", "summary"),
-        "_raw": doc,
-    }
-
-
-def _get_latest_summary_compat(store: NewsStore) -> Optional[Dict[str, Any]]:
-    fn = getattr(store, "get_latest_summary_doc", None)
-    if callable(fn):
-        try:
-            doc = fn()
-            if doc:
-                return _summary_doc_to_legacy_like(doc)
-        except Exception:
-            pass
-
-    try:
-        latest = store.get_latest_summary()
-        if latest:
-            return latest
-    except Exception:
-        pass
-
-    return None
-
-
-def _list_summaries_compat(store: NewsStore) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-
-    fn_list_docs = getattr(store, "list_summary_docs", None)
-    if callable(fn_list_docs):
-        try:
-            docs = fn_list_docs() or []
-            for d in docs:
-                if isinstance(d, dict):
-                    items.append(_summary_doc_to_legacy_like(d))
-        except Exception:
-            pass
-
-    try:
-        legacy = store.list_summaries() or []
-        for s in legacy:
-            if isinstance(s, dict):
-                items.append(s)
-    except Exception:
-        pass
-
-    seen = set()
-    out: List[Dict[str, Any]] = []
-    for it in items:
-        sid = it.get("id")
-        if sid in seen:
-            continue
-        seen.add(sid)
-        out.append(it)
-
-    out.sort(key=lambda r: int(r.get("created_at") or 0), reverse=True)
-    return out
-
-
-def _get_summary_compat(store: NewsStore, summary_id: str) -> Optional[Dict[str, Any]]:
-    if summary_id.isdigit():
-        try:
-            s = store.get_summary(int(summary_id))
-            if s:
-                return s
-        except Exception:
-            pass
-
-    fn_get_doc = getattr(store, "get_summary_doc", None)
-    if callable(fn_get_doc):
-        try:
-            d = fn_get_doc(summary_id)
-            if d:
-                return _summary_doc_to_legacy_like(d)
-        except Exception:
-            pass
-
-    fn_get_doc2 = getattr(store, "get_summary_document", None)
-    if callable(fn_get_doc2):
-        try:
-            d = fn_get_doc2(summary_id)
-            if d:
-                return _summary_doc_to_legacy_like(d)
-        except Exception:
-            pass
-
-    return None
-
-
-# ----------------------------
 # Routes
 # ----------------------------
 @app.get("/")
@@ -256,22 +156,22 @@ def index():
     if not default_prompt_pkg and prompt_packages:
         default_prompt_pkg = prompt_packages[0]
 
-    all_summaries = _list_summaries_compat(store)
+    all_docs = store.list_summary_docs() or []
     sidebar_items = [
         {
-            "id": str(s.get("id")),
-            "time": format_ts(int(s.get("created_at") or 0)),
-            "n_articles": len(s.get("article_ids", []) or []),
+            "id": str(d.get("id")),
+            "time": format_ts(int(d.get("created") or 0)),
+            "n_articles": len(d.get("sources", []) or []),
         }
-        for s in all_summaries
+        for d in all_docs
     ]
 
     selected_id = request.args.get("summary_id")
     selected: Optional[Dict[str, Any]] = None
     if selected_id:
-        selected = _get_summary_compat(store, str(selected_id))
+        selected = store.get_summary_doc(str(selected_id))
     if not selected:
-        selected = _get_latest_summary_compat(store)
+        selected = store.get_latest_summary_doc()
 
     ingest = cfg.get("ingest") or {}
     default_lookback = str(ingest.get("lookback") or "24h")
@@ -294,8 +194,8 @@ def index():
         )
 
     summary_text = selected.get("summary", "")
-    created_at = int(selected.get("created_at") or 0)
-    article_ids = selected.get("article_ids", []) or []
+    created_at = int(selected.get("created") or 0)
+    article_ids = selected.get("sources", []) or []
     selected_id = str(selected.get("id"))
 
     summary_html = md.markdown(summary_text, extensions=["extra"])

@@ -73,18 +73,10 @@ def _summary_doc_id(created_ts: int, job_id: Optional[int]) -> str:
 
 
 def _persist_summary_doc(store: NewsStore, doc: Dict[str, Any]) -> Any:
-    for name in (
-        "save_summary_doc",
-        "save_summary_document",
-        "put_summary_doc",
-        "insert_summary_doc",
-    ):
-        fn = getattr(store, name, None)
-        if callable(fn):
-            return fn(doc)
-    raise RuntimeError(
-        "Store saknar metod för att spara summary-dokument (summary_docs)."
-    )
+    fn = getattr(store, "save_summary_doc", None)
+    if not callable(fn):
+        raise RuntimeError("Store saknar save_summary_doc() för summary_docs.")
+    return fn(doc)
 
 
 def _get_config_sources(config: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -298,12 +290,6 @@ async def run_pipeline(
 
     summary_doc_id = _persist_summary_doc(store, summary_doc)
 
-    legacy_summary_id = None
-    try:
-        legacy_summary_id = store.save_summary(meta_text, ids)
-    except Exception:
-        legacy_summary_id = None
-
     if job_id is not None:
         store.update_job(
             job_id,
@@ -311,7 +297,6 @@ async def run_pipeline(
             finished_at=int(time.time()),
             message=f"Klart: summerade {len(ids)} artiklar (urval: lookback/källor).",
             summary_id=str(summary_doc_id),
-            legacy_summary_id=legacy_summary_id,
         )
 
     return summary_doc_id

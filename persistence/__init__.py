@@ -32,11 +32,11 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
 from persistence.TinyDbStore import TinyDBStore
-import os
-from pathlib import Path
 
 
 class StoreError(Exception):
@@ -51,18 +51,27 @@ class NewsStore(Protocol):
 
     def list_unsummarized_articles(self, limit: int = 200) -> List[Dict[str, Any]]: ...
 
-    def list_articles(self) -> List[Dict[str, Any]]: ...
+    def list_articles(self, limit: int = 2000) -> List[Dict[str, Any]]: ...
+
+    def list_articles_by_filter(
+        self,
+        *,
+        sources: List[str],
+        since_ts: int,
+        until_ts: Optional[int] = None,
+        limit: int = 2000,
+    ) -> List[Dict[str, Any]]: ...
 
     def mark_articles_summarized(self, article_ids: List[str]) -> None: ...
 
-    # ---- Summaries
-    def save_summary(self, summary_text: str, article_ids: List[str]) -> int: ...
+    # ---- Summary documents (ONLY)
+    def save_summary_doc(self, summary_doc: Dict[str, Any]) -> Any: ...
 
-    def get_latest_summary(self) -> Optional[Dict[str, Any]]: ...
+    def get_summary_doc(self, summary_doc_id: str) -> Optional[Dict[str, Any]]: ...
 
-    def list_summaries(self) -> List[Dict[str, Any]]: ...
+    def list_summary_docs(self) -> List[Dict[str, Any]]: ...
 
-    def get_summary(self, summary_id: int) -> Optional[Dict[str, Any]]: ...
+    def get_latest_summary_doc(self) -> Optional[Dict[str, Any]]: ...
 
     # ---- Jobs
     def create_job(self) -> int: ...

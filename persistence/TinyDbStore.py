@@ -43,8 +43,8 @@ logger = logging.getLogger(__name__)
 
 class TinyDBStore:
     """
-    TinyDB-backed store (JSON file). Implements NewsStore.
-    Uses TinyDB doc_id as the integer ID for summaries/jobs.
+    TinyDB-backed store (JSON file).
+    Uses TinyDB doc_id as the integer ID for jobs/temp summaries etc.
     """
 
     def __init__(self, path: str = "news_docs.json"):
@@ -142,45 +142,7 @@ class TinyDBStore:
             )
         db.close()
 
-    # ---- Summaries (legacy)
-    def save_summary(self, summary_text: str, article_ids: List[str]) -> int:
-        db = self._db()
-        doc_id = db.table("summaries").insert(
-            {
-                "created_at": int(time.time()),
-                "summary": summary_text,
-                "article_ids": article_ids,
-            }
-        )
-        db.close()
-        return doc_id
-
-    def get_latest_summary(self) -> Optional[Dict[str, Any]]:
-        db = self._db()
-        docs = list(db.table("summaries"))
-        db.close()
-        if not docs:
-            return None
-        latest = sorted(docs, key=lambda d: d.get("created_at", 0), reverse=True)[0]
-        return {"id": latest.doc_id, **dict(latest)}
-
-    def list_summaries(self) -> List[Dict[str, Any]]:
-        db = self._db()
-        docs = list(db.table("summaries"))
-        db.close()
-        out = [{"id": d.doc_id, **dict(d)} for d in docs]
-        out.sort(key=lambda r: r.get("created_at", 0), reverse=True)
-        return out
-
-    def get_summary(self, summary_id: int) -> Optional[Dict[str, Any]]:
-        db = self._db()
-        doc = db.table("summaries").get(doc_id=summary_id)
-        db.close()
-        if not doc:
-            return None
-        return {"id": summary_id, **dict(doc)}  # pyright: ignore[reportCallIssue, reportArgumentType, reportReturnType]
-
-    # ---- Summary documents (new)
+    # ---- Summary documents (ONLY)
     def save_summary_doc(self, summary_doc: Dict[str, Any]) -> Any:
         db = self._db()
         t = db.table("summary_docs")
@@ -206,15 +168,6 @@ class TinyDBStore:
         db.close()
         return doc_id
 
-    def save_summary_document(self, summary_doc: Dict[str, Any]) -> Any:
-        return self.save_summary_doc(summary_doc)
-
-    def put_summary_doc(self, summary_doc: Dict[str, Any]) -> Any:
-        return self.save_summary_doc(summary_doc)
-
-    def insert_summary_doc(self, summary_doc: Dict[str, Any]) -> Any:
-        return self.save_summary_doc(summary_doc)
-
     def get_summary_doc(self, summary_doc_id: str) -> Optional[Dict[str, Any]]:
         db = self._db()
         t = db.table("summary_docs")
@@ -222,9 +175,6 @@ class TinyDBStore:
         rows = t.search(Q.id == str(summary_doc_id))
         db.close()
         return rows[0] if rows else None
-
-    def get_summary_document(self, summary_doc_id: str) -> Optional[Dict[str, Any]]:
-        return self.get_summary_doc(summary_doc_id)
 
     def list_summary_docs(self) -> List[Dict[str, Any]]:
         db = self._db()
