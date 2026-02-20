@@ -89,7 +89,12 @@ class SqliteStore:
     - Also store a few indexed columns for filtering/sorting (source, published_ts, fetched_at, etc.).
     """
 
-    def __init__(self, path: str = "news_docs.sqlite", *, pragmas: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        path: str = "news_docs.sqlite",
+        *,
+        pragmas: Optional[Dict[str, str]] = None,
+    ):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._pragmas = pragmas or {
@@ -297,7 +302,9 @@ class SqliteStore:
         params.extend(srcs)
         params.append(since_i)
 
-        where = f"source IN ({placeholders}) AND COALESCE(published_ts, fetched_at, 0) >= ?"
+        where = (
+            f"source IN ({placeholders}) AND COALESCE(published_ts, fetched_at, 0) >= ?"
+        )
         if until_i is not None:
             where += " AND COALESCE(published_ts, fetched_at, 0) <= ?"
             params.append(until_i)
@@ -487,7 +494,7 @@ class SqliteStore:
                 (_now_ts(), "queued", "", _json_dumps({})),
             )
             con.commit()
-            jid = int(cur.lastrowid) # type: ignore
+            jid = int(cur.lastrowid)  # type: ignore
             logger.info("Job %s created", jid)
             return jid
         finally:
@@ -498,11 +505,20 @@ class SqliteStore:
         if jid <= 0:
             raise ValueError("job_id must be a positive int")
 
-        known_cols = {"created_at", "started_at", "finished_at", "status", "message", "summary_id"}
+        known_cols = {
+            "created_at",
+            "started_at",
+            "finished_at",
+            "status",
+            "message",
+            "summary_id",
+        }
 
         con = self._connect()
         try:
-            row = con.execute("SELECT fields_json FROM jobs WHERE id = ?", (jid,)).fetchone()
+            row = con.execute(
+                "SELECT fields_json FROM jobs WHERE id = ?", (jid,)
+            ).fetchone()
             extra = _json_loads(row["fields_json"]) if row else {}
             if not isinstance(extra, dict):
                 extra = {}
@@ -591,7 +607,9 @@ class SqliteStore:
         finally:
             con.close()
 
-    def save_temp_summary(self, job_id: int, summary_text: str, meta: Dict[str, Any]) -> None:
+    def save_temp_summary(
+        self, job_id: int, summary_text: str, meta: Dict[str, Any]
+    ) -> None:
         jid = _safe_int(job_id, 0)
         con = self._connect()
         try:
