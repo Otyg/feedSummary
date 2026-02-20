@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
 from persistence.TinyDbStore import TinyDBStore
+from persistence.SqliteStore import SqliteStore
 
 
 class StoreError(Exception):
@@ -99,4 +100,11 @@ def create_store(cfg: Dict[str, Any]) -> NewsStore:
         path = _expand_path(raw_path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         return TinyDBStore(path=path)
+
+    if provider in ("sqlite", "sqlite3"):
+        raw_path = cfg.get("path", "news_docs.sqlite")
+        path = _expand_path(raw_path)
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        return SqliteStore(path=path)
+
     raise ValueError(f"Unsupported store provider: {provider}")
