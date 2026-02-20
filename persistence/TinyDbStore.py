@@ -53,7 +53,6 @@ class TinyDBStore:
     def _db(self) -> TinyDB:
         return TinyDB(self.path)
 
-    # ---- Articles
     def get_article(self, article_id: str) -> Optional[Dict[str, Any]]:
         db = self._db()
         A = Query()
@@ -121,7 +120,6 @@ class TinyDBStore:
         )
         return [dict(r) for r in rows_sorted[:limit]]
 
-    # ---- Legacy (bakåtkomp; används ej för urval längre)
     def list_unsummarized_articles(self, limit: int = 200) -> List[Dict[str, Any]]:
         db = self._db()
         A = Query()
@@ -142,7 +140,6 @@ class TinyDBStore:
             )
         db.close()
 
-    # ---- Summary documents (ONLY)
     def save_summary_doc(self, summary_doc: Dict[str, Any]) -> Any:
         db = self._db()
         t = db.table("summary_docs")
@@ -188,7 +185,6 @@ class TinyDBStore:
         docs = self.list_summary_docs()
         return docs[0] if docs else None
 
-    # ---- Jobs
     def create_job(self) -> int:
         db = self._db()
         jid = db.table("jobs").insert(
@@ -219,7 +215,6 @@ class TinyDBStore:
             return None
         return {"id": job_id, **dict(doc)}  # pyright: ignore[reportCallIssue, reportArgumentType, reportReturnType]
 
-    # ---- Utility
     def get_articles_by_ids(self, article_ids: List[str]) -> List[Dict[str, Any]]:
         db = self._db()
         at = db.table("articles")
@@ -231,7 +226,6 @@ class TinyDBStore:
         db.close()
         return out
 
-    # ---- Temp summaries
     def put_temp_summary(self, job_id: int, payload: Dict[str, Any]) -> None:
         db = self._db()
         t = db.table("temp_summaries")

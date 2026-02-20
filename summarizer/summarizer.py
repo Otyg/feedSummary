@@ -519,7 +519,9 @@ async def summarize_batches_then_meta_with_stats(
 
             budget_tokens = new_budget
     else:
-        raise RuntimeError(f"Meta misslyckades efter {meta_attempts} försök: {last_err}")
+        raise RuntimeError(
+            f"Meta misslyckades efter {meta_attempts} försök: {last_err}"
+        )
 
     # checkpoint meta-result
     if cp_enabled and meta_path is not None:
@@ -598,7 +600,9 @@ async def run_resume_from_checkpoint_with_stats(
     Resume: läs checkpoint för job_id, ladda article_ids från store,
     kör summarize_batches_then_meta_with_stats.
     """
-    _article_ids, ordered = _load_ordered_articles_from_checkpoint(config, store, job_id)
+    _article_ids, ordered = _load_ordered_articles_from_checkpoint(
+        config, store, job_id
+    )
 
     return await summarize_batches_then_meta_with_stats(
         config, ordered, llm=llm, store=store, job_id=job_id
@@ -637,7 +641,9 @@ async def run_resume_and_persist_summary(
     Returnerar summary_doc_id (str).
     """
     # load corpus (stable order)
-    _article_ids, ordered = _load_ordered_articles_from_checkpoint(config, store, job_id)
+    _article_ids, ordered = _load_ordered_articles_from_checkpoint(
+        config, store, job_id
+    )
 
     # run resume summarization
     meta_text, stats = await summarize_batches_then_meta_with_stats(

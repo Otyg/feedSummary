@@ -44,7 +44,6 @@ class StoreError(Exception):
 
 
 class NewsStore(Protocol):
-    # ---- Articles
     def get_article(self, article_id: str) -> Optional[Dict[str, Any]]: ...
 
     def upsert_article(self, article_doc: Dict[str, Any]) -> None: ...
@@ -64,7 +63,6 @@ class NewsStore(Protocol):
 
     def mark_articles_summarized(self, article_ids: List[str]) -> None: ...
 
-    # ---- Summary documents (ONLY)
     def save_summary_doc(self, summary_doc: Dict[str, Any]) -> Any: ...
 
     def get_summary_doc(self, summary_doc_id: str) -> Optional[Dict[str, Any]]: ...
@@ -73,17 +71,14 @@ class NewsStore(Protocol):
 
     def get_latest_summary_doc(self) -> Optional[Dict[str, Any]]: ...
 
-    # ---- Jobs
     def create_job(self) -> int: ...
 
     def update_job(self, job_id: int, **fields) -> None: ...
 
     def get_job(self, job_id: int) -> Optional[Dict[str, Any]]: ...
 
-    # ---- Utility
     def get_articles_by_ids(self, article_ids: List[str]) -> List[Dict[str, Any]]: ...
 
-    # ---- Temp summaries (prompt lab)
     def save_temp_summary(
         self, job_id: int, summary_text: str, meta: Dict[str, Any]
     ) -> None: ...
@@ -92,9 +87,7 @@ class NewsStore(Protocol):
 
 
 def _expand_path(p: str) -> str:
-    # Expand ~ och miljövariabler som $HOME eller ${HOME}
     expanded = os.path.expandvars(os.path.expanduser(p))
-    # Normalisera till absolut path (valfritt men ofta skönt)
     return str(Path(expanded).resolve())
 
 
@@ -104,10 +97,6 @@ def create_store(cfg: Dict[str, Any]) -> NewsStore:
     if provider == "tinydb":
         raw_path = cfg.get("path", "news_docs.json")
         path = _expand_path(raw_path)
-
-        # Se till att katalogen finns
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-
         return TinyDBStore(path=path)
-
     raise ValueError(f"Unsupported store provider: {provider}")

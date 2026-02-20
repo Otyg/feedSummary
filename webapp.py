@@ -418,7 +418,11 @@ def list_articles():
 
     # Build available sources from data (for checkbox list)
     all_sources: List[str] = sorted(
-        {str(a.get("source") or "").strip() for a in articles if str(a.get("source") or "").strip()},
+        {
+            str(a.get("source") or "").strip()
+            for a in articles
+            if str(a.get("source") or "").strip()
+        },
         key=lambda s: s.lower(),
     )
 
