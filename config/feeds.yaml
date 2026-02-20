@@ -1,57 +1,108 @@
 - name: Greynoise
   url: https://www.greynoise.io/blog/rss.xml
+  topics: ["Cybersecurity", "Threat Intel"]
+
 - name: Recorded Future
   url: https://therecord.media/feed
+  topics: ["Cybersecurity", "Threat Intel"]
+
 - name: Mandiant (Google)
   url: https://www.mandiant.com/resources/blog/rss.xml
+  topics: ["Cybersecurity", "Threat Intel", "Incident", "Hotaktörer"]
+
 - name: Cisco Talos - Global Threat Intelligence
   url: https://blog.talosintelligence.com/rss/
+  topics: ["Cybersecurity", "Threat Intel", "Malware"]
+
 - name: Unit 42 (Palo Alto)
   url: https://unit42.paloaltonetworks.com/feed/
+  topics: ["Cybersecurity", "Threat Intel", "Incident", "Malware"]
+
 - name: Microsoft Security Blog
   url: https://www.microsoft.com/en-us/security/blog/feed/
+  topics: ["Cybersecurity", "Sårbarheter", "Plattformar"]
+
 - name: DataBreaches.net
   url: https://www.databreaches.net/feed/
+  topics: ["Privacy", "Dataintrång", "Incident"]
+
 - name: Troy Hunt (Have I Been Pwned)
   url: https://www.troyhunt.com/rss/
+  topics: ["Dataintrång", "Cybersecurity", "Privacy"]
+
 - name: BleepingComputer
   url: https://www.bleepingcomputer.com/feed/
-- name: Cybernews
-  url: https://cybernews.com/news/feed/
+  topics: ["Cybersecurity", "Incident", "Sårbarheter"]
+
+- name: Cybersecuritynews
+  url: https://Cybersecuritynews.com/news/feed/
+  topics: ["Cybersecurity", "Dataintrång"]
+
 - name: Krebs on Security
   url: https://krebsonsecurity.com/feed/
+  topics: ["Cybersecurity", "Threat Intel", "Dataintrång"]
+
 - name: Enforcement Tracker
   url: https://www.enforcementtracker.com/feed/
+  topics: ["Privacy", "Regulatoriskt", "GDPR"]
+
 - name: IAPP (Privacy Advisor)
   url: https://iapp.org/rss/news/
+  topics: ["Privacy", "Regulatoriskt", "GDPR"]
+
 - name: Hunton Privacy Blog
   url: https://www.huntonprivacyblog.com/feed/
+  topics: ["Privacy", "Regulatoriskt", "GDPR"]
+
 - name: CERT-SE
   url: https://www.cert.se/feed.rss
+  topics: ["Cybersecurity", "Sårbarheter", "Sverige"]
+
 - name: IMY Nyheter
   url: https://www.imy.se/nyheter/rss
+  topics: ["Privacy", "Regulatoriskt", "Sverige"]
+
 - name: IMY Tillsyner och beslut
   url: https://www.imy.se/tillsyner/rss
+  topics: ["Privacy", "Regulatoriskt", "Sverige"]
+
 - name: IMY Bloggen
   url: https://www.imy.se/blogg/rss
+  topics: ["Privacy", "Sverige"]
+
 - name: Rapid7 Blog
   url: https://www.rapid7.com/blog/rss/
+  topics: ["Cybersecurity", "Sårbarheter", "Incident", "Threat Intel"]
+
 - name: SANS Internet Storm Center
   url: https://isc.sans.edu/rssfeed.xml
+  topics: ["Cybersecurity", "Sårbarheter", "Threat Intel"]
+
 - name: The Register Security
   url: https://www.theregister.com/security/headlines.atom
+  topics: ["Cybersecurity", "Sårbarheter"]
+
 - name: Threatpost
   url: https://threatpost.com/feed/
+  topics: ["Cybersecurity", "Sårbarheter"]
+
 - name: CVE Latest High/Critical
   url: https://cvefeed.io/rssfeed/severity/high.xml
+  topics: ["Sårbarheter", "CVE"]
+
 - name: SVT
   url: https://www.svt.se/rss.xml
+  topics: ["Nyheter", "Sverige"]
+
 - name: The Guardian Europe
   url: https://www.theguardian.com/europe/rss
-- name: The Guardian World
-  url: https://www.theguardian.com/world/rss
+  topics: ["Nyheter", "Europa", "Utrikes"]
+
 - name: TV4
   url: https://www.tv4.se/rss
   category_include: ["Inrikes", "Utrikes"]
+  topics: ["Nyheter", "Sverige"]
+
 - name: Der Spiegel
   url: https://www.spiegel.de/international/index.rss
+  topics: ["Nyheter","Europa", "Utrikes"]

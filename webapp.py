@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 pipeline_lock = threading.Lock()
 
-# Allow overriding config path (helps when running from other cwd)
 CONFIG_PATH = os.environ.get("FEEDSUMMARY_CONFIG", "config.yaml")
 CONFIG_DIR = os.path.dirname(os.path.abspath(CONFIG_PATH)) or "."
 
@@ -85,9 +84,6 @@ def _parse_ymd_to_range(date_str: str) -> Optional[Tuple[int, int]]:
         return None
 
 
-# ----------------------------
-# Config sources (for UI)
-# ----------------------------
 def _get_config_sources(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     candidates = [
         cfg.get("sources"),
@@ -106,6 +102,18 @@ def _source_name(s: Dict[str, Any]) -> str:
     return str(s.get("name") or s.get("title") or s.get("label") or "").strip()
 
 
+def _source_topics(s: Dict[str, Any]) -> List[str]:
+    t = s.get("topics")
+    if isinstance(t, list):
+        return [str(x).strip() for x in t if str(x).strip()]
+    if isinstance(t, str) and t.strip():
+        return [t.strip()]
+    t2 = s.get("topic")
+    if isinstance(t2, str) and t2.strip():
+        return [t2.strip()]
+    return []
+
+
 def _build_source_options(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for s in _get_config_sources(cfg):
@@ -117,10 +125,23 @@ def _build_source_options(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "name": name,
                 "url": str(s.get("url") or s.get("href") or s.get("rss") or ""),
                 "default_checked": bool(s.get("enabled", True)),
+                "topics": _source_topics(s),
             }
         )
     out.sort(key=lambda x: x["name"].lower())
     return out
+
+
+def _build_topic_options(cfg: Dict[str, Any]) -> List[str]:
+    seen: Set[str] = set()
+    topics: List[str] = []
+    for s in _get_config_sources(cfg):
+        for t in _source_topics(s):
+            if t not in seen:
+                seen.add(t)
+                topics.append(t)
+    topics.sort(key=lambda x: x.lower())
+    return topics
 
 
 def _resolve_path(p: str) -> str:
@@ -153,25 +174,20 @@ def _load_prompt_packages(cfg: Dict[str, Any]) -> List[str]:
             return sorted([str(k) for k in all_pkgs.keys()])
         logger.warning("prompts.yaml loaded but empty or not a dict: %s", path)
         return []
-    except FileNotFoundError:
-        logger.warning(
+    except FileNotFoundError as e:
+        logger.error(
             "prompts.yaml not found: %s (from prompts.path=%s)", path, raw_path
         )
-        return []
+        raise e
     except Exception as e:
-        logger.warning("failed to read prompts.yaml: %s -> %s", path, e)
-        return []
+        logger.error("failed to read prompts.yaml: %s -> %s", path, e)
+        raise e
 
 
-# ----------------------------
-# Routes
-# ----------------------------
 @app.get("/")
 def index():
     store = get_store()
     cfg = load_config()
-
-    # always compute prompt packages (even if there is no summary yet)
     prompt_packages = _load_prompt_packages(cfg)
     p_cfg = cfg.get("prompts") or {}
     default_prompt_pkg = ""
@@ -205,6 +221,7 @@ def index():
     lb_unit = "".join([c for c in default_lookback if not c.isdigit()]).strip() or "h"
 
     source_options = _build_source_options(cfg)
+    topic_options = _build_topic_options(cfg)
 
     if not selected:
         return render_template(
@@ -213,6 +230,7 @@ def index():
             summary_list=sidebar_items,
             selected_id=selected_id,
             source_options=source_options,
+            topic_options=topic_options,
             default_lb_value=lb_val,
             default_lb_unit=lb_unit,
             prompt_packages=prompt_packages,
@@ -235,6 +253,7 @@ def index():
         summary_list=sidebar_items,
         selected_id=selected_id,
         source_options=source_options,
+        topic_options=topic_options,
         default_lb_value=lb_val,
         default_lb_unit=lb_unit,
         prompt_packages=prompt_packages,
@@ -252,6 +271,7 @@ def refresh():
     lookback_value = (request.form.get("lookback_value") or "").strip()
     lookback_unit = (request.form.get("lookback_unit") or "").strip().lower()
     selected_sources = request.form.getlist("sources") or []
+    selected_topics = request.form.getlist("topics") or []
     prompt_package = (request.form.get("prompt_package") or "").strip()
 
     overrides: Dict[str, Any] = {}
@@ -261,12 +281,20 @@ def refresh():
         overrides["lookback"] = f"{lookback_value}{lookback_unit}"
     if selected_sources:
         overrides["sources"] = selected_sources
+    elif selected_topics:
+        overrides["topics"] = selected_topics
 
     store.update_job(
         job_id,
         status="running",
         started_at=int(time.time()),
-        message=f"Startar refresh… (lookback={overrides.get('lookback', 'default')}, sources={len(selected_sources) or 'default'}, prompts={prompt_package or 'default'})",
+        message=(
+            "Startar refresh… ("
+            f"lookback={overrides.get('lookback', 'default')}, "
+            f"sources={len(selected_sources) or 'default'}, "
+            f"topics={len(selected_topics) or 'default'}, "
+            f"prompts={prompt_package or 'default'})"
+        ),
     )
 
     def worker(jid: int):
@@ -408,16 +436,15 @@ def list_articles():
     Articles list with optional filters:
 
     - sources: repeated query param (e.g. ?sources=SVT&sources=DN)
+    - topics: repeated query param (e.g. ?topics=Cyber&topics=Europa)
     - from: YYYY-MM-DD (inclusive)
     - to:   YYYY-MM-DD (inclusive)
     """
     store = get_store()
+    cfg = load_config()
 
-    # Load (already sorted oldest-first by store.list_articles)
     articles = store.list_articles()
-
-    # Build available sources from data (for checkbox list)
-    all_sources: List[str] = sorted(
+    all_sources_in_db: List[str] = sorted(
         {
             str(a.get("source") or "").strip()
             for a in articles
@@ -425,11 +452,22 @@ def list_articles():
         },
         key=lambda s: s.lower(),
     )
+    source_options_all = _build_source_options(cfg)
+    source_options = [
+        s for s in source_options_all if s.get("name") in set(all_sources_in_db)
+    ]
+    topic_options = _build_topic_options(cfg)
 
-    # Read filters from query string
+    source_to_topics: Dict[str, List[str]] = {
+        str(s.get("name")): list(s.get("topics") or []) for s in source_options
+    }
+
     selected_sources = request.args.getlist("sources") or []
     selected_sources = [s.strip() for s in selected_sources if s.strip()]
-    selected_set: Set[str] = set(selected_sources)
+
+    selected_topics = request.args.getlist("topics") or []
+    selected_topics = [t.strip() for t in selected_topics if t.strip()]
+    selected_topics_set: Set[str] = set(selected_topics)
 
     from_str = (request.args.get("from") or "").strip()
     to_str = (request.args.get("to") or "").strip()
@@ -438,26 +476,37 @@ def list_articles():
     to_range = _parse_ymd_to_range(to_str) if to_str else None
 
     from_ts: Optional[int] = from_range[0] if from_range else None
-    # for "to", we want end-of-day
     to_ts: Optional[int] = to_range[1] if to_range else None
 
+    allowed_sources: Optional[Set[str]] = None
+    if selected_sources:
+        allowed_sources = set(selected_sources)
+    elif selected_topics:
+        allowed: Set[str] = set()
+        for src, ts in source_to_topics.items():
+            if set(ts).intersection(selected_topics_set):
+                allowed.add(src)
+        allowed_sources = allowed if allowed else set()
+
     def keep(a: Dict[str, Any]) -> bool:
-        if selected_set:
-            if str(a.get("source") or "") not in selected_set:
+        src = str(a.get("source") or "").strip()
+
+        if allowed_sources is not None:
+            if src not in allowed_sources:
                 return False
+
         ts = _published_ts(a)
         if from_ts is not None and ts and ts < from_ts:
             return False
         if to_ts is not None and ts and ts > to_ts:
             return False
-        # If ts==0 (missing), keep unless user asked for date filters
         if ts == 0 and (from_ts is not None or to_ts is not None):
             return False
         return True
 
     filtered = [a for a in articles if keep(a)]
 
-    # Show newest first in articles view (usually nicer)
+    # Show newest first in articles view
     filtered.sort(key=_published_ts, reverse=True)
 
     view_articles = [
@@ -475,8 +524,11 @@ def list_articles():
     return render_template(
         "articles.html",
         articles=view_articles,
-        sources=all_sources,
+        source_options=source_options,
+        topic_options=topic_options,
+        sources=all_sources_in_db,
         selected_sources=selected_sources,
+        selected_topics=selected_topics,
         from_date=from_str,
         to_date=to_str,
         total_count=len(articles),

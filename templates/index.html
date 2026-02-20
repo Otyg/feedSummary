@@ -98,10 +98,30 @@
           </div>
         </div>
 
+        {% if topic_options %}
+        <div class="form-row">
+          <label class="form-label">Ämnen</label>
+
+          <div class="form-inline" style="margin: 6px 0 10px 0;">
+            <button class="btn" type="button" id="selectAllTopics">Markera alla ämnen</button>
+            <button class="btn" type="button" id="deselectAllTopics">Avmarkera alla ämnen</button>
+            <span class="muted">Markering av ämnen markerar matchande källor.</span>
+          </div>
+
+          <div class="source-grid" id="topicGrid">
+            {% for t in topic_options %}
+              <label class="chk">
+                <input type="checkbox" name="topics" value="{{ t }}" />
+                <span><strong>{{ t }}</strong></span>
+              </label>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+
         <div class="form-row">
           <label class="form-label">Källor</label>
 
-          <!-- NEW: select/deselect all -->
           <div class="form-inline" style="margin: 6px 0 10px 0;">
             <button class="btn" type="button" id="selectAllSources">Markera alla</button>
             <button class="btn" type="button" id="deselectAllSources">Avmarkera alla</button>
@@ -110,9 +130,18 @@
           <div class="source-grid" id="sourceGrid">
             {% for s in source_options %}
               <label class="chk">
-                <input type="checkbox" name="sources" value="{{ s.name }}" {% if s.default_checked %}checked{% endif %} />
+                <input
+                  type="checkbox"
+                  name="sources"
+                  value="{{ s.name }}"
+                  data-topics="{{ (s.topics or [])|join(',') }}"
+                  {% if s.default_checked %}checked{% endif %}
+                />
                 <span>
                   <strong>{{ s.name }}</strong>
+                  {% if s.topics and s.topics|length > 0 %}
+                    <span class="muted">· {{ s.topics|join(', ') }}</span>
+                  {% endif %}
                   {% if s.url %}<span class="muted">· {{ s.url }}</span>{% endif %}
                 </span>
               </label>
@@ -159,7 +188,7 @@
     if (e.key === "Escape") closeModal();
   });
 
-  // --- NEW: select/deselect all sources in modal ---
+  // --- select/deselect all sources ---
   const sourceGrid = document.getElementById("sourceGrid");
   const btnAll = document.getElementById("selectAllSources");
   const btnNone = document.getElementById("deselectAllSources");
@@ -173,7 +202,51 @@
   btnAll?.addEventListener("click", () => setAllSources(true));
   btnNone?.addEventListener("click", () => setAllSources(false));
 
-  // --- SSE status (same as before) ---
+  // --- topics -> sources mapping ---
+  const topicGrid = document.getElementById("topicGrid");
+  const btnTopicsAll = document.getElementById("selectAllTopics");
+  const btnTopicsNone = document.getElementById("deselectAllTopics");
+
+  function getSourceBoxes() {
+    if (!sourceGrid) return [];
+    return Array.from(sourceGrid.querySelectorAll('input[type="checkbox"][name="sources"]'));
+  }
+
+  function sourceHasTopic(box, topic) {
+    const raw = (box.getAttribute("data-topics") || "").trim();
+    if (!raw) return false;
+    // split by comma
+    const parts = raw.split(",").map(s => s.trim()).filter(Boolean);
+    return parts.includes(topic);
+  }
+
+  function applyTopicToSources(topic, checked) {
+    const boxes = getSourceBoxes();
+    boxes.forEach((b) => {
+      if (sourceHasTopic(b, topic)) {
+        b.checked = !!checked;
+      }
+    });
+  }
+
+  function setAllTopics(checked) {
+    if (!topicGrid) return;
+    const boxes = topicGrid.querySelectorAll('input[type="checkbox"][name="topics"]');
+    boxes.forEach((b) => { b.checked = !!checked; });
+    // apply to sources
+    boxes.forEach((b) => { applyTopicToSources(b.value, checked); });
+  }
+
+  topicGrid?.addEventListener("change", (e) => {
+    const tbox = e.target;
+    if (!tbox || tbox.name !== "topics") return;
+    applyTopicToSources(tbox.value, tbox.checked);
+  });
+
+  btnTopicsAll?.addEventListener("click", () => setAllTopics(true));
+  btnTopicsNone?.addEventListener("click", () => setAllTopics(false));
+
+  // --- SSE status ---
   const params = new URLSearchParams(window.location.search);
   const jobId = params.get("job");
   const pill = document.getElementById("jobPill");

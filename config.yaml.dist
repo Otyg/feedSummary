@@ -1,9 +1,11 @@
 store:
   provider: tinydb
-  path: ~/.local/share/FeedSummary/news_docs.json
+  path: data/news_docs.json
+  # provider: sqlite
+  # path: data/news_docs.sqlite
 checkpointing:
   enabled: true
-  dir: ~/.local/share/FeedSummary/checkpoints
+  dir: data/checkpoints
 prompts:
   path: "config/prompts.yaml"
   default_package: "SecurityAnalyst"
@@ -14,7 +16,6 @@ ingest:
   lookback: 1d
   max_items_per_feed: 100
   article_timeout_s: 20
-article_timeout_s: 20
 batching:
   max_articles_per_batch: 15
   max_chars_per_batch: 14500

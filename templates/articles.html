@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% block title %}Källor{% endblock %}
-{% block header %}Källor{% endblock %}
+{% block title %}Artiklar{% endblock %}
+{% block header %}Artiklar{% endblock %}
 
 {% block subheader %}
   Visar {{ filtered_count }} av {{ total_count }} artiklar
@@ -13,8 +13,17 @@
 
 {% block content %}
 
-{# auto-open if any filter is active #}
-{% set has_filters = (selected_sources and (selected_sources|length > 0)) or (from_date and from_date|length > 0) or (to_date and to_date|length > 0) %}
+{# auto-open filter panel if any filter is active #}
+{% set has_filters =
+  (selected_sources and (selected_sources|length > 0)) or
+  (selected_topics and (selected_topics|length > 0)) or
+  (from_date and from_date|length > 0) or
+  (to_date and to_date|length > 0)
+%}
+
+{# allow both source_options (preferred) and sources (fallback) #}
+{% set _source_options = source_options if source_options is defined and source_options else [] %}
+{% set _topic_options = topic_options if topic_options is defined and topic_options else [] %}
 
 <div class="card">
   <div class="status" style="justify-content: space-between;">
@@ -25,6 +34,9 @@
           · Aktiva:
           {% if from_date %} från {{ from_date }}{% endif %}
           {% if to_date %} till {{ to_date }}{% endif %}
+          {% if selected_topics and selected_topics|length > 0 %}
+            · ämnen: {{ selected_topics|length }}
+          {% endif %}
           {% if selected_sources and selected_sources|length > 0 %}
             · källor: {{ selected_sources|length }}
           {% endif %}
@@ -51,6 +63,32 @@
         </div>
       </div>
 
+      {% if _topic_options and (_topic_options|length > 0) %}
+      <div class="form-row">
+        <label class="form-label">Ämnen</label>
+
+        <div class="form-inline" style="margin: 6px 0 10px 0;">
+          <button class="btn" type="button" id="selectAllTopics">Markera alla ämnen</button>
+          <button class="btn" type="button" id="deselectAllTopics">Avmarkera alla ämnen</button>
+          <span class="muted">Markerade ämnen markerar matchande källor.</span>
+        </div>
+
+        <div class="source-grid" id="topicGrid">
+          {% for t in _topic_options %}
+            <label class="chk">
+              <input
+                type="checkbox"
+                name="topics"
+                value="{{ t }}"
+                {% if selected_topics and (t in selected_topics) %}checked{% endif %}
+              />
+              <span><strong>{{ t }}</strong></span>
+            </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
       <div class="form-row">
         <label class="form-label">Källor</label>
 
@@ -62,17 +100,39 @@
         </div>
 
         <div class="source-grid" id="sourceGrid">
-          {% for s in sources %}
-            <label class="chk">
-              <input
-                type="checkbox"
-                name="sources"
-                value="{{ s }}"
-                {% if selected_sources and (s in selected_sources) %}checked{% endif %}
-              />
-              <span><strong>{{ s }}</strong></span>
-            </label>
-          {% endfor %}
+          {% if _source_options and (_source_options|length > 0) %}
+            {% for s in _source_options %}
+              <label class="chk">
+                <input
+                  type="checkbox"
+                  name="sources"
+                  value="{{ s.name }}"
+                  data-topics="{{ (s.topics or [])|join(',') }}"
+                  {% if selected_sources and (s.name in selected_sources) %}checked{% endif %}
+                />
+                <span>
+                  <strong>{{ s.name }}</strong>
+                  {% if s.topics and s.topics|length > 0 %}
+                    <span class="muted">· {{ s.topics|join(', ') }}</span>
+                  {% endif %}
+                </span>
+              </label>
+            {% endfor %}
+          {% else %}
+            {# fallback: only a list of source strings exists #}
+            {% for s in sources %}
+              <label class="chk">
+                <input
+                  type="checkbox"
+                  name="sources"
+                  value="{{ s }}"
+                  data-topics=""
+                  {% if selected_sources and (s in selected_sources) %}checked{% endif %}
+                />
+                <span><strong>{{ s }}</strong></span>
+              </label>
+            {% endfor %}
+          {% endif %}
         </div>
       </div>
     </form>
@@ -115,18 +175,59 @@
   });
 
   // Select/deselect all sources
-  const grid = document.getElementById("sourceGrid");
+  const sourceGrid = document.getElementById("sourceGrid");
   const btnAll = document.getElementById("selectAllSources");
   const btnNone = document.getElementById("deselectAllSources");
 
-  function setAll(checked) {
-    if (!grid) return;
-    const boxes = grid.querySelectorAll('input[type="checkbox"][name="sources"]');
+  function getSourceBoxes() {
+    if (!sourceGrid) return [];
+    return Array.from(sourceGrid.querySelectorAll('input[type="checkbox"][name="sources"]'));
+  }
+
+  function setAllSources(checked) {
+    const boxes = getSourceBoxes();
     boxes.forEach((b) => { b.checked = !!checked; });
   }
 
-  btnAll?.addEventListener("click", () => setAll(true));
-  btnNone?.addEventListener("click", () => setAll(false));
+  btnAll?.addEventListener("click", () => setAllSources(true));
+  btnNone?.addEventListener("click", () => setAllSources(false));
+
+  // Topics -> sources mapping
+  const topicGrid = document.getElementById("topicGrid");
+  const btnTopicsAll = document.getElementById("selectAllTopics");
+  const btnTopicsNone = document.getElementById("deselectAllTopics");
+
+  function sourceHasTopic(box, topic) {
+    const raw = (box.getAttribute("data-topics") || "").trim();
+    if (!raw) return false;
+    const parts = raw.split(",").map(s => s.trim()).filter(Boolean);
+    return parts.includes(topic);
+  }
+
+  function applyTopicToSources(topic, checked) {
+    const boxes = getSourceBoxes();
+    boxes.forEach((b) => {
+      if (sourceHasTopic(b, topic)) {
+        b.checked = !!checked;
+      }
+    });
+  }
+
+  function setAllTopics(checked) {
+    if (!topicGrid) return;
+    const boxes = topicGrid.querySelectorAll('input[type="checkbox"][name="topics"]');
+    boxes.forEach((b) => { b.checked = !!checked; });
+    boxes.forEach((b) => { applyTopicToSources(b.value, checked); });
+  }
+
+  topicGrid?.addEventListener("change", (e) => {
+    const tbox = e.target;
+    if (!tbox || tbox.name !== "topics") return;
+    applyTopicToSources(tbox.value, tbox.checked);
+  });
+
+  btnTopicsAll?.addEventListener("click", () => setAllTopics(true));
+  btnTopicsNone?.addEventListener("click", () => setAllTopics(false));
 })();
 </script>
 
