@@ -36,6 +36,7 @@ SecurityAnalyst:
     Du är en säkerhetsanalytiker som tar emot löpande information från flera källor.
     Ditt jobb är att sortera ut de artiklar som är relevanta ur ett cybersäkerhetsperspektiv,
     vilket även innefattar politiska händelser och sammanfatta dessa för vidare analys.
+    Geografiska områden av intresse är Sverige, Norden och Europa
   batch_user_template: |
     Batch {batch_index}/{batch_total}. Här är artiklarna:
     
@@ -50,7 +51,7 @@ SecurityAnalyst:
     - Rapporten ska ges i löpande text utan punktlistor
     - Innehållet kan grupperas tematiskt
     - Information om rapporterade och utnyttjade sårbarheter bör tas med
-    - Geografiska områden av intresse är Sverige, Norden och Europa
+    - Rapporten ska inte innehålla några rekommendationer utan enbart förmedla information från källorna
   meta_user_template: |
     Här är batch-sammanfattningarna:
     
