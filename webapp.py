@@ -6,8 +6,8 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime
-from typing import Any, Dict, Optional, List
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional, List, Set, Tuple
 
 import markdown as md
 import yaml
@@ -57,6 +57,32 @@ def format_ts(ts: Optional[int]) -> str:
     if not ts:
         return ""
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _published_ts(a: Dict[str, Any]) -> int:
+    ts = a.get("published_ts")
+    if isinstance(ts, int) and ts > 0:
+        return ts
+    fa = a.get("fetched_at")
+    if isinstance(fa, int) and fa > 0:
+        return fa
+    return 0
+
+
+def _parse_ymd_to_range(date_str: str) -> Optional[Tuple[int, int]]:
+    """
+    Parse YYYY-MM-DD to (start_ts, end_ts) for that day in local time.
+    """
+    s = (date_str or "").strip()
+    if not s:
+        return None
+    try:
+        d = datetime.strptime(s, "%Y-%m-%d")
+        start = int(d.timestamp())
+        end = int((d + timedelta(days=1) - timedelta(seconds=1)).timestamp())
+        return start, end
+    except Exception:
+        return None
 
 
 # ----------------------------
@@ -378,8 +404,57 @@ def api_status_stream(job_id: int):
 
 @app.get("/articles")
 def list_articles():
+    """
+    Articles list with optional filters:
+
+    - sources: repeated query param (e.g. ?sources=SVT&sources=DN)
+    - from: YYYY-MM-DD (inclusive)
+    - to:   YYYY-MM-DD (inclusive)
+    """
     store = get_store()
+
+    # Load (already sorted oldest-first by store.list_articles)
     articles = store.list_articles()
+
+    # Build available sources from data (for checkbox list)
+    all_sources: List[str] = sorted(
+        {str(a.get("source") or "").strip() for a in articles if str(a.get("source") or "").strip()},
+        key=lambda s: s.lower(),
+    )
+
+    # Read filters from query string
+    selected_sources = request.args.getlist("sources") or []
+    selected_sources = [s.strip() for s in selected_sources if s.strip()]
+    selected_set: Set[str] = set(selected_sources)
+
+    from_str = (request.args.get("from") or "").strip()
+    to_str = (request.args.get("to") or "").strip()
+
+    from_range = _parse_ymd_to_range(from_str) if from_str else None
+    to_range = _parse_ymd_to_range(to_str) if to_str else None
+
+    from_ts: Optional[int] = from_range[0] if from_range else None
+    # for "to", we want end-of-day
+    to_ts: Optional[int] = to_range[1] if to_range else None
+
+    def keep(a: Dict[str, Any]) -> bool:
+        if selected_set:
+            if str(a.get("source") or "") not in selected_set:
+                return False
+        ts = _published_ts(a)
+        if from_ts is not None and ts and ts < from_ts:
+            return False
+        if to_ts is not None and ts and ts > to_ts:
+            return False
+        # If ts==0 (missing), keep unless user asked for date filters
+        if ts == 0 and (from_ts is not None or to_ts is not None):
+            return False
+        return True
+
+    filtered = [a for a in articles if keep(a)]
+
+    # Show newest first in articles view (usually nicer)
+    filtered.sort(key=_published_ts, reverse=True)
 
     view_articles = [
         {
@@ -387,14 +462,21 @@ def list_articles():
             "url": a.get("url", ""),
             "source": a.get("source", ""),
             "published": a.get("published", ""),
-            "text": a.get("text", "")[:500],
+            "published_ts": _published_ts(a),
+            "text": (a.get("text", "") or "")[:500],
         }
-        for a in articles
+        for a in filtered
     ]
 
     return render_template(
         "articles.html",
         articles=view_articles,
+        sources=all_sources,
+        selected_sources=selected_sources,
+        from_date=from_str,
+        to_date=to_str,
+        total_count=len(articles),
+        filtered_count=len(filtered),
     )
 
 

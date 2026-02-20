@@ -3,14 +3,131 @@
 {% block title %}Källor{% endblock %}
 {% block header %}Källor{% endblock %}
 
+{% block subheader %}
+  Visar {{ filtered_count }} av {{ total_count }} artiklar
+{% endblock %}
+
+{% block top_actions %}
+  <a class="btn" href="{{ url_for('index') }}">Tillbaka</a>
+{% endblock %}
+
 {% block content %}
-<div>
-    {% for a in articles %}
-        <div class="card">
-            <div><strong><a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.title }}</a></strong></div>
-            <div class="muted">{{ a.source }}{% if a.published %} · {{ a.published }}{% endif %}</div>
-            <p>{{ a.text }}</p>
+
+{# auto-open if any filter is active #}
+{% set has_filters = (selected_sources and (selected_sources|length > 0)) or (from_date and from_date|length > 0) or (to_date and to_date|length > 0) %}
+
+<div class="card">
+  <div class="status" style="justify-content: space-between;">
+    <div>
+      <strong>Filter</strong>
+      {% if has_filters %}
+        <span class="muted">
+          · Aktiva:
+          {% if from_date %} från {{ from_date }}{% endif %}
+          {% if to_date %} till {{ to_date }}{% endif %}
+          {% if selected_sources and selected_sources|length > 0 %}
+            · källor: {{ selected_sources|length }}
+          {% endif %}
+        </span>
+      {% else %}
+        <span class="muted">· Inga aktiva filter</span>
+      {% endif %}
+    </div>
+
+    <button class="btn" type="button" id="toggleFilters" aria-expanded="{{ 'true' if has_filters else 'false' }}">
+      {{ 'Dölj filter' if has_filters else 'Visa filter' }}
+    </button>
+  </div>
+
+  <div id="filtersPanel" style="margin-top: 12px; {% if not has_filters %}display:none;{% endif %}">
+    <form method="GET" action="{{ url_for('list_articles') }}">
+      <div class="form-row">
+        <label class="form-label">Datumintervall</label>
+        <div class="form-inline">
+          <input class="input" type="date" name="from" value="{{ from_date }}" />
+          <span class="muted">→</span>
+          <input class="input" type="date" name="to" value="{{ to_date }}" />
+          <span class="muted">YYYY-MM-DD</span>
         </div>
-    {% endfor %}
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">Källor</label>
+
+        <div class="form-inline" style="margin: 6px 0 10px 0;">
+          <button class="btn" type="button" id="selectAllSources">Markera alla</button>
+          <button class="btn" type="button" id="deselectAllSources">Avmarkera alla</button>
+          <button class="btn btn-primary" type="submit">Filtrera</button>
+          <a class="btn" href="{{ url_for('list_articles') }}">Rensa</a>
+        </div>
+
+        <div class="source-grid" id="sourceGrid">
+          {% for s in sources %}
+            <label class="chk">
+              <input
+                type="checkbox"
+                name="sources"
+                value="{{ s }}"
+                {% if selected_sources and (s in selected_sources) %}checked{% endif %}
+              />
+              <span><strong>{{ s }}</strong></span>
+            </label>
+          {% endfor %}
+        </div>
+      </div>
+    </form>
+  </div>
 </div>
+
+<div>
+  {% for a in articles %}
+    <div class="card">
+      <div>
+        <strong>
+          <a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.title }}</a>
+        </strong>
+      </div>
+      <div class="muted">
+        {{ a.source }}
+        {% if a.published %} · {{ a.published }}{% endif %}
+      </div>
+      <p>{{ a.text }}</p>
+    </div>
+  {% endfor %}
+</div>
+
+<script>
+(function() {
+  // Toggle filters panel
+  const btn = document.getElementById("toggleFilters");
+  const panel = document.getElementById("filtersPanel");
+
+  function setOpen(open) {
+    if (!panel || !btn) return;
+    panel.style.display = open ? "block" : "none";
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.textContent = open ? "Dölj filter" : "Visa filter";
+  }
+
+  btn?.addEventListener("click", () => {
+    const isOpen = panel && panel.style.display !== "none";
+    setOpen(!isOpen);
+  });
+
+  // Select/deselect all sources
+  const grid = document.getElementById("sourceGrid");
+  const btnAll = document.getElementById("selectAllSources");
+  const btnNone = document.getElementById("deselectAllSources");
+
+  function setAll(checked) {
+    if (!grid) return;
+    const boxes = grid.querySelectorAll('input[type="checkbox"][name="sources"]');
+    boxes.forEach((b) => { b.checked = !!checked; });
+  }
+
+  btnAll?.addEventListener("click", () => setAll(true));
+  btnNone?.addEventListener("click", () => setAll(false));
+})();
+</script>
+
 {% endblock %}
