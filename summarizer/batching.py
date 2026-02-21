@@ -287,7 +287,7 @@ def _budgeted_meta_user(
     sources_text: str,
     budget_tokens: int,
     chars_per_token: float,
-    lookback:str,
+    lookback: str,
 ) -> str:
     """
     Bygg meta-user inom en *explicit* tokenbudget.
