@@ -1,358 +1,349 @@
-# LICENSE HEADER MANAGED BY add-license-header
-#
-# BSD 3-Clause License
-#
-# Copyright (c) 2026, Martin Vesterlund
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import os
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set, Tuple
+import threading
+import time
+from typing import Any, Dict, Optional, List
 
-import yaml
+import markdown as md
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    stream_with_context,
+    url_for,
+)
 
-from persistence import NewsStore, create_store
-from summarizer.helpers import load_feeds_into_config
+from llmClient import create_llm_client
+from summarizer.main import run_pipeline
+from summarizer.summarizer import run_resume_and_persist_summary
+from summarizer.helpers import setup_logging
 
+from uicommon import (
+    load_config,
+    get_store,
+    format_ts,
+    published_ts,
+    filter_articles,
+    ArticleFilters,
+    get_ui_options,
+    build_refresh_overrides,
+)
 
-# ----------------------------
-# Config + store
-# ----------------------------
-def load_config(config_path: str) -> Dict[str, Any]:
-    """
-    Load config.yaml and merge feeds from feeds.path (config/feeds.yaml).
-    """
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
-    cfg = load_feeds_into_config(cfg, base_config_path=config_path)
-    return cfg
+setup_logging()
+logger = logging.getLogger(__name__)
 
+app = Flask(__name__)
+pipeline_lock = threading.Lock()
 
-def get_store(cfg: Dict[str, Any]) -> NewsStore:
-    return create_store(cfg.get("store", {}))
-
-
-# ----------------------------
-# Common formatting / parsing
-# ----------------------------
-def format_ts(ts: Optional[int]) -> str:
-    if not ts:
-        return ""
-    return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def published_ts(a: Dict[str, Any]) -> int:
-    ts = a.get("published_ts")
-    if isinstance(ts, int) and ts > 0:
-        return ts
-    fa = a.get("fetched_at")
-    if isinstance(fa, int) and fa > 0:
-        return fa
-    return 0
+CONFIG_PATH = os.environ.get("FEEDSUMMARY_CONFIG", "config.yaml")
 
 
-def parse_ymd_to_range(date_str: str) -> Optional[Tuple[int, int]]:
-    """
-    Parse YYYY-MM-DD to (start_ts, end_ts) for that day in local time.
-    """
-    s = (date_str or "").strip()
-    if not s:
-        return None
+def _safe_int(s: str, default: int) -> int:
     try:
-        d = datetime.strptime(s, "%Y-%m-%d")
-        start = int(d.timestamp())
-        end = int((d + timedelta(days=1) - timedelta(seconds=1)).timestamp())
-        return start, end
+        v = int(str(s).strip())
+        return v if v > 0 else default
     except Exception:
-        return None
+        return default
 
 
-def split_lookback(
-    lb: str, default_value: int = 24, default_unit: str = "h"
-) -> Tuple[int, str]:
-    """
-    "24h" -> (24, "h")
-    """
-    lb = (lb or "").strip()
-    if not lb:
-        return default_value, default_unit
-    digits = "".join([c for c in lb if c.isdigit()])
-    unit = "".join([c for c in lb if not c.isdigit()]).strip().lower()
-    return int(digits or default_value), (unit or default_unit)
+@app.get("/")
+def index():
+    cfg = load_config(CONFIG_PATH)
+    store = get_store(cfg)
+    opts = get_ui_options(cfg, config_path=CONFIG_PATH)
 
-
-def resolve_path(config_path: str, p: str) -> str:
-    """
-    Expand env + ~ and resolve relative paths relative to config.yaml location.
-    """
-    cfg_dir = os.path.dirname(os.path.abspath(config_path)) or "."
-    p2 = os.path.expanduser(os.path.expandvars(p))
-    if not os.path.isabs(p2):
-        p2 = os.path.join(cfg_dir, p2)
-    return p2
-
-
-# ----------------------------
-# Feeds -> sources/topics
-# ----------------------------
-def get_config_sources(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    # Feeds is the current canonical list in develop
-    feeds = cfg.get("feeds")
-    if isinstance(feeds, list) and all(isinstance(x, dict) for x in feeds):
-        return feeds  # type: ignore[return-value]
-
-    # fallback candidates
-    candidates = [
-        cfg.get("sources"),
-        cfg.get("rss_sources"),
-        (cfg.get("ingest") or {}).get("sources"),
-        (cfg.get("ingest") or {}).get("feeds"),
+    all_docs = store.list_summary_docs() or []
+    sidebar_items = [
+        {
+            "id": str(d.get("id")),
+            "time": format_ts(int(d.get("created") or 0)),
+            "n_articles": len(d.get("sources", []) or []),
+        }
+        for d in all_docs
     ]
-    for c in candidates:
-        if isinstance(c, list) and c and all(isinstance(x, dict) for x in c):
-            return c  # type: ignore[return-value]
-    return []
 
+    selected_id = request.args.get("summary_id")
+    selected: Optional[Dict[str, Any]] = None
+    if selected_id:
+        selected = store.get_summary_doc(str(selected_id))
+    if not selected:
+        selected = store.get_latest_summary_doc()
 
-def source_name(s: Dict[str, Any]) -> str:
-    return str(s.get("name") or s.get("title") or s.get("label") or "").strip()
-
-
-def source_topics(s: Dict[str, Any]) -> List[str]:
-    """
-    Supports:
-      topics: ["Cyber", "Sverige"]
-      topic: "Cyber"
-    """
-    t = s.get("topics")
-    if isinstance(t, list):
-        return [str(x).strip() for x in t if str(x).strip()]
-    if isinstance(t, str) and t.strip():
-        return [t.strip()]
-    t2 = s.get("topic")
-    if isinstance(t2, str) and t2.strip():
-        return [t2.strip()]
-    return []
-
-
-def build_source_options(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Returns list of {name,url,default_checked,topics}
-    """
-    out: List[Dict[str, Any]] = []
-    for s in get_config_sources(cfg):
-        name = source_name(s)
-        if not name:
-            continue
-        out.append(
-            {
-                "name": name,
-                "url": str(s.get("url") or s.get("href") or s.get("rss") or ""),
-                "default_checked": bool(s.get("enabled", True)),
-                "topics": source_topics(s),
-            }
+    if not selected:
+        return render_template(
+            "index.html",
+            summary=None,
+            summary_list=sidebar_items,
+            selected_id=selected_id,
+            source_options=opts.source_options,
+            topic_options=opts.topic_options,
+            default_lb_value=str(opts.default_lookback_value),
+            default_lb_unit=opts.default_lookback_unit,
+            prompt_packages=opts.prompt_packages,
+            default_prompt_package=opts.default_prompt_package,
         )
-    out.sort(key=lambda x: x["name"].lower())
-    return out
 
+    summary_text = selected.get("summary", "")
+    created_at = int(selected.get("created") or 0)
+    article_ids = selected.get("sources", []) or []
+    selected_id = str(selected.get("id"))
 
-def build_topic_options(cfg: Dict[str, Any]) -> List[str]:
-    seen: Set[str] = set()
-    topics: List[str] = []
-    for s in get_config_sources(cfg):
-        for t in source_topics(s):
-            if t not in seen:
-                seen.add(t)
-                topics.append(t)
-    topics.sort(key=lambda x: x.lower())
-    return topics
+    summary_html = md.markdown(summary_text, extensions=["extra"])
 
-
-def source_to_topics_map(cfg: Dict[str, Any]) -> Dict[str, List[str]]:
-    """
-    Map source name -> topics list
-    """
-    out: Dict[str, List[str]] = {}
-    for s in get_config_sources(cfg):
-        n = source_name(s)
-        if not n:
-            continue
-        out[n] = source_topics(s)
-    return out
-
-
-def sources_for_topics(cfg: Dict[str, Any], topics: List[str]) -> List[str]:
-    wanted = {t.strip() for t in topics if t.strip()}
-    if not wanted:
-        return []
-    m = source_to_topics_map(cfg)
-    out: List[str] = []
-    for src, ts in m.items():
-        if set(ts).intersection(wanted):
-            out.append(src)
-    out.sort(key=lambda x: x.lower())
-    return out
-
-
-# ----------------------------
-# prompts.yaml packages
-# ----------------------------
-def load_prompt_packages(cfg: Dict[str, Any], *, config_path: str) -> List[str]:
-    p_cfg = cfg.get("prompts") or {}
-    if not isinstance(p_cfg, dict):
-        return []
-    raw_path = str(p_cfg.get("path") or "config/prompts.yaml")
-    path = resolve_path(config_path, raw_path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            all_pkgs = yaml.safe_load(f) or {}
-        if isinstance(all_pkgs, dict):
-            return sorted([str(k) for k in all_pkgs.keys()])
-    except Exception:
-        return []
-    return []
-
-
-def default_prompt_package(cfg: Dict[str, Any], packages: List[str]) -> str:
-    p_cfg = cfg.get("prompts") or {}
-    if isinstance(p_cfg, dict):
-        sel = str(p_cfg.get("selected") or "").strip()
-        if sel:
-            return sel
-        d = str(p_cfg.get("default_package") or "").strip()
-        if d:
-            return d
-    return packages[0] if packages else ""
-
-
-def default_lookback_parts(cfg: Dict[str, Any]) -> Tuple[int, str]:
-    ingest = cfg.get("ingest") or {}
-    default_lb = str(ingest.get("lookback") or "24h")
-    return split_lookback(default_lb, 24, "h")
-
-
-# ----------------------------
-# Article filtering (shared)
-# ----------------------------
-@dataclass(frozen=True)
-class ArticleFilters:
-    sources: List[str]
-    topics: List[str]
-    from_ymd: str
-    to_ymd: str
-
-
-def filter_articles(
-    articles: List[Dict[str, Any]],
-    *,
-    cfg: Dict[str, Any],
-    filters: ArticleFilters,
-) -> List[Dict[str, Any]]:
-    """
-    Shared filtering semantics:
-      - if sources specified -> use them
-      - else if topics specified -> derive sources from config
-      - date range applied on published_ts/fetched_at
-    """
-    selected_sources = [s.strip() for s in (filters.sources or []) if s.strip()]
-    selected_topics = [t.strip() for t in (filters.topics or []) if t.strip()]
-
-    allowed_sources: Optional[Set[str]] = None
-    if selected_sources:
-        allowed_sources = set(selected_sources)
-    elif selected_topics:
-        allowed_sources = set(sources_for_topics(cfg, selected_topics))
-
-    from_ts = None
-    to_ts = None
-    if filters.from_ymd:
-        r = parse_ymd_to_range(filters.from_ymd)
-        from_ts = r[0] if r else None
-    if filters.to_ymd:
-        r = parse_ymd_to_range(filters.to_ymd)
-        to_ts = r[1] if r else None
-
-    def keep(a: Dict[str, Any]) -> bool:
-        src = str(a.get("source") or "").strip()
-        if allowed_sources is not None and src not in allowed_sources:
-            return False
-
-        ts = published_ts(a)
-        if from_ts is not None and ts and ts < from_ts:
-            return False
-        if to_ts is not None and ts and ts > to_ts:
-            return False
-        if ts == 0 and (from_ts is not None or to_ts is not None):
-            return False
-
-        return True
-
-    out = [a for a in articles if keep(a)]
-    out.sort(key=published_ts, reverse=True)  # newest first
-    return out
-
-
-# ----------------------------
-# NEW: Unified UI options object
-# ----------------------------
-@dataclass(frozen=True)
-class UIOptions:
-    prompt_packages: List[str]
-    default_prompt_package: str
-    source_options: List[Dict[str, Any]]
-    topic_options: List[str]
-    default_lookback_value: int
-    default_lookback_unit: str
-
-
-def get_ui_options(cfg: Dict[str, Any], *, config_path: str) -> UIOptions:
-    """
-    Builds one object that contains the UI option lists and defaults.
-    Intended to be used by both webapp and qt-gui.
-
-    - prompt_packages + default_prompt_package
-    - source_options + topic_options
-    - default lookback split into value/unit
-    """
-    pkgs = load_prompt_packages(cfg, config_path=config_path)
-    default_pkg = default_prompt_package(cfg, pkgs)
-    src_opts = build_source_options(cfg)
-    topic_opts = build_topic_options(cfg)
-    lb_val, lb_unit = default_lookback_parts(cfg)
-
-    return UIOptions(
-        prompt_packages=pkgs,
-        default_prompt_package=default_pkg,
-        source_options=src_opts,
-        topic_options=topic_opts,
-        default_lookback_value=int(lb_val),
-        default_lookback_unit=str(lb_unit),
+    return render_template(
+        "index.html",
+        summary=summary_text,
+        summary_html=summary_html,
+        summary_time=format_ts(created_at),
+        n_articles=len(article_ids),
+        summary_list=sidebar_items,
+        selected_id=selected_id,
+        source_options=opts.source_options,
+        topic_options=opts.topic_options,
+        default_lb_value=str(opts.default_lookback_value),
+        default_lb_unit=opts.default_lookback_unit,
+        prompt_packages=opts.prompt_packages,
+        default_prompt_package=opts.default_prompt_package,
     )
+
+
+@app.post("/refresh")
+def refresh():
+    cfg = load_config(CONFIG_PATH)
+    store = get_store(cfg)
+    opts = get_ui_options(cfg, config_path=CONFIG_PATH)
+
+    job_id = store.create_job()
+
+    lookback_value_raw = (request.form.get("lookback_value") or "").strip()
+    lookback_unit = (request.form.get("lookback_unit") or "").strip().lower()
+    prompt_package = (request.form.get("prompt_package") or "").strip()
+
+    selected_sources = request.form.getlist("sources") or []
+    selected_topics = request.form.getlist("topics") or []
+
+    overrides = build_refresh_overrides(
+        lookback_value=_safe_int(lookback_value_raw, int(opts.default_lookback_value)),
+        lookback_unit=lookback_unit or opts.default_lookback_unit,
+        prompt_package=prompt_package,
+        selected_sources=selected_sources,
+        selected_topics=selected_topics,
+    )
+
+    store.update_job(
+        job_id,
+        status="running",
+        started_at=int(time.time()),
+        message=f"Startar refresh… (overrides: {overrides})",
+    )
+
+    def worker(jid: int):
+        if not pipeline_lock.acquire(blocking=False):
+            store.update_job(
+                jid,
+                status="error",
+                finished_at=int(time.time()),
+                message="En refresh kör redan. Försök igen om en stund.",
+            )
+            return
+        try:
+            asyncio.run(
+                run_pipeline(
+                    CONFIG_PATH,
+                    job_id=jid,
+                    overrides=overrides,
+                    config_dict=cfg,
+                )
+            )
+        except Exception as e:
+            store.update_job(
+                jid,
+                status="error",
+                finished_at=int(time.time()),
+                message=f"Refresh misslyckades: {e}",
+            )
+            logger.error("%s Refresh misslyckades: %s", jid, e)
+        finally:
+            pipeline_lock.release()
+
+    threading.Thread(target=worker, args=(job_id,), daemon=True).start()
+    return redirect(url_for("index", job=job_id))
+
+
+@app.get("/resume")
+def resume():
+    cfg = load_config(CONFIG_PATH)
+    store = get_store(cfg)
+
+    job_id = request.args.get("job", type=int)
+    if not job_id:
+        return jsonify(
+            {"status": "error", "message": "Saknar job. Använd /resume?job=<id>"}
+        ), 400
+
+    store.update_job(
+        job_id,
+        status="running",
+        started_at=int(time.time()),
+        message="Återupptar från checkpoint...",
+    )
+
+    llm = create_llm_client(cfg)
+
+    def worker(jid: int):
+        if not pipeline_lock.acquire(blocking=False):
+            store.update_job(
+                jid,
+                status="error",
+                finished_at=int(time.time()),
+                message="En körning pågår redan. Försök igen om en stund.",
+            )
+            return
+        try:
+            asyncio.run(run_resume_and_persist_summary(cfg, store, llm, jid))
+            store.update_job(
+                jid,
+                status="done",
+                finished_at=int(time.time()),
+                message="Resume klart.",
+            )
+        except Exception as e:
+            store.update_job(
+                jid,
+                status="error",
+                finished_at=int(time.time()),
+                message=f"Resume misslyckades: {e}",
+            )
+            logger.error("Resume misslyckades (job=%s): %s", jid, e)
+        finally:
+            pipeline_lock.release()
+
+    threading.Thread(target=worker, args=(job_id,), daemon=True).start()
+    return redirect(url_for("index", job=job_id))
+
+
+@app.get("/api/status/stream/<int:job_id>")
+def api_status_stream(job_id: int):
+    cfg = load_config(CONFIG_PATH)
+    store = get_store(cfg)
+
+    def event(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    @stream_with_context
+    def generate():
+        last_payload = None
+        last_emit = 0.0
+
+        job = store.get_job(job_id)
+        if not job:
+            yield event({"status": "error", "message": "Jobb hittades inte."})
+            return
+
+        while True:
+            job = store.get_job(job_id)
+            if not job:
+                yield event({"status": "error", "message": "Jobb hittades inte."})
+                return
+
+            payload = {
+                "status": job.get("status"),
+                "message": job.get("message", ""),
+                "created_at": job.get("created_at"),
+                "started_at": job.get("started_at"),
+                "finished_at": job.get("finished_at"),
+                "summary_id": job.get("summary_id"),
+            }
+
+            now = time.time()
+            if payload != last_payload or (now - last_emit) > 10:
+                yield event(payload)
+                last_payload = payload
+                last_emit = now
+
+            if payload["status"] in ("done", "error"):
+                return
+
+            time.sleep(1.0)
+
+    return Response(
+        generate(),  # type: ignore
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/articles")
+def list_articles():
+    cfg = load_config(CONFIG_PATH)
+    store = get_store(cfg)
+    opts = get_ui_options(cfg, config_path=CONFIG_PATH)
+
+    articles = store.list_articles() or []
+
+    selected_sources = [
+        s.strip() for s in (request.args.getlist("sources") or []) if s.strip()
+    ]
+    selected_topics = [
+        t.strip() for t in (request.args.getlist("topics") or []) if t.strip()
+    ]
+    from_str = (request.args.get("from") or "").strip()
+    to_str = (request.args.get("to") or "").strip()
+
+    filtered = filter_articles(
+        articles,
+        cfg=cfg,
+        filters=ArticleFilters(
+            sources=selected_sources,
+            topics=selected_topics,
+            from_ymd=from_str,
+            to_ymd=to_str,
+        ),
+    )
+
+    view_articles = [
+        {
+            "title": a.get("title", ""),
+            "url": a.get("url", ""),
+            "source": a.get("source", ""),
+            "published": a.get("published", ""),
+            "published_ts": published_ts(a),
+            "text": (a.get("text", "") or "")[:500],
+        }
+        for a in filtered
+    ]
+
+    all_sources: List[str] = sorted(
+        {
+            str(a.get("source") or "").strip()
+            for a in articles
+            if str(a.get("source") or "").strip()
+        },
+        key=lambda s: s.lower(),
+    )
+
+    return render_template(
+        "articles.html",
+        articles=view_articles,
+        sources=all_sources,
+        source_options=opts.source_options,
+        topic_options=opts.topic_options,
+        selected_sources=selected_sources,
+        selected_topics=selected_topics,
+        from_date=from_str,
+        to_date=to_str,
+        total_count=len(articles),
+        filtered_count=len(filtered),
+    )
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("FEEDSUMMARY_PORT", "5000"))
+    app.run(host="127.0.0.1", port=port, debug=True, use_reloader=False)

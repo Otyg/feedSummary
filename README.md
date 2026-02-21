@@ -13,6 +13,13 @@ Moduler för att lagra data i en flatfile JSON-databas (TinyDB) eller SQLite fin
 
 ---
 
+## Disclaimer
+
+Det var längesen jag kodade något större och även om jag förespråkar TDD så lever jag inte som jag lär. Koden är
+väldigt mycket på formen "just works" och innehåller både dupliceringar, döda funktioner och allmänt håriga konstruktioner.
+
+You've been warned...
+
 ## Snabbstart
 
 ### 1) Skapa config

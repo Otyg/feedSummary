@@ -1,41 +1,10 @@
-# LICENSE HEADER MANAGED BY add-license-header
-#
-# BSD 3-Clause License
-#
-# Copyright (c) 2026, Martin Vesterlund
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-
+# qt_gui.py
 from __future__ import annotations
 
 import asyncio
 import os
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import markdown as md
 from PySide6.QtCore import Qt, QThread, Signal, QDate
@@ -63,12 +32,13 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QDateEdit,
     QMessageBox,
+    QScrollArea,
 )
 from PySide6.QtCore import QUrl
 
 from summarizer.main import run_pipeline
 
-from app_shared import (
+from uicommon import (
     load_config,
     get_store,
     format_ts,
@@ -76,6 +46,7 @@ from app_shared import (
     filter_articles,
     ArticleFilters,
     get_ui_options,
+    build_refresh_overrides,
 )
 
 CONFIG_PATH = os.environ.get("FEEDSUMMARY_CONFIG", "config.yaml")
@@ -108,10 +79,9 @@ class PipelineWorker(QThread):
 
 
 class RefreshDialog(QDialog):
-    def __init__(self, parent: QWidget, cfg: Dict[str, Any], ui_opts):
+    def __init__(self, parent: QWidget, ui_opts):
         super().__init__(parent)
         self.setWindowTitle("Refresh – inställningar")
-        self.cfg = cfg
         self.ui_opts = ui_opts
 
         root = QVBoxLayout(self)
@@ -156,20 +126,24 @@ class RefreshDialog(QDialog):
         # Sources
         self.source_checks: Dict[str, QCheckBox] = {}
         self.source_topics: Dict[str, List[str]] = {}
+
         gb = QGroupBox("Källor")
         v = QVBoxLayout(gb)
+
         for s in self.ui_opts.source_options:
             name = s["name"]
             topics = s.get("topics") or []
             self.source_topics[name] = topics
+
             label = name + (f" · {', '.join(topics)}" if topics else "")
             cb = QCheckBox(label)
             cb.setChecked(bool(s.get("default_checked", True)))
             self.source_checks[name] = cb
             v.addWidget(cb)
+
         root.addWidget(gb)
 
-        # topic -> sources (same semantics as web UI)
+        # topic -> sources mapping
         for t, tcb in self.topic_checks.items():
             tcb.stateChanged.connect(lambda _=None, topic=t: self._apply_topic(topic))
 
@@ -191,23 +165,16 @@ class RefreshDialog(QDialog):
                 cb.setChecked(checked)
 
     def overrides(self) -> Dict[str, Any]:
-        lookback = f"{self.lb_value.value()}{self.lb_unit.currentText()}"
-        prompt_pkg = self.prompt_pkg.currentText().strip()
+        selected_sources = [s for s, cb in self.source_checks.items() if cb.isChecked()]
+        selected_topics = [t for t, cb in self.topic_checks.items() if cb.isChecked()]
 
-        sources = [s for s, cb in self.source_checks.items() if cb.isChecked()]
-        topics = [t for t, cb in self.topic_checks.items() if cb.isChecked()]
-
-        ov: Dict[str, Any] = {"lookback": lookback}
-        if prompt_pkg:
-            ov["prompt_package"] = prompt_pkg
-
-        # sources wins; else topics
-        if sources:
-            ov["sources"] = sources
-        elif topics:
-            ov["topics"] = topics
-
-        return ov
+        return build_refresh_overrides(
+            lookback_value=self.lb_value.value(),
+            lookback_unit=self.lb_unit.currentText(),
+            prompt_package=self.prompt_pkg.currentText(),
+            selected_sources=selected_sources,
+            selected_topics=selected_topics,
+        )
 
 
 class MainWindow(QMainWindow):
@@ -289,7 +256,7 @@ class MainWindow(QMainWindow):
         self.summary_view.setHtml(html)
 
     def open_refresh(self):
-        dlg = RefreshDialog(self, self.cfg, self.ui_opts)
+        dlg = RefreshDialog(self, self.ui_opts)
         if dlg.exec() != QDialog.Accepted:
             return
 
@@ -307,12 +274,13 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("done")
         self.btn_refresh.setEnabled(True)
 
-        # reload from disk (config/store may change)
+        # reload config/store/ui options and rebuild article filter UI dynamically
         self.cfg = load_config(CONFIG_PATH)
         self.store = get_store(self.cfg)
         self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
 
         self.reload_summaries()
+        self._rebuild_article_filters_from_ui_opts()  # <- dynamic rebuild
         self.reload_articles()
 
     def on_pipeline_failed(self, err: str):
@@ -325,6 +293,7 @@ class MainWindow(QMainWindow):
         w = QWidget()
         layout = QVBoxLayout(w)
 
+        # Date row
         frow = QHBoxLayout()
         self.from_date = QDateEdit()
         self.from_date.setCalendarPopup(True)
@@ -349,35 +318,20 @@ class MainWindow(QMainWindow):
         frow.addStretch(1)
         layout.addLayout(frow)
 
-        # topics + sources lists
-        boxes = QHBoxLayout()
+        # Scrollable filter area for topics + sources (so it doesn't blow up UI)
+        self.filters_scroll = QScrollArea()
+        self.filters_scroll.setWidgetResizable(True)
+        self.filters_container = QWidget()
+        self.filters_layout = QHBoxLayout(self.filters_container)
+        self.filters_scroll.setWidget(self.filters_container)
+        layout.addWidget(self.filters_scroll)
 
+        # placeholders; built in rebuild method
         self.topic_checks: Dict[str, QCheckBox] = {}
         self.source_checks: Dict[str, QCheckBox] = {}
         self.source_topics: Dict[str, List[str]] = {}
-
-        gb_t = QGroupBox("Ämnen")
-        vb_t = QVBoxLayout(gb_t)
-        for t in self.ui_opts.topic_options:
-            cb = QCheckBox(t)
-            self.topic_checks[t] = cb
-            vb_t.addWidget(cb)
-            cb.stateChanged.connect(
-                lambda _=None, topic=t: self._apply_topic_to_sources(topic)
-            )
-        boxes.addWidget(gb_t)
-
-        gb_s = QGroupBox("Källor")
-        vb_s = QVBoxLayout(gb_s)
-        for s in self.ui_opts.source_options:
-            name = s["name"]
-            self.source_topics[name] = s.get("topics") or []
-            cb = QCheckBox(name)
-            self.source_checks[name] = cb
-            vb_s.addWidget(cb)
-        boxes.addWidget(gb_s)
-
-        layout.addLayout(boxes)
+        self.gb_topics: Optional[QGroupBox] = None
+        self.gb_sources: Optional[QGroupBox] = None
 
         self.btn_apply.clicked.connect(self.reload_articles)
         self.btn_clear.clicked.connect(self.clear_article_filters)
@@ -390,6 +344,54 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.table, 1)
 
         self.tabs.addTab(w, "Artiklar")
+
+        # initial build from ui_opts
+        self._rebuild_article_filters_from_ui_opts()
+
+    def _clear_layout(self, layout: QHBoxLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+    def _rebuild_article_filters_from_ui_opts(self) -> None:
+        """
+        Rebuild topics + sources filter boxes from current self.ui_opts.
+        Keeps date fields intact.
+        """
+        # clear existing boxes
+        self._clear_layout(self.filters_layout)
+
+        self.topic_checks = {}
+        self.source_checks = {}
+        self.source_topics = {}
+
+        # Topics group
+        self.gb_topics = QGroupBox("Ämnen")
+        vb_t = QVBoxLayout(self.gb_topics)
+        for t in self.ui_opts.topic_options:
+            cb = QCheckBox(t)
+            self.topic_checks[t] = cb
+            vb_t.addWidget(cb)
+            cb.stateChanged.connect(
+                lambda _=None, topic=t: self._apply_topic_to_sources(topic)
+            )
+
+        # Sources group
+        self.gb_sources = QGroupBox("Källor")
+        vb_s = QVBoxLayout(self.gb_sources)
+        for s in self.ui_opts.source_options:
+            name = s["name"]
+            self.source_topics[name] = s.get("topics") or []
+            cb = QCheckBox(name)
+            self.source_checks[name] = cb
+            vb_s.addWidget(cb)
+
+        self.filters_layout.addWidget(self.gb_topics)
+        self.filters_layout.addWidget(self.gb_sources)
+        self.filters_layout.addStretch(1)
 
     def _apply_topic_to_sources(self, topic: str) -> None:
         checked = self.topic_checks[topic].isChecked()
@@ -453,7 +455,7 @@ class MainWindow(QMainWindow):
         it = self.table.item(row, 0)
         if not it:
             return
-        url = it.data(Qt.UserRole)
+        url = it.data(Qt.UserRole)  # type: ignore
         if url:
             QDesktopServices.openUrl(QUrl(str(url)))
 

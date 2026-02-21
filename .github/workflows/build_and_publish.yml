@@ -133,6 +133,7 @@ jobs:
             --name $name `
             --add-data "templates;templates" `
             --add-data "config;config" `
+            --add-data "config.yaml.dist;config.yaml.dist" `
             $env:ENTRY_SCRIPT
 
           New-Item -ItemType Directory -Force -Path out | Out-Null
