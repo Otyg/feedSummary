@@ -54,9 +54,9 @@ jobs:
 
           git fetch --tags --force
 
-          VER="$(python -c "import re,pathlib; s=pathlib.Path('riskcalculator/__init__.py').read_text(encoding='utf-8'); m=re.search(r\"__version__\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]\", s); print(m.group(1) if m else '')")"
+          VER="$(python -c "import re,pathlib; s=pathlib.Path('summarizer/__init__.py').read_text(encoding='utf-8'); m=re.search(r\"__version__\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]\", s); print(m.group(1) if m else '')")"
           if [[ -z "${VER}" ]]; then
-            echo "Kunde inte hitta __version__ i riskcalculator/__init__.py" >&2
+            echo "Kunde inte hitta __version__ i summarizer/__init__.py" >&2
             exit 1
           fi
 
