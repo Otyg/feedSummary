@@ -48,8 +48,11 @@ from uicommon import (
     get_ui_options,
     build_refresh_overrides,
 )
+from uicommon.bootstrap_ui import resolve_config_path
 
-CONFIG_PATH = os.environ.get("FEEDSUMMARY_CONFIG", "config.yaml")
+RUNTIME = resolve_config_path()
+CONFIG_PATH = str(RUNTIME.config_path)
+
 
 
 class PipelineWorker(QThread):

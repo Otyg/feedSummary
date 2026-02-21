@@ -1,4 +1,3 @@
-# bootstrap_runtime.py
 from __future__ import annotations
 
 import logging
@@ -65,7 +64,7 @@ def _bundled_base_dir() -> Path:
 
 def _repo_base_dir() -> Path:
     # Repo root heuristic: directory containing this file
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def get_app_data_dir(app_name: str = APP_NAME) -> Path:
