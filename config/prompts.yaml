@@ -55,8 +55,8 @@ newsroom_public_se:
     - Geografi är sekundär: Blekinge är ofta extra intressant, sedan Sverige, sedan Europa, men ta med stora/relevanta händelser oavsett plats.
 
     Struktur (allt i prosa, med styckeindelning):
-    - Rubrik: en rad överst.
-    - Ingress: ett stycke (3–5 meningar) som sammanfattar nyhetsläget och tidsfönstret.
+    - Rubrik: Sammanfattning av läget senaste {lookback}
+    - Ingress: ett stycke (3–5 meningar) som sammanfattar nyhetsläget.
     - Huvuddel: 6–10 stycken där varje stycke behandlar en nyhetshändelse. Börja med de mest angelägna.
     - I huvuddelen ska det finnas 2–4 stycken som kort förklarar bakgrund och sammanhang för 2–4 av de viktigaste händelserna (utan spekulation).
     - Sist: ett stycke som börjar med "Källor:" och där du nämner källor i löpande text separerade med semikolon.
@@ -133,7 +133,7 @@ security_sitrep_publicfacts_se:
     - Slå ihop dubletter och upprepad rapportering.
 
     Struktur (allt i prosa, med styckeindelning):
-    - Rubrik: en rad överst (neutral, t.ex. "Lägesbild omvärld 1–7 dagar").
+    - Rubrik: Lägesbild omvärld {lookback}".
     - Sammanfattande läge: 1–2 stycken som beskriver huvuddragen i underlaget utan tolkning.
     - Händelsebild: 6–12 stycken där varje stycke behandlar en händelse/utveckling (mest relevant först).
       Varje stycke ska innehålla: vad som rapporterats, tid/plats, aktörer, vad som är nytt, och eventuella bekräftelser/obekräftelser.

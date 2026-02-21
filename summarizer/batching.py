@@ -285,8 +285,9 @@ def _budgeted_meta_user(
     prompts: Dict[str, str],
     batch_summaries: List[Tuple[int, str]],
     sources_text: str,
-    budget_tokens: int,  # <-- NYTT: styr budget direkt
+    budget_tokens: int,
     chars_per_token: float,
+    lookback:str,
 ) -> str:
     """
     Bygg meta-user inom en *explicit* tokenbudget.
@@ -300,6 +301,7 @@ def _budgeted_meta_user(
         return prompts["meta_user_template"].format(
             batch_summaries=batch_block,
             sources_list=src,
+            lookback=lookback or "okänt tidsfönster",
         )
 
     # Aggressivare stegar än innan (särskilt decimations)

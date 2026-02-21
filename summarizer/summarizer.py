@@ -435,7 +435,7 @@ async def summarize_batches_then_meta_with_stats(
 
     meta_attempts = 8
     last_err: Optional[Exception] = None
-
+    lookback = str((config.get("ingest") or {}).get("lookback") or "").strip()
     for attempt in range(1, meta_attempts + 1):
         meta_user = _budgeted_meta_user(
             prompts=prompts,
@@ -443,6 +443,7 @@ async def summarize_batches_then_meta_with_stats(
             sources_text=sources_text,
             budget_tokens=budget_tokens,
             chars_per_token=chars_per_token,
+            lookback=lookback,
         )
 
         # checkpoint meta-input (uppdatera varje försök så /resume kan fortsätta här också)
