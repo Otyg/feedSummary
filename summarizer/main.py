@@ -517,7 +517,7 @@ async def run_pipeline(
                     else {}
                 ).get("selected")
             )
-            or "", # Here be dragons...
+            or "",  # Here be dragons...
         },
     }
 
