@@ -923,15 +923,23 @@ class MainWindow(QMainWindow):
         dlg = ArticleReaderDialog(self, a)
         dlg.exec()
 
-    # ---- Promptlab tab (no summary box; opens separate window on completion) ----
+    # ---- Promptlab tab (no in-tab summary; clearly show which summary is loaded) ----
     def _build_promptlab_tab(self):
         w = QWidget()
         layout = QVBoxLayout(w)
 
+        # Track selection
+        self.pl_selected_summary_id: Optional[str] = None
+
         top = QHBoxLayout()
-        self.pl_status = QLabel("idle")
         top.addWidget(QLabel("Promptlab"))
-        top.addStretch(1)
+
+        self.pl_loaded_summary = QLabel("Laddad summary: (ingen)")
+        self.pl_loaded_summary.setTextFormat(Qt.PlainText)
+        top.addSpacing(12)
+        top.addWidget(self.pl_loaded_summary, 1)
+
+        self.pl_status = QLabel("idle")
         top.addWidget(self.pl_status)
         layout.addLayout(top)
 
@@ -1011,7 +1019,7 @@ class MainWindow(QMainWindow):
         right_l.addLayout(run_row)
 
         main_split.addWidget(right)
-        main_split.setSizes([320, 980])
+        main_split.setSizes([360, 980])
 
         layout.addWidget(main_split, 1)
         self.tabs.addTab(w, "Promptlab")
@@ -1027,7 +1035,6 @@ class MainWindow(QMainWindow):
         self.btn_pl_pkg_load.clicked.connect(self._pl_load_selected_package)
         self.btn_pl_pkg_save.clicked.connect(self._pl_save_package)
 
-        # Keep a ref to last result window so it doesn't get GC'd immediately
         self._last_replay_window: Optional[ReplayResultWindow] = None
 
     def _refresh_promptlab_lists(self) -> None:
@@ -1056,18 +1063,33 @@ class MainWindow(QMainWindow):
         self.pl_pkg_combo.addItems(pkgs)
 
     def _pl_current_summary_id(self) -> Optional[str]:
+        if getattr(self, "pl_selected_summary_id", None):
+            return self.pl_selected_summary_id
         it = self.pl_summary_list.currentItem()
-        if not it:
-            return None
-        return str(it.data(Qt.UserRole))
+        return str(it.data(Qt.UserRole)) if it else None
 
     def _pl_on_summary_selected(self, current: QListWidgetItem, _prev: QListWidgetItem):
-        # Nothing to show in-tab anymore; keep as hook if needed later.
-        return
+        if not current:
+            self.pl_selected_summary_id = None
+            self.pl_loaded_summary.setText("Laddad summary: (ingen)")
+            return
+
+        sid = str(current.data(Qt.UserRole))
+        self.pl_selected_summary_id = sid
+
+        sdoc = self.store.get_summary_doc(sid) or {}
+        created = int(sdoc.get("created") or 0)
+        created_s = format_ts(created) if created else "(okänd tid)"
+        n = len(sdoc.get("sources") or [])
+        self.pl_loaded_summary.setText(
+            f"Laddad summary: {created_s} · Artiklar: {n} · ID: {sid}"
+        )
+        self.pl_status.setText("idle")
 
     def _pl_load_prompts_from_selected_summary(self) -> None:
         sid = self._pl_current_summary_id()
         if not sid:
+            QMessageBox.information(self, "Ingen summary", "Välj en summary först.")
             return
         try:
             ps = get_promptset_for_summary(self.store, sid)
@@ -1078,7 +1100,7 @@ class MainWindow(QMainWindow):
         self.pl_batch_user.setPlainText(ps.batch_user_template)
         self.pl_meta_system.setPlainText(ps.meta_system)
         self.pl_meta_user.setPlainText(ps.meta_user_template)
-        self.pl_status.setText("prompts laddade")
+        self.pl_status.setText(f"Prompts laddade från: {sid}")
 
     def _pl_promptset_from_ui(self) -> PromptSet:
         return PromptSet(
@@ -1142,17 +1164,18 @@ class MainWindow(QMainWindow):
         self.btn_pl_run.setEnabled(True)
         self.pl_status.setText("klart (ej sparad)")
 
-        # Load original text for compare
         sid = self._pl_current_summary_id()
         orig_md = ""
+        orig_created_s = "(okänd tid)"
         if sid:
             orig_doc = self.store.get_summary_doc(sid)
             if orig_doc:
                 orig_md = orig_doc.get("summary", "") or ""
+                oc = int(orig_doc.get("created") or 0)
+                orig_created_s = format_ts(oc) if oc else orig_created_s
 
         new_md = (result.get("summary_markdown") or "").strip()
-        created = int(result.get("created") or 0)
-        title = f"Prompt Replay (ej sparad) – {format_ts(created)}"
+        title = f"Prompt Replay (ej sparad) – från summary {orig_created_s} · ID: {sid}"
 
         win = ReplayResultWindow(self, original_md=orig_md, new_md=new_md, title=title)
         self._last_replay_window = win
