@@ -41,7 +41,9 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
 )
 from PySide6.QtCore import QUrl
-
+from PySide6.QtCore import QRectF, QSizeF
+from PySide6.QtGui import QFontMetrics, QPainter, QTextDocument
+from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 from summarizer.main import run_pipeline
 
 from uicommon import (
@@ -605,67 +607,73 @@ class MainWindow(QMainWindow):
         )
 
     # -------- printing helpers --------
-    def _print_document_with_header(
-        self, html: str, header_left: str, header_right: str, title: str
-    ) -> None:
-        printer = QPrinter(QPrinter.HighResolution)
-        printer.setDocName(title)
+    
 
-        dlg = QPrintDialog(printer, self)
-        dlg.setWindowTitle(title)
-        if dlg.exec() != QDialog.Accepted:
-            return
+def _print_document_with_header(self, html: str, header_left: str, header_right: str, title: str) -> None:
+    printer = QPrinter(QPrinter.HighResolution)
+    printer.setDocName(title)
 
-        doc = QTextDocument()
-        doc.setHtml(html)
+    dlg = QPrintDialog(printer, self)
+    dlg.setWindowTitle(title)
+    if dlg.exec() != QDialog.Accepted:
+        return
 
-        painter = QPainter(printer)
-        try:
-            page_rect = printer.pageRect(QPrinter.DevicePixel)
-            margin = 24
-            header_h = 36
+    # 1) IMPORTANT: use points (typographic units), not DevicePixel
+    page = QRectF(printer.pageRect(QPrinter.Point))
+    margin_pt = 18.0  # ~6.3mm
+    header_h_pt = 28.0
 
-            content_rect = page_rect.adjusted(
-                margin, margin + header_h, -margin, -margin
+    content = QRectF(
+        page.left() + margin_pt,
+        page.top() + margin_pt + header_h_pt,
+        page.width() - 2 * margin_pt,
+        page.height() - 2 * margin_pt - header_h_pt,
+    )
+
+    # 2) Build document
+    doc = QTextDocument()
+    # Make sure we have a minimal wrapper so Qt layout is stable
+    doc.setHtml(f"<html><body>{html}</body></html>")
+    doc.setPageSize(QSizeF(content.width(), content.height()))
+
+    # 3) Paginate
+    doc_h = doc.size().height()
+    page_h = content.height()
+    total_pages = max(1, int((doc_h + page_h - 1) // page_h))
+
+    painter = QPainter(printer)
+    try:
+        fm = QFontMetrics(painter.font())
+
+        for page_index in range(total_pages):
+            if page_index > 0:
+                printer.newPage()
+
+            # --- Header (left + right aligned)
+            y = page.top() + margin_pt + fm.ascent()
+            painter.drawText(page.left() + margin_pt, y, header_left)
+
+            right_w = fm.horizontalAdvance(header_right)
+            painter.drawText(page.right() - margin_pt - right_w, y, header_right)
+
+            # Optional thin divider line
+            line_y = page.top() + margin_pt + header_h_pt - 6.0
+            painter.drawLine(
+                int(page.left() + margin_pt),
+                int(line_y),
+                int(page.right() - margin_pt),
+                int(line_y),
             )
-            doc.setPageSize(content_rect.size())
 
-            total_pages = int(
-                (doc.size().height() + content_rect.height() - 1)
-                // content_rect.height()
-            )
-            if total_pages < 1:
-                total_pages = 1
+            # --- Content: translate to current page slice and clip
+            painter.save()
+            painter.translate(content.left(), content.top() - page_index * page_h)
+            painter.setClipRect(QRectF(0, page_index * page_h, content.width(), page_h))
+            doc.drawContents(painter)
+            painter.restore()
 
-            for page in range(total_pages):
-                if page > 0:
-                    printer.newPage()
-
-                # header
-                painter.save()
-                painter.setPen(Qt.black)
-                y = page_rect.top() + margin + 22
-                painter.drawText(page_rect.left() + margin, y, header_left)
-
-                # right aligned header (simple)
-                painter.drawText(page_rect.right() - margin - 450, y, header_right)
-                painter.restore()
-
-                # content
-                painter.save()
-                painter.translate(
-                    content_rect.left(),
-                    content_rect.top() - page * content_rect.height(),
-                )
-                clip = content_rect.translated(
-                    -content_rect.left(), page * content_rect.height()
-                )
-                painter.setClipRect(clip)
-                doc.drawContents(painter)
-                painter.restore()
-
-        finally:
-            painter.end()
+    finally:
+        painter.end()
 
     def print_current_summary(self) -> None:
         current = self.summary_list.currentItem()
