@@ -36,6 +36,7 @@ import asyncio
 import copy
 import logging
 import time
+from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -276,6 +277,70 @@ def _topic_order(groups: Dict[str, List[dict]]) -> List[str]:
     return sorted(list(groups.keys()), key=key)
 
 
+def _fmt_dt_hm(ts: int) -> str:
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
+
+
+def _build_sources_appendix_markdown(snapshots: List[Dict[str, Any]]) -> str:
+    """
+    Builds a markdown appendix grouped by source.
+
+    Fields:
+      - title
+      - url
+      - published_ts -> readable date
+
+    Output:
+      ## Källor
+      ### <Source>
+      - <Title> — <YYYY-MM-DD HH:MM>
+        <URL>
+    """
+    if not snapshots:
+        return ""
+
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for s in snapshots:
+        src = str(s.get("source") or "").strip() or "Okänd källa"
+        groups[src].append(s)
+
+    if not groups:
+        return ""
+
+    out: List[str] = []
+    out.append("## Källor")
+    out.append("")
+
+    for src in sorted(groups.keys(), key=lambda x: x.lower()):
+        items = groups[src]
+        items = sorted(
+            items, key=lambda x: int(x.get("published_ts") or 0), reverse=True
+        )
+
+        out.append(f"### {src}")
+        out.append("")
+
+        for it in items:
+            title = str(it.get("title") or "").strip() or "(utan titel)"
+            url = str(it.get("url") or "").strip()
+            pts = int(it.get("published_ts") or 0)
+            dt = _fmt_dt_hm(pts) if pts else ""
+
+            line = title
+            if dt:
+                line = f"{line} — {dt}"
+
+            out.append(f"- {line}")
+            if url:
+                out.append(f"  {url}")
+
+        out.append("")
+
+    return "\n".join(out).strip() + "\n"
+
+
 async def run_pipeline(
     config_path: str = "config.yaml",
     job_id: Optional[int] = None,
@@ -332,6 +397,9 @@ async def run_pipeline(
 
     created_ts = int(time.time())
 
+    # ----------------------------
+    # Single summary (no topic split)
+    # ----------------------------
     if len(topics) <= 1:
         meta_text, stats = await summarize_batches_then_meta_with_stats(
             config, to_sum, llm=llm, store=store, job_id=job_id
@@ -343,6 +411,22 @@ async def run_pipeline(
         pts2 = [p for p in pts if p > 0]
         from_ts = min(pts2) if pts2 else 0
         to_ts = max(pts2) if pts2 else 0
+
+        snapshots = [
+            {
+                "id": a.get("id"),
+                "title": a.get("title", ""),
+                "url": a.get("url", ""),
+                "source": a.get("source", ""),
+                "published_ts": _published_ts(a),
+                "content_hash": a.get("content_hash", ""),
+            }
+            for a in to_sum
+        ]
+
+        appendix = _build_sources_appendix_markdown(snapshots)
+        if appendix:
+            meta_text = (meta_text or "").rstrip() + "\n\n" + appendix
 
         summary_doc: Dict[str, Any] = {
             "id": _summary_doc_id(created_ts, job_id),
@@ -359,17 +443,7 @@ async def run_pipeline(
             "prompts": load_prompts(config),
             "batching": config.get("batching", {}) or {},
             "sources": ids,
-            "sources_snapshots": [
-                {
-                    "id": a.get("id"),
-                    "title": a.get("title", ""),
-                    "url": a.get("url", ""),
-                    "source": a.get("source", ""),
-                    "published_ts": _published_ts(a),
-                    "content_hash": a.get("content_hash", ""),
-                }
-                for a in to_sum
-            ],
+            "sources_snapshots": snapshots,
             "from": from_ts,
             "to": to_ts,
             "summary": meta_text,
@@ -406,6 +480,10 @@ async def run_pipeline(
             )
 
         return summary_doc_id
+
+    # ----------------------------
+    # Multi-topic summary
+    # ----------------------------
     sections: List[Dict[str, Any]] = []
     stitched_parts: List[str] = []
     lookback_str = str((config.get("ingest") or {}).get("lookback") or "").strip()
@@ -485,6 +563,11 @@ async def run_pipeline(
         stitched_parts.append("")
 
     stitched_summary = "\n".join(stitched_parts).strip() + "\n"
+
+    # Append sources appendix to stitched summary (uses overall sources_snapshots)
+    appendix = _build_sources_appendix_markdown(all_snaps)
+    if appendix:
+        stitched_summary = stitched_summary.rstrip() + "\n\n" + appendix
 
     summary_doc = {
         "id": _summary_doc_id(created_ts, job_id),

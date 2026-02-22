@@ -6,11 +6,13 @@ import logging
 import os
 import sys
 import threading
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import markdown as md
 from PySide6.QtCore import Qt, QThread, Signal, QDate, QObject
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPainter, QTextDocument
+from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -59,6 +61,26 @@ CONFIG_PATH = str(RUNTIME.config_path)
 
 
 # ----------------------------
+# Helpers
+# ----------------------------
+def _fmt_dt_hm(ts: int) -> str:
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
+
+
+def _env_log_level(default: int = logging.INFO) -> int:
+    """
+    Controls global loglevel for Qt app.
+    Default INFO; override with FEEDSUMMARY_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR.
+    """
+    lvl = (os.environ.get("FEEDSUMMARY_LOG_LEVEL") or "").strip().upper()
+    if not lvl:
+        return default
+    return getattr(logging, lvl, default)
+
+
+# ----------------------------
 # Log capture: stdout/stderr + logging -> Qt panel
 # ----------------------------
 class QtLogEmitter(QObject):
@@ -97,22 +119,9 @@ class QtLoggingHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            # Add newline so the UI appender can treat it like a line
             self.emitter.text.emit(msg + "\n")
         except Exception:
-            # Never crash due to logging
             pass
-
-
-def _env_log_level(default: int = logging.INFO) -> int:
-    """
-    Controls global loglevel for Qt app.
-    Default INFO; override with FEEDSUMMARY_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR.
-    """
-    lvl = (os.environ.get("FEEDSUMMARY_LOG_LEVEL") or "").strip().upper()
-    if not lvl:
-        return default
-    return getattr(logging, lvl, default)
 
 
 # ----------------------------
@@ -308,7 +317,6 @@ class RefreshDialog(QDialog):
         self.resize(900, 720)
         self._cap_to_screen(max_w=1100, max_h=840)
 
-    # -------- internals --------
     def _init_sources(self) -> None:
         self.source_checks = {}
         self.source_topics = {}
@@ -352,9 +360,7 @@ class RefreshDialog(QDialog):
         h = min(max_h, int(geo.height() * 0.92))
         self.setMaximumSize(w, h)
 
-    # -------- bulk actions --------
     def _set_all_topics(self, checked: bool) -> None:
-        # block per-checkbox signals to avoid N cascades, then apply effect manually
         for t, cb in self.topic_checks.items():
             cb.blockSignals(True)
             cb.setChecked(checked)
@@ -365,18 +371,15 @@ class RefreshDialog(QDialog):
         for cb in self.source_checks.values():
             cb.setChecked(checked)
 
-    # -------- topic -> sources mapping --------
     def _on_topic_changed(self, topic: str) -> None:
         checked = self.topic_checks[topic].isChecked()
         self._apply_topic_to_sources(topic, checked)
 
     def _apply_topic_to_sources(self, topic: str, checked: bool) -> None:
-        # Apply to *all* sources that have this topic (not only primary)
         for src, cb in self.source_checks.items():
             if topic in (self.source_topics.get(src) or []):
                 cb.setChecked(checked)
 
-    # -------- result --------
     def overrides(self) -> Dict[str, Any]:
         selected_sources = [s for s, cb in self.source_checks.items() if cb.isChecked()]
         selected_topics = [t for t, cb in self.topic_checks.items() if cb.isChecked()]
@@ -391,11 +394,11 @@ class RefreshDialog(QDialog):
 
 
 # ----------------------------
-# Article reader dialog
+# Article reader dialog (with Print)
 # ----------------------------
 class ArticleReaderDialog(QDialog):
     """
-    Shows full stored article text + metadata.
+    Shows full stored article text + metadata, with Print.
     """
 
     def __init__(self, parent: QWidget, article: Dict[str, Any]):
@@ -422,6 +425,7 @@ class ArticleReaderDialog(QDialog):
         url = _val("url")
         published = _val("published")
         pub_ts = published_ts(self.article)
+
         fetched_at = self.article.get("fetched_at")
         fetched_h = (
             format_ts(int(fetched_at))
@@ -429,9 +433,7 @@ class ArticleReaderDialog(QDialog):
             else _val("fetched_at")
         )
 
-        pub_h = published
-        if not pub_h and pub_ts:
-            pub_h = format_ts(pub_ts)
+        pub_h = published or (_fmt_dt_hm(pub_ts) if pub_ts else "")
 
         meta_layout.addRow("Titel", QLabel(title))
         meta_layout.addRow("Källa", QLabel(source))
@@ -453,14 +455,17 @@ class ArticleReaderDialog(QDialog):
 
         actions = QHBoxLayout()
         actions.addStretch(1)
+        self.btn_print = QPushButton("Skriv ut")
         self.btn_open = QPushButton("Öppna i webbläsare")
         self.btn_close = QPushButton("Stäng")
+        actions.addWidget(self.btn_print)
         actions.addWidget(self.btn_open)
         actions.addWidget(self.btn_close)
         outer.addLayout(actions)
 
         self.btn_close.clicked.connect(self.accept)
         self.btn_open.clicked.connect(self._open_in_browser)
+        self.btn_print.clicked.connect(self._print_article)
 
         self.text_view = QTextBrowser()
         self.text_view.setOpenExternalLinks(True)
@@ -482,6 +487,50 @@ class ArticleReaderDialog(QDialog):
             return
         QDesktopServices.openUrl(QUrl(url))
 
+    def _print_article(self) -> None:
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setDocName("Artikel")
+
+        dlg = QPrintDialog(printer, self)
+        dlg.setWindowTitle("Skriv ut artikel")
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        title = str(self.article.get("title") or "").strip()
+        source = str(self.article.get("source") or "").strip()
+        url = str(self.article.get("url") or "").strip()
+        pub = str(self.article.get("published") or "").strip() or _fmt_dt_hm(
+            published_ts(self.article)
+        )
+
+        full_text = (self.article.get("text") or "").strip()
+        if not full_text:
+            full_text = "(Ingen text lagrad för artikeln.)"
+
+        safe_text = (
+            full_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+        safe_title = (
+            title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+        safe_source = (
+            source.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+        safe_url = url.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        html = f"""
+        <h2>{safe_title}</h2>
+        <p><b>Källa:</b> {safe_source}<br/>
+           <b>Publicerad:</b> {pub}<br/>
+           <b>URL:</b> {safe_url}</p>
+        <hr/>
+        <pre style="white-space: pre-wrap; font-family: system-ui;">{safe_text}</pre>
+        """
+
+        doc = QTextDocument()
+        doc.setHtml(html)
+        doc.print_(printer)
+
 
 # ----------------------------
 # Main window
@@ -492,7 +541,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("FeedSummary (Qt)")
         self.resize(1200, 860)
 
-        # Store original stdout/stderr so we can restore on close
         self._orig_stdout = sys.stdout
         self._orig_stderr = sys.stderr
 
@@ -500,13 +548,12 @@ class MainWindow(QMainWindow):
         self.store = get_store(self.cfg)
         self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
 
-        # Central splitter (tabs + log panel)
         splitter = QSplitter(Qt.Vertical)
 
         self.tabs = QTabWidget()
         splitter.addWidget(self.tabs)
 
-        # Log panel container
+        # Log panel
         log_container = QWidget()
         log_layout = QVBoxLayout(log_container)
         log_layout.setContentsMargins(6, 6, 6, 6)
@@ -525,7 +572,6 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_view, 1)
 
         splitter.addWidget(log_container)
-
         splitter.setSizes([650, 210])
         splitter.setCollapsible(1, True)
 
@@ -533,25 +579,21 @@ class MainWindow(QMainWindow):
 
         self.btn_clear_log.clicked.connect(self.log_view.clear)
 
-        # Setup emitter + append
         self._log_emitter = QtLogEmitter()
         self._log_emitter.text.connect(self._append_log)
 
-        # Redirect stdout/stderr to log panel
         sys.stdout = QtStream(self._log_emitter)
         sys.stderr = QtStream(self._log_emitter)
 
-        # Install logging handler to capture ALL python logging
         self._install_logging_bridge()
 
-        # Build tabs
+        # Tabs
         self._build_summaries_tab()
         self._build_articles_tab()
 
         self.reload_summaries()
         self.reload_articles()
 
-        # Bootstrap info into log (uses logging + print)
         logging.getLogger("feedsum.qt").info(
             "Bootstrap: frozen=%s base_dir=%s", RUNTIME.is_frozen, RUNTIME.base_dir
         )
@@ -562,49 +604,129 @@ class MainWindow(QMainWindow):
             "Bootstrap: config_path=%s", RUNTIME.config_path
         )
 
+    # -------- printing helpers --------
+    def _print_document_with_header(
+        self, html: str, header_left: str, header_right: str, title: str
+    ) -> None:
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setDocName(title)
+
+        dlg = QPrintDialog(printer, self)
+        dlg.setWindowTitle(title)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        doc = QTextDocument()
+        doc.setHtml(html)
+
+        painter = QPainter(printer)
+        try:
+            page_rect = printer.pageRect(QPrinter.DevicePixel)
+            margin = 24
+            header_h = 36
+
+            content_rect = page_rect.adjusted(
+                margin, margin + header_h, -margin, -margin
+            )
+            doc.setPageSize(content_rect.size())
+
+            total_pages = int(
+                (doc.size().height() + content_rect.height() - 1)
+                // content_rect.height()
+            )
+            if total_pages < 1:
+                total_pages = 1
+
+            for page in range(total_pages):
+                if page > 0:
+                    printer.newPage()
+
+                # header
+                painter.save()
+                painter.setPen(Qt.black)
+                y = page_rect.top() + margin + 22
+                painter.drawText(page_rect.left() + margin, y, header_left)
+
+                # right aligned header (simple)
+                painter.drawText(page_rect.right() - margin - 450, y, header_right)
+                painter.restore()
+
+                # content
+                painter.save()
+                painter.translate(
+                    content_rect.left(),
+                    content_rect.top() - page * content_rect.height(),
+                )
+                clip = content_rect.translated(
+                    -content_rect.left(), page * content_rect.height()
+                )
+                painter.setClipRect(clip)
+                doc.drawContents(painter)
+                painter.restore()
+
+        finally:
+            painter.end()
+
+    def print_current_summary(self) -> None:
+        current = self.summary_list.currentItem()
+        if not current:
+            QMessageBox.information(
+                self, "Ingen sammanfattning", "Välj en sammanfattning först."
+            )
+            return
+
+        sid = current.data(Qt.UserRole)
+        doc = self.store.get_summary_doc(str(sid))
+        if not doc:
+            QMessageBox.warning(self, "Saknas", "Kunde inte läsa sammanfattningen.")
+            return
+
+        md_text = doc.get("summary", "") or ""
+        html = md.markdown(md_text, extensions=["extra"])
+
+        from_ts = int(doc.get("from") or 0)
+        to_ts = int(doc.get("to") or 0)
+        from_s = _fmt_dt_hm(from_ts)
+        to_s = _fmt_dt_hm(to_ts)
+
+        header_left = f"From: {from_s}" if from_s else "From: (okänt)"
+        header_right = f"To: {to_s}" if to_s else "To: (okänt)"
+
+        title = f"Sammanfattning {format_ts(int(doc.get('created') or 0))}"
+        self._print_document_with_header(html, header_left, header_right, title)
+
+    # -------- logging bridge --------
     def _install_logging_bridge(self) -> None:
-        """
-        Capture Python logging into the Qt log panel.
-        Default level INFO (override with FEEDSUMMARY_LOG_LEVEL).
-        """
         level = _env_log_level(logging.INFO)
 
-        # Ensure root has a sane level; do not remove existing handlers (console/file etc).
         root = logging.getLogger()
         root.setLevel(level)
 
         self._qt_log_handler = QtLoggingHandler(self._log_emitter)
         self._qt_log_handler.setLevel(level)
-
         fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
         self._qt_log_handler.setFormatter(fmt)
 
-        # Avoid adding duplicate handler if window recreated
         for h in root.handlers:
             if isinstance(h, QtLoggingHandler):
                 return
-
         root.addHandler(self._qt_log_handler)
 
-        # Make sure common noisy libs don't spam too much at INFO
         logging.getLogger("asyncio").setLevel(logging.WARNING)
 
     def _append_log(self, text: str) -> None:
-        # Normalize partial writes
         if text == "\n":
             self.log_view.appendPlainText("")
             return
         self.log_view.appendPlainText(text.rstrip("\n"))
 
     def closeEvent(self, event) -> None:
-        # Restore streams
         try:
             sys.stdout = self._orig_stdout
             sys.stderr = self._orig_stderr
         except Exception:
             pass
 
-        # Remove our handler from root to avoid dangling Qt signals
         try:
             root = logging.getLogger()
             if hasattr(self, "_qt_log_handler"):
@@ -621,8 +743,11 @@ class MainWindow(QMainWindow):
 
         top = QHBoxLayout()
         self.btn_refresh = QPushButton("Refresh…")
+        self.btn_print_summary = QPushButton("Skriv ut")
         self.lbl_status = QLabel("idle")
+
         top.addWidget(self.btn_refresh)
+        top.addWidget(self.btn_print_summary)
         top.addWidget(self.lbl_status, 1)
         layout.addLayout(top)
 
@@ -635,6 +760,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(split, 1)
 
         self.btn_refresh.clicked.connect(self.open_refresh)
+        self.btn_print_summary.clicked.connect(self.print_current_summary)
         self.summary_list.currentItemChanged.connect(self.on_summary_selected)
 
         self.tabs.addTab(w, "Sammanfattningar")
@@ -739,7 +865,6 @@ class MainWindow(QMainWindow):
         frow.addStretch(1)
         layout.addLayout(frow)
 
-        # Scrollable filter area for topics + sources
         self.filters_scroll = QScrollArea()
         self.filters_scroll.setWidgetResizable(True)
         self.filters_container = QWidget()
@@ -747,7 +872,6 @@ class MainWindow(QMainWindow):
         self.filters_scroll.setWidget(self.filters_container)
         layout.addWidget(self.filters_scroll)
 
-        # placeholders; built in rebuild method
         self.topic_checks_articles: Dict[str, QCheckBox] = {}
         self.source_checks_articles: Dict[str, QCheckBox] = {}
         self.source_topics_articles: Dict[str, List[str]] = {}
@@ -850,7 +974,7 @@ class MainWindow(QMainWindow):
 
             it0 = QTableWidgetItem(title)
             it0.setToolTip(str(a.get("url") or ""))
-            it0.setData(Qt.UserRole, a)  # store full dict for reader dialog
+            it0.setData(Qt.UserRole, a)
 
             it1 = QTableWidgetItem(src)
             it2 = QTableWidgetItem(pub)
@@ -875,8 +999,6 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    # Ensure basicConfig does not swallow records without handlers
-    # (we still add our Qt handler, but this makes source-mode sane)
     level = _env_log_level(logging.INFO)
     if not logging.getLogger().handlers:
         logging.basicConfig(
