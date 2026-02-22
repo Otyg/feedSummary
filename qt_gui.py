@@ -11,9 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import markdown as md
 from PySide6.QtCore import Qt, QThread, Signal, QDate, QObject
-from PySide6.QtGui import QDesktopServices, QPainter, QTextDocument
+from PySide6.QtGui import QDesktopServices, QTextDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
-
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -27,9 +26,11 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QPlainTextEdit,
     QScrollArea,
     QSplitter,
     QSpinBox,
@@ -39,11 +40,9 @@ from PySide6.QtWidgets import (
     QTextBrowser,
     QVBoxLayout,
     QWidget,
-    QPlainTextEdit,
 )
 from PySide6.QtCore import QUrl
-from PySide6.QtCore import QRectF, QSizeF
-from PySide6.QtGui import QFontMetrics
+
 from summarizer.main import run_pipeline
 
 from uicommon import (
@@ -58,6 +57,15 @@ from uicommon import (
 )
 from uicommon.bootstrap_ui import resolve_config_path
 
+from summarizer.prompt_replay import (
+    PromptSet,
+    get_promptset_for_summary,
+    rerun_summary_from_existing,  # returns ephemeral dict (NOT persisted)
+    list_prompt_packages,
+    load_prompt_package,
+    save_prompt_package,
+)
+
 RUNTIME = resolve_config_path()
 CONFIG_PATH = str(RUNTIME.config_path)
 
@@ -65,21 +73,17 @@ CONFIG_PATH = str(RUNTIME.config_path)
 # ----------------------------
 # Helpers
 # ----------------------------
-def _fmt_dt_hm(ts: int) -> str:
-    if not ts:
-        return ""
-    return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
-
-
 def _env_log_level(default: int = logging.INFO) -> int:
-    """
-    Controls global loglevel for Qt app.
-    Default INFO; override with FEEDSUMMARY_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR.
-    """
     lvl = (os.environ.get("FEEDSUMMARY_LOG_LEVEL") or "").strip().upper()
     if not lvl:
         return default
     return getattr(logging, lvl, default)
+
+
+def _fmt_dt_hm(ts: int) -> str:
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
 
 
 # ----------------------------
@@ -90,10 +94,6 @@ class QtLogEmitter(QObject):
 
 
 class QtStream:
-    """
-    File-like stream that emits text to a Qt signal. Suitable for sys.stdout/sys.stderr redirection.
-    """
-
     def __init__(self, emitter: QtLogEmitter):
         self.emitter = emitter
         self._lock = threading.Lock()
@@ -110,10 +110,6 @@ class QtStream:
 
 
 class QtLoggingHandler(logging.Handler):
-    """
-    Logging handler that forwards formatted log records to a Qt signal.
-    """
-
     def __init__(self, emitter: QtLogEmitter):
         super().__init__()
         self.emitter = emitter
@@ -127,7 +123,7 @@ class QtLoggingHandler(logging.Handler):
 
 
 # ----------------------------
-# Worker thread: run pipeline
+# Workers
 # ----------------------------
 class PipelineWorker(QThread):
     status = Signal(str)
@@ -155,33 +151,57 @@ class PipelineWorker(QThread):
             self.failed.emit(str(e))
 
 
+class PromptReplayWorker(QThread):
+    """
+    Ephemeral replay: returns computed summary text as dict; does NOT persist.
+    """
+
+    status = Signal(str)
+    done = Signal(object)  # result dict
+    failed = Signal(str)
+
+    def __init__(
+        self, *, cfg: Dict[str, Any], store, summary_id: str, prompts: PromptSet
+    ):
+        super().__init__()
+        self.cfg = cfg
+        self.store = store
+        self.summary_id = summary_id
+        self.prompts = prompts
+
+    def run(self) -> None:
+        try:
+            self.status.emit("Kör om summary med ändrade prompts…")
+            result = asyncio.run(
+                rerun_summary_from_existing(
+                    config_path=CONFIG_PATH,
+                    cfg=self.cfg,
+                    store=self.store,
+                    summary_id=self.summary_id,
+                    new_prompts=self.prompts,
+                )
+            )
+            self.done.emit(result)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 # ----------------------------
 # Refresh dialog (scroll + grouped sources + select all/none)
 # ----------------------------
 class RefreshDialog(QDialog):
-    """
-    Refresh-dialog med:
-    - scroll + max storlek (inte utanför skärmen)
-    - markera/avmarkera alla (topics + sources)
-    - källor grupperade per ämne (primärt ämne = första topic i listan)
-    - multi-kolumn grids
-    """
-
     def __init__(self, parent: QWidget, ui_opts):
         super().__init__(parent)
         self.setWindowTitle("Refresh – inställningar")
         self.ui_opts = ui_opts
 
-        # Internal state
         self.topic_checks: Dict[str, QCheckBox] = {}
         self.source_checks: Dict[str, QCheckBox] = {}
         self.source_topics: Dict[str, List[str]] = {}
-        self.source_primary_topic: Dict[str, str] = {}
         self.source_by_primary: Dict[str, List[str]] = {}
 
         outer = QVBoxLayout(self)
 
-        # Scroll area holds all content except bottom actions
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         outer.addWidget(self.scroll, 1)
@@ -190,7 +210,6 @@ class RefreshDialog(QDialog):
         self.scroll.setWidget(content)
         root = QVBoxLayout(content)
 
-        # ---- Basic settings
         form_box = QGroupBox("Grundinställningar")
         form_layout = QFormLayout(form_box)
 
@@ -218,7 +237,6 @@ class RefreshDialog(QDialog):
 
         root.addWidget(form_box)
 
-        # ---- Topics box (with select/deselect)
         if self.ui_opts.topic_options:
             gb_topics = QGroupBox("Ämnen")
             v_topics = QVBoxLayout(gb_topics)
@@ -235,24 +253,20 @@ class RefreshDialog(QDialog):
             cols = self._choose_columns(
                 len(self.ui_opts.topic_options), preferred=3, max_cols=5
             )
-
             for i, t in enumerate(self.ui_opts.topic_options):
                 cb = QCheckBox(t)
                 self.topic_checks[t] = cb
-                r = i // cols
-                c = i % cols
-                grid.addWidget(cb, r, c)
+                grid.addWidget(cb, i // cols, i % cols)
                 cb.stateChanged.connect(
                     lambda _=None, topic=t: self._on_topic_changed(topic)
                 )
-
             v_topics.addLayout(grid)
-            root.addWidget(gb_topics)
 
             self.btn_topics_all.clicked.connect(lambda: self._set_all_topics(True))
             self.btn_topics_none.clicked.connect(lambda: self._set_all_topics(False))
 
-        # ---- Build source maps and grouped UI
+            root.addWidget(gb_topics)
+
         self._init_sources()
 
         gb_sources = QGroupBox("Källor (grupperade per ämne)")
@@ -269,41 +283,23 @@ class RefreshDialog(QDialog):
         self.btn_sources_all.clicked.connect(lambda: self._set_all_sources(True))
         self.btn_sources_none.clicked.connect(lambda: self._set_all_sources(False))
 
-        # group order: keep known topic order, "Okategoriserat" last
         group_names = list(self.source_by_primary.keys())
-
-        def group_sort_key(g: str):
-            if g == "Okategoriserat":
-                return (999999, g.lower())
-            try:
-                idx = self.ui_opts.topic_options.index(g)
-                return (idx, g.lower())
-            except Exception:
-                return (500000, g.lower())
-
-        group_names.sort(key=group_sort_key)
+        group_names.sort(key=lambda g: (g == "Okategoriserat", g.lower()))
 
         for g in group_names:
             names = self.source_by_primary.get(g) or []
             if not names:
                 continue
-
             gb = QGroupBox(f"{g} ({len(names)})")
             grid = QGridLayout(gb)
-
             cols_s = self._choose_columns(len(names), preferred=2, max_cols=4)
             for i, name in enumerate(sorted(names, key=lambda x: x.lower())):
-                cb = self.source_checks[name]
-                r = i // cols_s
-                c = i % cols_s
-                grid.addWidget(cb, r, c)
-
+                grid.addWidget(self.source_checks[name], i // cols_s, i % cols_s)
             v_sources.addWidget(gb)
 
         root.addWidget(gb_sources)
         root.addStretch(1)
 
-        # ---- Bottom actions (fixed)
         actions = QHBoxLayout()
         actions.addStretch(1)
         self.btn_cancel = QPushButton("Avbryt")
@@ -315,23 +311,18 @@ class RefreshDialog(QDialog):
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_ok.clicked.connect(self.accept)
 
-        # ---- Size caps
         self.resize(900, 720)
         self._cap_to_screen(max_w=1100, max_h=840)
 
     def _init_sources(self) -> None:
         self.source_checks = {}
         self.source_topics = {}
-        self.source_primary_topic = {}
         self.source_by_primary = {}
-
         for s in self.ui_opts.source_options:
             name = s["name"]
             topics = list(s.get("topics") or [])
             self.source_topics[name] = topics
-
             primary = topics[0] if topics else "Okategoriserat"
-            self.source_primary_topic[name] = primary
             self.source_by_primary.setdefault(primary, []).append(name)
 
             cb = QCheckBox(name)
@@ -385,7 +376,6 @@ class RefreshDialog(QDialog):
     def overrides(self) -> Dict[str, Any]:
         selected_sources = [s for s, cb in self.source_checks.items() if cb.isChecked()]
         selected_topics = [t for t, cb in self.topic_checks.items() if cb.isChecked()]
-
         return build_refresh_overrides(
             lookback_value=self.lb_value.value(),
             lookback_unit=self.lb_unit.currentText(),
@@ -399,10 +389,6 @@ class RefreshDialog(QDialog):
 # Article reader dialog (with Print)
 # ----------------------------
 class ArticleReaderDialog(QDialog):
-    """
-    Shows full stored article text + metadata, with Print.
-    """
-
     def __init__(self, parent: QWidget, article: Dict[str, Any]):
         super().__init__(parent)
         self.article = article or {}
@@ -425,34 +411,13 @@ class ArticleReaderDialog(QDialog):
         title = _val("title")
         source = _val("source")
         url = _val("url")
-        published = _val("published")
-        pub_ts = published_ts(self.article)
-
-        fetched_at = self.article.get("fetched_at")
-        fetched_h = (
-            format_ts(int(fetched_at))
-            if isinstance(fetched_at, int)
-            else _val("fetched_at")
-        )
-
-        pub_h = published or (_fmt_dt_hm(pub_ts) if pub_ts else "")
+        published = _val("published") or _fmt_dt_hm(published_ts(self.article))
 
         meta_layout.addRow("Titel", QLabel(title))
         meta_layout.addRow("Källa", QLabel(source))
-        meta_layout.addRow("Publicerad", QLabel(pub_h))
-        meta_layout.addRow("Hämtad", QLabel(fetched_h))
+        meta_layout.addRow("Publicerad", QLabel(published))
         meta_layout.addRow("ID", QLabel(_val("id")))
         meta_layout.addRow("URL", QLabel(url))
-
-        if "content_hash" in self.article:
-            meta_layout.addRow("content_hash", QLabel(_val("content_hash")))
-        if "published_ts" in self.article:
-            meta_layout.addRow("published_ts", QLabel(_val("published_ts")))
-        if "fetched_at" in self.article:
-            meta_layout.addRow("fetched_at", QLabel(_val("fetched_at")))
-        if "topics" in self.article:
-            meta_layout.addRow("topics", QLabel(_val("topics")))
-
         outer.addWidget(meta_box)
 
         actions = QHBoxLayout()
@@ -473,10 +438,9 @@ class ArticleReaderDialog(QDialog):
         self.text_view.setOpenExternalLinks(True)
         outer.addWidget(self.text_view, 1)
 
-        full_text = (self.article.get("text") or "").strip()
-        if not full_text:
-            full_text = "(Ingen text lagrad för artikeln.)"
-
+        full_text = (
+            self.article.get("text") or ""
+        ).strip() or "(Ingen text lagrad för artikeln.)"
         safe = full_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         self.text_view.setHtml(
             f"<pre style='white-space: pre-wrap; font-family: system-ui;'>{safe}</pre>"
@@ -505,9 +469,9 @@ class ArticleReaderDialog(QDialog):
             published_ts(self.article)
         )
 
-        full_text = (self.article.get("text") or "").strip()
-        if not full_text:
-            full_text = "(Ingen text lagrad för artikeln.)"
+        full_text = (
+            self.article.get("text") or ""
+        ).strip() or "(Ingen text lagrad för artikeln.)"
 
         safe_text = (
             full_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -528,7 +492,6 @@ class ArticleReaderDialog(QDialog):
         <hr/>
         <pre style="white-space: pre-wrap; font-family: system-ui;">{safe_text}</pre>
         """
-
         doc = QTextDocument()
         doc.setHtml(html)
         doc.print_(printer)
@@ -541,7 +504,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FeedSummary (Qt)")
-        self.resize(1200, 860)
+        self.resize(1280, 900)
 
         self._orig_stdout = sys.stdout
         self._orig_stderr = sys.stderr
@@ -550,12 +513,12 @@ class MainWindow(QMainWindow):
         self.store = get_store(self.cfg)
         self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
 
+        # Splitter: main UI + log panel
         splitter = QSplitter(Qt.Vertical)
 
         self.tabs = QTabWidget()
         splitter.addWidget(self.tabs)
 
-        # Log panel
         log_container = QWidget()
         log_layout = QVBoxLayout(log_container)
         log_layout.setContentsMargins(6, 6, 6, 6)
@@ -574,78 +537,35 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_view, 1)
 
         splitter.addWidget(log_container)
-        splitter.setSizes([650, 210])
+        splitter.setSizes([680, 220])
         splitter.setCollapsible(1, True)
 
         self.setCentralWidget(splitter)
-
         self.btn_clear_log.clicked.connect(self.log_view.clear)
 
+        # Connect log streams
         self._log_emitter = QtLogEmitter()
         self._log_emitter.text.connect(self._append_log)
 
         sys.stdout = QtStream(self._log_emitter)
         sys.stderr = QtStream(self._log_emitter)
-
         self._install_logging_bridge()
 
         # Tabs
         self._build_summaries_tab()
         self._build_articles_tab()
+        self._build_promptlab_tab()
 
+        # Initial load
         self.reload_summaries()
         self.reload_articles()
+        self._refresh_promptlab_lists()
 
-        logging.getLogger("feedsum.qt").info(
-            "Bootstrap: frozen=%s base_dir=%s", RUNTIME.is_frozen, RUNTIME.base_dir
-        )
-        logging.getLogger("feedsum.qt").info(
-            "Bootstrap: app_data_dir=%s", RUNTIME.app_data_dir
-        )
-        logging.getLogger("feedsum.qt").info(
-            "Bootstrap: config_path=%s", RUNTIME.config_path
-        )
-
-    # -------- printing helpers --------
-    def _print_html_simple(self, html: str, title: str = "Utskrift") -> None:
-        printer = QPrinter(QPrinter.HighResolution)
-        printer.setDocName(title)
-
-        dlg = QPrintDialog(printer, self)
-        dlg.setWindowTitle(title)
-        if dlg.exec() != QDialog.Accepted:
-            return
-
-        doc = QTextDocument()
-        # Wrap to avoid odd layout edge cases
-        doc.setHtml(f"<html><body>{html}</body></html>")
-        doc.print_(printer)
-
-
-    def print_current_summary(self) -> None:
-        current = self.summary_list.currentItem()
-        if not current:
-            QMessageBox.information(
-                self, "Ingen sammanfattning", "Välj en sammanfattning först."
-            )
-            return
-
-        sid = current.data(Qt.UserRole)
-        sdoc = self.store.get_summary_doc(str(sid))
-        if not sdoc:
-            QMessageBox.warning(self, "Saknas", "Kunde inte läsa sammanfattningen.")
-            return
-
-        md_text = sdoc.get("summary", "") or ""
-        html = md.markdown(md_text, extensions=["extra"])
-
-        title = f"Sammanfattning {format_ts(int(sdoc.get('created') or 0))}"
-        self._print_html_simple(html, title=title)
+        logging.getLogger("feedsum.qt").info("Bootstrap config_path=%s", CONFIG_PATH)
 
     # -------- logging bridge --------
     def _install_logging_bridge(self) -> None:
         level = _env_log_level(logging.INFO)
-
         root = logging.getLogger()
         root.setLevel(level)
 
@@ -658,7 +578,6 @@ class MainWindow(QMainWindow):
             if isinstance(h, QtLoggingHandler):
                 return
         root.addHandler(self._qt_log_handler)
-
         logging.getLogger("asyncio").setLevel(logging.WARNING)
 
     def _append_log(self, text: str) -> None:
@@ -673,15 +592,39 @@ class MainWindow(QMainWindow):
             sys.stderr = self._orig_stderr
         except Exception:
             pass
-
         try:
-            root = logging.getLogger()
-            if hasattr(self, "_qt_log_handler"):
-                root.removeHandler(self._qt_log_handler)
+            logging.getLogger().removeHandler(self._qt_log_handler)
         except Exception:
             pass
-
         super().closeEvent(event)
+
+    # -------- printing --------
+    def print_current_summary(self) -> None:
+        current = self.summary_list.currentItem()
+        if not current:
+            QMessageBox.information(
+                self, "Ingen sammanfattning", "Välj en sammanfattning först."
+            )
+            return
+        sid = current.data(Qt.UserRole)
+        sdoc = self.store.get_summary_doc(str(sid))
+        if not sdoc:
+            QMessageBox.warning(self, "Saknas", "Kunde inte läsa sammanfattningen.")
+            return
+
+        md_text = sdoc.get("summary", "") or ""
+        html = md.markdown(md_text, extensions=["extra"])
+
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setDocName("Sammanfattning")
+        dlg = QPrintDialog(printer, self)
+        dlg.setWindowTitle("Skriv ut sammanfattning")
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        doc = QTextDocument()
+        doc.setHtml(f"<html><body>{html}</body></html>")
+        doc.print_(printer)
 
     # ---- Summaries tab ----
     def _build_summaries_tab(self):
@@ -718,7 +661,6 @@ class MainWindow(QMainWindow):
 
         self.summary_list.blockSignals(True)
         self.summary_list.clear()
-
         for d in docs:
             sid = str(d.get("id") or "")
             created = int(d.get("created") or 0)
@@ -726,7 +668,6 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(f"{format_ts(created)} · Artiklar: {n}")
             item.setData(Qt.UserRole, sid)
             self.summary_list.addItem(item)
-
         self.summary_list.blockSignals(False)
 
         if self.summary_list.count():
@@ -765,9 +706,6 @@ class MainWindow(QMainWindow):
     def on_pipeline_done(self, _sid: object):
         self.lbl_status.setText("done")
         self.btn_refresh.setEnabled(True)
-        logging.getLogger("feedsum.qt").info(
-            "Pipeline done -> reloading config/store/ui options"
-        )
 
         self.cfg = load_config(CONFIG_PATH)
         self.store = get_store(self.cfg)
@@ -776,6 +714,7 @@ class MainWindow(QMainWindow):
         self.reload_summaries()
         self._rebuild_article_filters_from_ui_opts()
         self.reload_articles()
+        self._refresh_promptlab_lists()
 
     def on_pipeline_failed(self, err: str):
         self.lbl_status.setText("error")
@@ -822,8 +761,6 @@ class MainWindow(QMainWindow):
         self.topic_checks_articles: Dict[str, QCheckBox] = {}
         self.source_checks_articles: Dict[str, QCheckBox] = {}
         self.source_topics_articles: Dict[str, List[str]] = {}
-        self.gb_topics: Optional[QGroupBox] = None
-        self.gb_sources: Optional[QGroupBox] = None
 
         self.btn_apply.clicked.connect(self.reload_articles)
         self.btn_clear.clicked.connect(self.clear_article_filters)
@@ -836,7 +773,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.table, 1)
 
         self.tabs.addTab(w, "Artiklar")
-
         self._rebuild_article_filters_from_ui_opts()
 
     def _clear_layout(self, layout: QHBoxLayout) -> None:
@@ -849,13 +785,12 @@ class MainWindow(QMainWindow):
 
     def _rebuild_article_filters_from_ui_opts(self) -> None:
         self._clear_layout(self.filters_layout)
-
         self.topic_checks_articles = {}
         self.source_checks_articles = {}
         self.source_topics_articles = {}
 
-        self.gb_topics = QGroupBox("Ämnen")
-        vb_t = QVBoxLayout(self.gb_topics)
+        gb_topics = QGroupBox("Ämnen")
+        vb_t = QVBoxLayout(gb_topics)
         for t in self.ui_opts.topic_options:
             cb = QCheckBox(t)
             self.topic_checks_articles[t] = cb
@@ -864,8 +799,8 @@ class MainWindow(QMainWindow):
                 lambda _=None, topic=t: self._apply_topic_to_sources_articles(topic)
             )
 
-        self.gb_sources = QGroupBox("Källor")
-        vb_s = QVBoxLayout(self.gb_sources)
+        gb_sources = QGroupBox("Källor")
+        vb_s = QVBoxLayout(gb_sources)
         for s in self.ui_opts.source_options:
             name = s["name"]
             self.source_topics_articles[name] = s.get("topics") or []
@@ -873,8 +808,8 @@ class MainWindow(QMainWindow):
             self.source_checks_articles[name] = cb
             vb_s.addWidget(cb)
 
-        self.filters_layout.addWidget(self.gb_topics)
-        self.filters_layout.addWidget(self.gb_sources)
+        self.filters_layout.addWidget(gb_topics)
+        self.filters_layout.addWidget(gb_sources)
         self.filters_layout.addStretch(1)
 
     def _apply_topic_to_sources_articles(self, topic: str) -> None:
@@ -923,14 +858,10 @@ class MainWindow(QMainWindow):
             it0.setToolTip(str(a.get("url") or ""))
             it0.setData(Qt.UserRole, a)
 
-            it1 = QTableWidgetItem(src)
-            it2 = QTableWidgetItem(pub)
-            it3 = QTableWidgetItem(prev)
-
             self.table.setItem(r, 0, it0)
-            self.table.setItem(r, 1, it1)
-            self.table.setItem(r, 2, it2)
-            self.table.setItem(r, 3, it3)
+            self.table.setItem(r, 1, QTableWidgetItem(src))
+            self.table.setItem(r, 2, QTableWidgetItem(pub))
+            self.table.setItem(r, 3, QTableWidgetItem(prev))
 
         self.table.resizeColumnsToContents()
 
@@ -943,6 +874,276 @@ class MainWindow(QMainWindow):
             return
         dlg = ArticleReaderDialog(self, a)
         dlg.exec()
+
+    # ---- Promptlab tab (ephemeral replay, no DB write) ----
+    def _build_promptlab_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        top = QHBoxLayout()
+        self.pl_status = QLabel("idle")
+        top.addWidget(QLabel("Promptlab"))
+        top.addStretch(1)
+        top.addWidget(self.pl_status)
+        layout.addLayout(top)
+
+        main_split = QSplitter(Qt.Horizontal)
+
+        # Left: summary selector
+        left = QWidget()
+        left_l = QVBoxLayout(left)
+        left_l.addWidget(QLabel("Välj summary"))
+        self.pl_summary_list = QListWidget()
+        left_l.addWidget(self.pl_summary_list, 1)
+
+        self.btn_pl_load_from_summary = QPushButton("Ladda prompts från summary")
+        left_l.addWidget(self.btn_pl_load_from_summary)
+
+        main_split.addWidget(left)
+
+        # Right: editors + result
+        right = QWidget()
+        right_l = QVBoxLayout(right)
+
+        # Prompt package controls
+        pkg_row = QHBoxLayout()
+        self.pl_pkg_combo = QComboBox()
+        self.btn_pl_pkg_reload = QPushButton("Ladda lista")
+        self.btn_pl_pkg_load = QPushButton("Ladda paket")
+        self.pl_pkg_name = QLineEdit()
+        self.pl_pkg_name.setPlaceholderText("Namn för att spara paket…")
+        self.btn_pl_pkg_save = QPushButton("Spara paket")
+
+        pkg_row.addWidget(QLabel("Promptpaket:"))
+        pkg_row.addWidget(self.pl_pkg_combo, 2)
+        pkg_row.addWidget(self.btn_pl_pkg_reload)
+        pkg_row.addWidget(self.btn_pl_pkg_load)
+        pkg_row.addSpacing(10)
+        pkg_row.addWidget(self.pl_pkg_name, 2)
+        pkg_row.addWidget(self.btn_pl_pkg_save)
+
+        right_l.addLayout(pkg_row)
+
+        # Editors
+        self.pl_batch_system = QPlainTextEdit()
+        self.pl_batch_user = QPlainTextEdit()
+        self.pl_meta_system = QPlainTextEdit()
+        self.pl_meta_user = QPlainTextEdit()
+
+        self.pl_batch_system.setPlaceholderText("batch_system…")
+        self.pl_batch_user.setPlaceholderText("batch_user_template…")
+        self.pl_meta_system.setPlaceholderText("meta_system…")
+        self.pl_meta_user.setPlaceholderText("meta_user_template…")
+
+        ed_split = QSplitter(Qt.Vertical)
+        ed1 = QWidget()
+        ed1_l = QVBoxLayout(ed1)
+        ed1_l.addWidget(QLabel("batch_system"))
+        ed1_l.addWidget(self.pl_batch_system)
+        ed2 = QWidget()
+        ed2_l = QVBoxLayout(ed2)
+        ed2_l.addWidget(QLabel("batch_user_template"))
+        ed2_l.addWidget(self.pl_batch_user)
+        ed3 = QWidget()
+        ed3_l = QVBoxLayout(ed3)
+        ed3_l.addWidget(QLabel("meta_system"))
+        ed3_l.addWidget(self.pl_meta_system)
+        ed4 = QWidget()
+        ed4_l = QVBoxLayout(ed4)
+        ed4_l.addWidget(QLabel("meta_user_template"))
+        ed4_l.addWidget(self.pl_meta_user)
+
+        ed_split.addWidget(ed1)
+        ed_split.addWidget(ed2)
+        ed_split.addWidget(ed3)
+        ed_split.addWidget(ed4)
+        ed_split.setSizes([160, 220, 160, 220])
+
+        right_l.addWidget(ed_split, 2)
+
+        # Run + compare
+        run_row = QHBoxLayout()
+        self.btn_pl_run = QPushButton("Skapa ny summary (ej sparad)")
+        self.btn_pl_compare = QPushButton("Visa jämförelse")
+        self.btn_pl_compare.setCheckable(True)
+        run_row.addWidget(self.btn_pl_run)
+        run_row.addWidget(self.btn_pl_compare)
+        run_row.addStretch(1)
+        right_l.addLayout(run_row)
+
+        # Result view + optional compare
+        self.pl_result_split = QSplitter(Qt.Horizontal)
+        self.pl_new_view = QTextBrowser()
+        self.pl_original_view = QTextBrowser()
+        self.pl_new_view.setHtml("<p>Nytt resultat…</p>")
+        self.pl_original_view.setHtml("<p>Original…</p>")
+        self.pl_result_split.addWidget(self.pl_new_view)
+        self.pl_result_split.addWidget(self.pl_original_view)
+        self.pl_result_split.setSizes([700, 500])
+        self.pl_original_view.hide()  # start without compare
+
+        right_l.addWidget(self.pl_result_split, 2)
+
+        main_split.addWidget(right)
+        main_split.setSizes([320, 980])
+
+        layout.addWidget(main_split, 1)
+        self.tabs.addTab(w, "Promptlab")
+
+        # Wire events
+        self.pl_summary_list.currentItemChanged.connect(self._pl_on_summary_selected)
+        self.btn_pl_load_from_summary.clicked.connect(
+            self._pl_load_prompts_from_selected_summary
+        )
+        self.btn_pl_run.clicked.connect(self._pl_run_replay)
+        self.btn_pl_compare.toggled.connect(self._pl_toggle_compare)
+
+        self.btn_pl_pkg_reload.clicked.connect(self._pl_reload_prompt_packages)
+        self.btn_pl_pkg_load.clicked.connect(self._pl_load_selected_package)
+        self.btn_pl_pkg_save.clicked.connect(self._pl_save_package)
+
+    def _refresh_promptlab_lists(self) -> None:
+        docs = self.store.list_summary_docs() or []
+        docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+
+        self.pl_summary_list.blockSignals(True)
+        self.pl_summary_list.clear()
+        for d in docs:
+            sid = str(d.get("id") or "")
+            created = int(d.get("created") or 0)
+            n = len(d.get("sources") or [])
+            it = QListWidgetItem(f"{format_ts(created)} · Artiklar: {n}")
+            it.setData(Qt.UserRole, sid)
+            self.pl_summary_list.addItem(it)
+        self.pl_summary_list.blockSignals(False)
+
+        if self.pl_summary_list.count():
+            self.pl_summary_list.setCurrentRow(0)
+
+        self._pl_reload_prompt_packages()
+
+    def _pl_reload_prompt_packages(self) -> None:
+        pkgs = list_prompt_packages(self.cfg, config_path=CONFIG_PATH)
+        self.pl_pkg_combo.clear()
+        self.pl_pkg_combo.addItems(pkgs)
+
+    def _pl_current_summary_id(self) -> Optional[str]:
+        it = self.pl_summary_list.currentItem()
+        if not it:
+            return None
+        return str(it.data(Qt.UserRole))
+
+    def _pl_on_summary_selected(self, current: QListWidgetItem, _prev: QListWidgetItem):
+        if not current:
+            return
+        sid = str(current.data(Qt.UserRole))
+        sdoc = self.store.get_summary_doc(sid)
+        if not sdoc:
+            return
+        orig_md = sdoc.get("summary", "") or ""
+        self.pl_new_view.setHtml(md.markdown(orig_md, extensions=["extra"]))
+        self.pl_original_view.setHtml(md.markdown(orig_md, extensions=["extra"]))
+
+    def _pl_load_prompts_from_selected_summary(self) -> None:
+        sid = self._pl_current_summary_id()
+        if not sid:
+            return
+        try:
+            ps = get_promptset_for_summary(self.store, sid)
+        except Exception as e:
+            QMessageBox.critical(self, "Fel", str(e))
+            return
+        self.pl_batch_system.setPlainText(ps.batch_system)
+        self.pl_batch_user.setPlainText(ps.batch_user_template)
+        self.pl_meta_system.setPlainText(ps.meta_system)
+        self.pl_meta_user.setPlainText(ps.meta_user_template)
+        self.pl_status.setText("prompts laddade")
+
+    def _pl_promptset_from_ui(self) -> PromptSet:
+        return PromptSet(
+            batch_system=self.pl_batch_system.toPlainText(),
+            batch_user_template=self.pl_batch_user.toPlainText(),
+            meta_system=self.pl_meta_system.toPlainText(),
+            meta_user_template=self.pl_meta_user.toPlainText(),
+        )
+
+    def _pl_load_selected_package(self) -> None:
+        name = self.pl_pkg_combo.currentText().strip()
+        if not name:
+            return
+        ps = load_prompt_package(self.cfg, config_path=CONFIG_PATH, package_name=name)
+        if not ps:
+            QMessageBox.warning(self, "Saknas", f"Kunde inte ladda paket: {name}")
+            return
+        self.pl_batch_system.setPlainText(ps.batch_system)
+        self.pl_batch_user.setPlainText(ps.batch_user_template)
+        self.pl_meta_system.setPlainText(ps.meta_system)
+        self.pl_meta_user.setPlainText(ps.meta_user_template)
+        self.pl_status.setText(f"paket laddat: {name}")
+
+    def _pl_save_package(self) -> None:
+        name = self.pl_pkg_name.text().strip()
+        if not name:
+            QMessageBox.information(self, "Namn saknas", "Ange ett namn för paketet.")
+            return
+        ps = self._pl_promptset_from_ui()
+        try:
+            path = save_prompt_package(
+                self.cfg, config_path=CONFIG_PATH, package_name=name, promptset=ps
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Fel", str(e))
+            return
+        self._pl_reload_prompt_packages()
+        self.pl_pkg_combo.setCurrentText(name)
+        self.pl_status.setText(f"sparat: {name} ({path})")
+
+    def _pl_toggle_compare(self, enabled: bool) -> None:
+        if enabled:
+            self.pl_original_view.show()
+        else:
+            self.pl_original_view.hide()
+
+    def _pl_run_replay(self) -> None:
+        sid = self._pl_current_summary_id()
+        if not sid:
+            QMessageBox.information(self, "Ingen summary", "Välj en summary först.")
+            return
+
+        # ensure original view is up-to-date for compare
+        orig_doc = self.store.get_summary_doc(sid)
+        if orig_doc:
+            self.pl_original_view.setHtml(
+                md.markdown(orig_doc.get("summary", "") or "", extensions=["extra"])
+            )
+
+        prompts = self._pl_promptset_from_ui()
+
+        self.pl_status.setText("running…")
+        self.btn_pl_run.setEnabled(False)
+
+        self.replay_worker = PromptReplayWorker(
+            cfg=self.cfg, store=self.store, summary_id=sid, prompts=prompts
+        )
+        self.replay_worker.status.connect(self.pl_status.setText)
+        self.replay_worker.done.connect(self._pl_replay_done)
+        self.replay_worker.failed.connect(self._pl_replay_failed)
+        self.replay_worker.start()
+
+    def _pl_replay_done(self, result: dict) -> None:
+        self.btn_pl_run.setEnabled(True)
+        self.pl_status.setText("klart (ej sparad)")
+
+        md_text = (result.get("summary_markdown") or "").strip()
+        html = md.markdown(md_text, extensions=["extra"])
+        self.pl_new_view.setHtml(html)
+
+        # do NOT reload summaries / store (no persistence)
+
+    def _pl_replay_failed(self, err: str) -> None:
+        self.btn_pl_run.setEnabled(True)
+        self.pl_status.setText("error")
+        QMessageBox.critical(self, "Replay misslyckades", err)
 
 
 def main():
