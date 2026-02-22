@@ -13,6 +13,7 @@ import markdown as md
 from PySide6.QtCore import Qt, QThread, Signal, QDate, QObject
 from PySide6.QtGui import QDesktopServices, QPainter, QTextDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -606,7 +607,19 @@ class MainWindow(QMainWindow):
         )
 
     # -------- printing helpers --------
+    def _print_html_simple(self, html: str, title: str = "Utskrift") -> None:
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setDocName(title)
 
+        dlg = QPrintDialog(printer, self)
+        dlg.setWindowTitle(title)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        doc = QTextDocument()
+        # Wrap to avoid odd layout edge cases
+        doc.setHtml(f"<html><body>{html}</body></html>")
+        doc.print_(printer)
 
     def _print_document_with_header(
         self, html: str, header_left: str, header_right: str, title: str
@@ -669,7 +682,9 @@ class MainWindow(QMainWindow):
                 # --- Content: translate to current page slice and clip
                 painter.save()
                 painter.translate(content.left(), content.top() - page_index * page_h)
-                painter.setClipRect(QRectF(0, page_index * page_h, content.width(), page_h))
+                painter.setClipRect(
+                    QRectF(0, page_index * page_h, content.width(), page_h)
+                )
                 doc.drawContents(painter)
                 painter.restore()
 
@@ -685,24 +700,16 @@ class MainWindow(QMainWindow):
             return
 
         sid = current.data(Qt.UserRole)
-        doc = self.store.get_summary_doc(str(sid))
-        if not doc:
+        sdoc = self.store.get_summary_doc(str(sid))
+        if not sdoc:
             QMessageBox.warning(self, "Saknas", "Kunde inte läsa sammanfattningen.")
             return
 
-        md_text = doc.get("summary", "") or ""
+        md_text = sdoc.get("summary", "") or ""
         html = md.markdown(md_text, extensions=["extra"])
 
-        from_ts = int(doc.get("from") or 0)
-        to_ts = int(doc.get("to") or 0)
-        from_s = _fmt_dt_hm(from_ts)
-        to_s = _fmt_dt_hm(to_ts)
-
-        header_left = f"From: {from_s}" if from_s else "From: (okänt)"
-        header_right = f"To: {to_s}" if to_s else "To: (okänt)"
-
-        title = f"Sammanfattning {format_ts(int(doc.get('created') or 0))}"
-        self._print_document_with_header(html, header_left, header_right, title)
+        title = f"Sammanfattning {format_ts(int(sdoc.get('created') or 0))}"
+        self._print_html_simple(html, title=title)
 
     # -------- logging bridge --------
     def _install_logging_bridge(self) -> None:
