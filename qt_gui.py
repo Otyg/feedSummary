@@ -1,4 +1,35 @@
-# qt_gui.py
+# LICENSE HEADER MANAGED BY add-license-header
+#
+# BSD 3-Clause License
+#
+# Copyright (c) 2026, Martin Vesterlund
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
 from __future__ import annotations
 
 import asyncio
@@ -7,9 +38,11 @@ import os
 import sys
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import markdown as md
+import yaml
 from PySide6.QtCore import Qt, QThread, Signal, QDate, QObject
 from PySide6.QtGui import QDesktopServices, QTextDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
@@ -24,9 +57,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -84,6 +117,39 @@ def _fmt_dt_hm(ts: int) -> str:
     if not ts:
         return ""
     return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M")
+
+
+def _safe_list_str(v: Any) -> List[str]:
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    if isinstance(v, str):
+        s = v.strip()
+        return [s] if s else []
+    return []
+
+
+def _parse_csv(s: str) -> List[str]:
+    # comma-separated, allow spaces
+    parts = [p.strip() for p in (s or "").split(",")]
+    return [p for p in parts if p]
+
+
+def _resolve_relative_to_config(config_path: str, rel: str) -> Path:
+    base = Path(os.path.abspath(config_path)).parent
+    rel2 = os.path.expanduser(os.path.expandvars(rel))
+    p = Path(rel2)
+    return p if p.is_absolute() else (base / p).resolve()
+
+
+def resolve_feeds_path(cfg: Dict[str, Any], *, config_path: str) -> Path:
+    # config: feeds: { path: "config/feeds.yaml" }
+    feeds_cfg = cfg.get("feeds")
+    raw = "config/feeds.yaml"
+    if isinstance(feeds_cfg, dict) and feeds_cfg.get("path"):
+        raw = str(feeds_cfg.get("path"))
+    return _resolve_relative_to_config(config_path, raw)
 
 
 # ----------------------------
@@ -389,10 +455,6 @@ class RefreshDialog(QDialog):
 # Comparison window for ephemeral prompt replay
 # ----------------------------
 class ReplayResultWindow(QDialog):
-    """
-    Shows new summary and optionally a side-by-side comparison with original.
-    """
-
     def __init__(self, parent: QWidget, *, original_md: str, new_md: str, title: str):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -427,10 +489,69 @@ class ReplayResultWindow(QDialog):
         self.btn_compare.toggled.connect(self._toggle_compare)
 
     def _toggle_compare(self, enabled: bool) -> None:
-        if enabled:
-            self.orig_view.show()
-        else:
-            self.orig_view.hide()
+        self.orig_view.setVisible(bool(enabled))
+
+
+# ----------------------------
+# Feed editor dialog
+# ----------------------------
+class FeedEditDialog(QDialog):
+    def __init__(self, parent: QWidget, feed: Optional[Dict[str, Any]] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Feed")
+        self.resize(640, 420)
+        self._feed_in = feed or {}
+
+        outer = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.name = QLineEdit(str(self._feed_in.get("name") or ""))
+        self.url = QLineEdit(str(self._feed_in.get("url") or ""))
+
+        topics = _safe_list_str(self._feed_in.get("topics"))
+        self.topics = QLineEdit(", ".join(topics))
+
+        cat_inc = _safe_list_str(self._feed_in.get("category_include"))
+        self.category_include = QLineEdit(", ".join(cat_inc))
+
+        form.addRow("Name", self.name)
+        form.addRow("URL", self.url)
+        form.addRow("Topics (comma)", self.topics)
+        form.addRow("Category include (comma, optional)", self.category_include)
+
+        outer.addLayout(form)
+
+        hint = QLabel(
+            "Tips: Topics används för grouping/urval i UI. Category include är valfritt."
+        )
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.btn_cancel = QPushButton("Avbryt")
+        self.btn_ok = QPushButton("Spara")
+        actions.addWidget(self.btn_cancel)
+        actions.addWidget(self.btn_ok)
+        outer.addLayout(actions)
+
+        self.btn_cancel.clicked.connect(self.reject)
+        self.btn_ok.clicked.connect(self.accept)
+
+    def value(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        out["name"] = self.name.text().strip()
+        out["url"] = self.url.text().strip()
+
+        topics = _parse_csv(self.topics.text())
+        if topics:
+            out["topics"] = topics
+
+        cat_inc = _parse_csv(self.category_include.text())
+        if cat_inc:
+            out["category_include"] = cat_inc
+
+        return out
 
 
 # ----------------------------
@@ -603,13 +724,32 @@ class MainWindow(QMainWindow):
         self._build_summaries_tab()
         self._build_articles_tab()
         self._build_promptlab_tab()
+        self._build_feeds_tab()
+
+        # State
+        self._last_replay_window: Optional[ReplayResultWindow] = None
+        self.pl_selected_summary_id: Optional[str] = None
 
         # Initial load
         self.reload_summaries()
         self.reload_articles()
         self._refresh_promptlab_lists()
+        self._feeds_reload()
 
         logging.getLogger("feedsum.qt").info("Bootstrap config_path=%s", CONFIG_PATH)
+
+    # -------- shared reload of config-dependent UI --------
+    def _reload_all_config_dependent_ui(self) -> None:
+        # Re-read config + ui options
+        self.cfg = load_config(CONFIG_PATH)
+        self.store = get_store(self.cfg)
+        self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
+
+        # Refresh UI parts that depend on topics/sources
+        self.reload_summaries()
+        self._rebuild_article_filters_from_ui_opts()
+        self.reload_articles()
+        self._refresh_promptlab_lists()
 
     # -------- logging bridge --------
     def _install_logging_bridge(self) -> None:
@@ -754,15 +894,8 @@ class MainWindow(QMainWindow):
     def on_pipeline_done(self, _sid: object):
         self.lbl_status.setText("done")
         self.btn_refresh.setEnabled(True)
-
-        self.cfg = load_config(CONFIG_PATH)
-        self.store = get_store(self.cfg)
-        self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
-
-        self.reload_summaries()
-        self._rebuild_article_filters_from_ui_opts()
-        self.reload_articles()
-        self._refresh_promptlab_lists()
+        self._reload_all_config_dependent_ui()
+        self._feeds_reload()
 
     def on_pipeline_failed(self, err: str):
         self.lbl_status.setText("error")
@@ -923,13 +1056,10 @@ class MainWindow(QMainWindow):
         dlg = ArticleReaderDialog(self, a)
         dlg.exec()
 
-    # ---- Promptlab tab (no in-tab summary; clearly show which summary is loaded) ----
+    # ---- Promptlab tab ----
     def _build_promptlab_tab(self):
         w = QWidget()
         layout = QVBoxLayout(w)
-
-        # Track selection
-        self.pl_selected_summary_id: Optional[str] = None
 
         top = QHBoxLayout()
         top.addWidget(QLabel("Promptlab"))
@@ -945,19 +1075,15 @@ class MainWindow(QMainWindow):
 
         main_split = QSplitter(Qt.Horizontal)
 
-        # Left: summary selector
         left = QWidget()
         left_l = QVBoxLayout(left)
         left_l.addWidget(QLabel("Välj summary"))
         self.pl_summary_list = QListWidget()
         left_l.addWidget(self.pl_summary_list, 1)
-
         self.btn_pl_load_from_summary = QPushButton("Ladda prompts från summary")
         left_l.addWidget(self.btn_pl_load_from_summary)
-
         main_split.addWidget(left)
 
-        # Right: editors + package mgmt + run
         right = QWidget()
         right_l = QVBoxLayout(right)
 
@@ -968,7 +1094,6 @@ class MainWindow(QMainWindow):
         self.pl_pkg_name = QLineEdit()
         self.pl_pkg_name.setPlaceholderText("Namn för att spara paket…")
         self.btn_pl_pkg_save = QPushButton("Spara paket")
-
         pkg_row.addWidget(QLabel("Promptpaket:"))
         pkg_row.addWidget(self.pl_pkg_combo, 2)
         pkg_row.addWidget(self.btn_pl_pkg_reload)
@@ -982,7 +1107,6 @@ class MainWindow(QMainWindow):
         self.pl_batch_user = QPlainTextEdit()
         self.pl_meta_system = QPlainTextEdit()
         self.pl_meta_user = QPlainTextEdit()
-
         self.pl_batch_system.setPlaceholderText("batch_system…")
         self.pl_batch_user.setPlaceholderText("batch_user_template…")
         self.pl_meta_system.setPlaceholderText("meta_system…")
@@ -1020,22 +1144,17 @@ class MainWindow(QMainWindow):
 
         main_split.addWidget(right)
         main_split.setSizes([360, 980])
-
         layout.addWidget(main_split, 1)
         self.tabs.addTab(w, "Promptlab")
 
-        # Wire events
         self.pl_summary_list.currentItemChanged.connect(self._pl_on_summary_selected)
         self.btn_pl_load_from_summary.clicked.connect(
             self._pl_load_prompts_from_selected_summary
         )
         self.btn_pl_run.clicked.connect(self._pl_run_replay)
-
         self.btn_pl_pkg_reload.clicked.connect(self._pl_reload_prompt_packages)
         self.btn_pl_pkg_load.clicked.connect(self._pl_load_selected_package)
         self.btn_pl_pkg_save.clicked.connect(self._pl_save_package)
-
-        self._last_replay_window: Optional[ReplayResultWindow] = None
 
     def _refresh_promptlab_lists(self) -> None:
         docs = self.store.list_summary_docs() or []
@@ -1063,15 +1182,17 @@ class MainWindow(QMainWindow):
         self.pl_pkg_combo.addItems(pkgs)
 
     def _pl_current_summary_id(self) -> Optional[str]:
-        if getattr(self, "pl_selected_summary_id", None):
-            return self.pl_selected_summary_id
-        it = self.pl_summary_list.currentItem()
-        return str(it.data(Qt.UserRole)) if it else None
+        return self.pl_selected_summary_id or (
+            str(self.pl_summary_list.currentItem().data(Qt.UserRole))
+            if self.pl_summary_list.currentItem()
+            else None
+        )
 
     def _pl_on_summary_selected(self, current: QListWidgetItem, _prev: QListWidgetItem):
         if not current:
             self.pl_selected_summary_id = None
             self.pl_loaded_summary.setText("Laddad summary: (ingen)")
+            self.pl_status.setText("idle")
             return
 
         sid = str(current.data(Qt.UserRole))
@@ -1185,6 +1306,190 @@ class MainWindow(QMainWindow):
         self.btn_pl_run.setEnabled(True)
         self.pl_status.setText("error")
         QMessageBox.critical(self, "Replay misslyckades", err)
+
+    # ---- Feeds tab ----
+    def _build_feeds_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        top = QHBoxLayout()
+        self.feeds_path_label = QLabel("feeds.yaml: (okänt)")
+        self.feeds_status = QLabel("idle")
+        top.addWidget(self.feeds_path_label, 1)
+        top.addWidget(self.feeds_status)
+        layout.addLayout(top)
+
+        btns = QHBoxLayout()
+        self.btn_feeds_reload = QPushButton("Ladda om")
+        self.btn_feeds_add = QPushButton("Lägg till")
+        self.btn_feeds_edit = QPushButton("Redigera")
+        self.btn_feeds_delete = QPushButton("Ta bort")
+        self.btn_feeds_save = QPushButton("Spara till feeds.yaml")
+
+        btns.addWidget(self.btn_feeds_reload)
+        btns.addWidget(self.btn_feeds_add)
+        btns.addWidget(self.btn_feeds_edit)
+        btns.addWidget(self.btn_feeds_delete)
+        btns.addStretch(1)
+        btns.addWidget(self.btn_feeds_save)
+        layout.addLayout(btns)
+
+        self.feeds_table = QTableWidget(0, 4)
+        self.feeds_table.setHorizontalHeaderLabels(
+            ["Name", "URL", "Topics", "Category include"]
+        )
+        self.feeds_table.cellDoubleClicked.connect(
+            lambda r, c: self._feeds_edit_selected()
+        )
+        layout.addWidget(self.feeds_table, 1)
+
+        self.btn_feeds_reload.clicked.connect(self._feeds_reload)
+        self.btn_feeds_add.clicked.connect(self._feeds_add)
+        self.btn_feeds_edit.clicked.connect(self._feeds_edit_selected)
+        self.btn_feeds_delete.clicked.connect(self._feeds_delete_selected)
+        self.btn_feeds_save.clicked.connect(self._feeds_save)
+
+        self.tabs.addTab(w, "Feeds")
+
+        self._feeds_items: List[Dict[str, Any]] = []
+
+    def _feeds_reload(self) -> None:
+        try:
+            self.cfg = load_config(CONFIG_PATH)
+            feeds_path = resolve_feeds_path(self.cfg, config_path=CONFIG_PATH)
+            self.feeds_path_label.setText(f"feeds.yaml: {feeds_path}")
+            self._feeds_items = self._read_feeds_yaml(feeds_path)
+            self._feeds_render_table()
+            self.feeds_status.setText(f"laddade: {len(self._feeds_items)}")
+        except Exception as e:
+            self.feeds_status.setText("error")
+            QMessageBox.critical(self, "Kunde inte ladda feeds.yaml", str(e))
+
+    def _read_feeds_yaml(self, path: Path) -> List[Dict[str, Any]]:
+        if not path.exists():
+            # allow create on save
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or []
+        if not isinstance(data, list):
+            raise RuntimeError("feeds.yaml måste vara en YAML-lista.")
+        out: List[Dict[str, Any]] = []
+        for x in data:
+            if isinstance(x, dict):
+                out.append(dict(x))
+        return out
+
+    def _feeds_render_table(self) -> None:
+        items = self._feeds_items
+        self.feeds_table.setRowCount(len(items))
+        for r, f in enumerate(items):
+            name = str(f.get("name") or "")
+            url = str(f.get("url") or "")
+            topics = ", ".join(_safe_list_str(f.get("topics")))
+            cat_inc = ", ".join(_safe_list_str(f.get("category_include")))
+
+            it0 = QTableWidgetItem(name)
+            it0.setData(Qt.UserRole, f)  # store dict
+            self.feeds_table.setItem(r, 0, it0)
+            self.feeds_table.setItem(r, 1, QTableWidgetItem(url))
+            self.feeds_table.setItem(r, 2, QTableWidgetItem(topics))
+            self.feeds_table.setItem(r, 3, QTableWidgetItem(cat_inc))
+        self.feeds_table.resizeColumnsToContents()
+
+    def _feeds_selected_row(self) -> Optional[int]:
+        row = self.feeds_table.currentRow()
+        if row is None or row < 0:
+            return None
+        if row >= len(self._feeds_items):
+            return None
+        return row
+
+    def _feeds_add(self) -> None:
+        dlg = FeedEditDialog(self, None)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        f = dlg.value()
+        if not f.get("name") or not f.get("url"):
+            QMessageBox.information(self, "Saknas", "Name och URL måste anges.")
+            return
+
+        if any(
+            str(x.get("name") or "").strip().lower() == str(f["name"]).strip().lower()
+            for x in self._feeds_items
+        ):
+            QMessageBox.warning(
+                self, "Dublett", "Det finns redan en feed med samma name."
+            )
+            return
+
+        self._feeds_items.append(f)
+        self._feeds_items.sort(key=lambda x: str(x.get("name") or "").lower())
+        self._feeds_render_table()
+        self.feeds_status.setText("ändringar ej sparade")
+
+    def _feeds_edit_selected(self) -> None:
+        row = self._feeds_selected_row()
+        if row is None:
+            QMessageBox.information(self, "Ingen rad", "Välj en feed att redigera.")
+            return
+        current = self._feeds_items[row]
+        dlg = FeedEditDialog(self, current)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        updated = dlg.value()
+        if not updated.get("name") or not updated.get("url"):
+            QMessageBox.information(self, "Saknas", "Name och URL måste anges.")
+            return
+
+        # Validate unique name (allow same row)
+        new_name = str(updated["name"]).strip().lower()
+        for i, x in enumerate(self._feeds_items):
+            if i == row:
+                continue
+            if str(x.get("name") or "").strip().lower() == new_name:
+                QMessageBox.warning(
+                    self, "Dublett", "Det finns redan en feed med samma name."
+                )
+                return
+
+        self._feeds_items[row] = updated
+        self._feeds_items.sort(key=lambda x: str(x.get("name") or "").lower())
+        self._feeds_render_table()
+        self.feeds_status.setText("ändringar ej sparade")
+
+    def _feeds_delete_selected(self) -> None:
+        row = self._feeds_selected_row()
+        if row is None:
+            QMessageBox.information(self, "Ingen rad", "Välj en feed att ta bort.")
+            return
+
+        name = str(self._feeds_items[row].get("name") or "")
+        resp = QMessageBox.question(
+            self, "Ta bort", f"Ta bort '{name}'?", QMessageBox.Yes | QMessageBox.No
+        )
+        if resp != QMessageBox.Yes:
+            return
+
+        del self._feeds_items[row]
+        self._feeds_render_table()
+        self.feeds_status.setText("ändringar ej sparade")
+
+    def _feeds_save(self) -> None:
+        try:
+            feeds_path = resolve_feeds_path(self.cfg, config_path=CONFIG_PATH)
+            feeds_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(feeds_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(
+                    self._feeds_items, f, sort_keys=False, allow_unicode=True
+                )
+            self.feeds_status.setText("sparat")
+
+            # reload config-dependent UI so new feeds/topics show up
+            self._reload_all_config_dependent_ui()
+            self._feeds_reload()
+        except Exception as e:
+            self.feeds_status.setText("error")
+            QMessageBox.critical(self, "Kunde inte spara feeds.yaml", str(e))
 
 
 def main():
