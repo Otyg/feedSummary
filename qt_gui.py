@@ -386,6 +386,54 @@ class RefreshDialog(QDialog):
 
 
 # ----------------------------
+# Comparison window for ephemeral prompt replay
+# ----------------------------
+class ReplayResultWindow(QDialog):
+    """
+    Shows new summary and optionally a side-by-side comparison with original.
+    """
+
+    def __init__(self, parent: QWidget, *, original_md: str, new_md: str, title: str):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(1200, 820)
+
+        outer = QVBoxLayout(self)
+
+        top = QHBoxLayout()
+        self.btn_compare = QPushButton("Visa jämförelse")
+        self.btn_compare.setCheckable(True)
+        self.btn_close = QPushButton("Stäng")
+        top.addWidget(self.btn_compare)
+        top.addStretch(1)
+        top.addWidget(self.btn_close)
+        outer.addLayout(top)
+
+        self.split = QSplitter(Qt.Horizontal)
+        self.new_view = QTextBrowser()
+        self.orig_view = QTextBrowser()
+
+        self.new_view.setHtml(md.markdown(new_md or "", extensions=["extra"]))
+        self.orig_view.setHtml(md.markdown(original_md or "", extensions=["extra"]))
+
+        self.split.addWidget(self.new_view)
+        self.split.addWidget(self.orig_view)
+        self.split.setSizes([750, 450])
+        self.orig_view.hide()
+
+        outer.addWidget(self.split, 1)
+
+        self.btn_close.clicked.connect(self.accept)
+        self.btn_compare.toggled.connect(self._toggle_compare)
+
+    def _toggle_compare(self, enabled: bool) -> None:
+        if enabled:
+            self.orig_view.show()
+        else:
+            self.orig_view.hide()
+
+
+# ----------------------------
 # Article reader dialog (with Print)
 # ----------------------------
 class ArticleReaderDialog(QDialog):
@@ -513,12 +561,12 @@ class MainWindow(QMainWindow):
         self.store = get_store(self.cfg)
         self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
 
-        # Splitter: main UI + log panel
         splitter = QSplitter(Qt.Vertical)
 
         self.tabs = QTabWidget()
         splitter.addWidget(self.tabs)
 
+        # Log panel
         log_container = QWidget()
         log_layout = QVBoxLayout(log_container)
         log_layout.setContentsMargins(6, 6, 6, 6)
@@ -543,7 +591,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
         self.btn_clear_log.clicked.connect(self.log_view.clear)
 
-        # Connect log streams
+        # logging bridge
         self._log_emitter = QtLogEmitter()
         self._log_emitter.text.connect(self._append_log)
 
@@ -875,7 +923,7 @@ class MainWindow(QMainWindow):
         dlg = ArticleReaderDialog(self, a)
         dlg.exec()
 
-    # ---- Promptlab tab (ephemeral replay, no DB write) ----
+    # ---- Promptlab tab (no summary box; opens separate window on completion) ----
     def _build_promptlab_tab(self):
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -901,11 +949,10 @@ class MainWindow(QMainWindow):
 
         main_split.addWidget(left)
 
-        # Right: editors + result
+        # Right: editors + package mgmt + run
         right = QWidget()
         right_l = QVBoxLayout(right)
 
-        # Prompt package controls
         pkg_row = QHBoxLayout()
         self.pl_pkg_combo = QComboBox()
         self.btn_pl_pkg_reload = QPushButton("Ladda lista")
@@ -921,10 +968,8 @@ class MainWindow(QMainWindow):
         pkg_row.addSpacing(10)
         pkg_row.addWidget(self.pl_pkg_name, 2)
         pkg_row.addWidget(self.btn_pl_pkg_save)
-
         right_l.addLayout(pkg_row)
 
-        # Editors
         self.pl_batch_system = QPlainTextEdit()
         self.pl_batch_user = QPlainTextEdit()
         self.pl_meta_system = QPlainTextEdit()
@@ -952,37 +997,18 @@ class MainWindow(QMainWindow):
         ed4_l = QVBoxLayout(ed4)
         ed4_l.addWidget(QLabel("meta_user_template"))
         ed4_l.addWidget(self.pl_meta_user)
-
         ed_split.addWidget(ed1)
         ed_split.addWidget(ed2)
         ed_split.addWidget(ed3)
         ed_split.addWidget(ed4)
         ed_split.setSizes([160, 220, 160, 220])
-
         right_l.addWidget(ed_split, 2)
 
-        # Run + compare
         run_row = QHBoxLayout()
         self.btn_pl_run = QPushButton("Skapa ny summary (ej sparad)")
-        self.btn_pl_compare = QPushButton("Visa jämförelse")
-        self.btn_pl_compare.setCheckable(True)
         run_row.addWidget(self.btn_pl_run)
-        run_row.addWidget(self.btn_pl_compare)
         run_row.addStretch(1)
         right_l.addLayout(run_row)
-
-        # Result view + optional compare
-        self.pl_result_split = QSplitter(Qt.Horizontal)
-        self.pl_new_view = QTextBrowser()
-        self.pl_original_view = QTextBrowser()
-        self.pl_new_view.setHtml("<p>Nytt resultat…</p>")
-        self.pl_original_view.setHtml("<p>Original…</p>")
-        self.pl_result_split.addWidget(self.pl_new_view)
-        self.pl_result_split.addWidget(self.pl_original_view)
-        self.pl_result_split.setSizes([700, 500])
-        self.pl_original_view.hide()  # start without compare
-
-        right_l.addWidget(self.pl_result_split, 2)
 
         main_split.addWidget(right)
         main_split.setSizes([320, 980])
@@ -996,11 +1022,13 @@ class MainWindow(QMainWindow):
             self._pl_load_prompts_from_selected_summary
         )
         self.btn_pl_run.clicked.connect(self._pl_run_replay)
-        self.btn_pl_compare.toggled.connect(self._pl_toggle_compare)
 
         self.btn_pl_pkg_reload.clicked.connect(self._pl_reload_prompt_packages)
         self.btn_pl_pkg_load.clicked.connect(self._pl_load_selected_package)
         self.btn_pl_pkg_save.clicked.connect(self._pl_save_package)
+
+        # Keep a ref to last result window so it doesn't get GC'd immediately
+        self._last_replay_window: Optional[ReplayResultWindow] = None
 
     def _refresh_promptlab_lists(self) -> None:
         docs = self.store.list_summary_docs() or []
@@ -1034,15 +1062,8 @@ class MainWindow(QMainWindow):
         return str(it.data(Qt.UserRole))
 
     def _pl_on_summary_selected(self, current: QListWidgetItem, _prev: QListWidgetItem):
-        if not current:
-            return
-        sid = str(current.data(Qt.UserRole))
-        sdoc = self.store.get_summary_doc(sid)
-        if not sdoc:
-            return
-        orig_md = sdoc.get("summary", "") or ""
-        self.pl_new_view.setHtml(md.markdown(orig_md, extensions=["extra"]))
-        self.pl_original_view.setHtml(md.markdown(orig_md, extensions=["extra"]))
+        # Nothing to show in-tab anymore; keep as hook if needed later.
+        return
 
     def _pl_load_prompts_from_selected_summary(self) -> None:
         sid = self._pl_current_summary_id()
@@ -1098,24 +1119,11 @@ class MainWindow(QMainWindow):
         self.pl_pkg_combo.setCurrentText(name)
         self.pl_status.setText(f"sparat: {name} ({path})")
 
-    def _pl_toggle_compare(self, enabled: bool) -> None:
-        if enabled:
-            self.pl_original_view.show()
-        else:
-            self.pl_original_view.hide()
-
     def _pl_run_replay(self) -> None:
         sid = self._pl_current_summary_id()
         if not sid:
             QMessageBox.information(self, "Ingen summary", "Välj en summary först.")
             return
-
-        # ensure original view is up-to-date for compare
-        orig_doc = self.store.get_summary_doc(sid)
-        if orig_doc:
-            self.pl_original_view.setHtml(
-                md.markdown(orig_doc.get("summary", "") or "", extensions=["extra"])
-            )
 
         prompts = self._pl_promptset_from_ui()
 
@@ -1134,11 +1142,21 @@ class MainWindow(QMainWindow):
         self.btn_pl_run.setEnabled(True)
         self.pl_status.setText("klart (ej sparad)")
 
-        md_text = (result.get("summary_markdown") or "").strip()
-        html = md.markdown(md_text, extensions=["extra"])
-        self.pl_new_view.setHtml(html)
+        # Load original text for compare
+        sid = self._pl_current_summary_id()
+        orig_md = ""
+        if sid:
+            orig_doc = self.store.get_summary_doc(sid)
+            if orig_doc:
+                orig_md = orig_doc.get("summary", "") or ""
 
-        # do NOT reload summaries / store (no persistence)
+        new_md = (result.get("summary_markdown") or "").strip()
+        created = int(result.get("created") or 0)
+        title = f"Prompt Replay (ej sparad) – {format_ts(created)}"
+
+        win = ReplayResultWindow(self, original_md=orig_md, new_md=new_md, title=title)
+        self._last_replay_window = win
+        win.show()
 
     def _pl_replay_failed(self, err: str) -> None:
         self.btn_pl_run.setEnabled(True)
