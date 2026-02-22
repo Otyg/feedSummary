@@ -1,7 +1,9 @@
+# qt_gui.py
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 from typing import Any, Dict, List, Optional
@@ -38,7 +40,6 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QUrl
 
-from summarizer.helpers import setup_logging
 from summarizer.main import run_pipeline
 
 from uicommon import (
@@ -55,11 +56,10 @@ from uicommon.bootstrap_ui import resolve_config_path
 
 RUNTIME = resolve_config_path()
 CONFIG_PATH = str(RUNTIME.config_path)
-setup_logging()
-logger = logging.getLogger(__name__)
+
 
 # ----------------------------
-# Log capture: stdout/stderr -> Qt panel
+# Log capture: stdout/stderr + logging -> Qt panel
 # ----------------------------
 class QtLogEmitter(QObject):
     text = Signal(str)
@@ -82,6 +82,35 @@ class QtStream:
 
     def flush(self) -> None:
         return
+
+
+class QtLoggingHandler(logging.Handler):
+    """
+    Logging handler that forwards formatted log records to a Qt signal.
+    """
+    def __init__(self, emitter: QtLogEmitter):
+        super().__init__()
+        self.emitter = emitter
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            # Add newline so the UI appender can treat it like a line
+            self.emitter.text.emit(msg + "\n")
+        except Exception:
+            # Never crash due to logging
+            pass
+
+
+def _env_log_level(default: int = logging.INFO) -> int:
+    """
+    Controls global loglevel for Qt app.
+    Default INFO; override with FEEDSUMMARY_LOG_LEVEL=DEBUG|INFO|WARNING|ERROR.
+    """
+    lvl = (os.environ.get("FEEDSUMMARY_LOG_LEVEL") or "").strip().upper()
+    if not lvl:
+        return default
+    return getattr(logging, lvl, default)
 
 
 # ----------------------------
@@ -478,7 +507,7 @@ class MainWindow(QMainWindow):
         log_layout.setContentsMargins(6, 6, 6, 6)
 
         log_toolbar = QHBoxLayout()
-        log_toolbar.addWidget(QLabel("Logg (stdout/stderr)"))
+        log_toolbar.addWidget(QLabel("Logg (logging + stdout/stderr)"))
         log_toolbar.addStretch(1)
         self.btn_clear_log = QPushButton("Rensa")
         log_toolbar.addWidget(self.btn_clear_log)
@@ -492,7 +521,6 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(log_container)
 
-        # Initial splitter sizes: mostly tabs, smaller log
         splitter.setSizes([650, 210])
         splitter.setCollapsible(1, True)
 
@@ -500,11 +528,16 @@ class MainWindow(QMainWindow):
 
         self.btn_clear_log.clicked.connect(self.log_view.clear)
 
-        # Redirect stdout/stderr to log panel
+        # Setup emitter + append
         self._log_emitter = QtLogEmitter()
         self._log_emitter.text.connect(self._append_log)
+
+        # Redirect stdout/stderr to log panel
         sys.stdout = QtStream(self._log_emitter)
         sys.stderr = QtStream(self._log_emitter)
+
+        # Install logging handler to capture ALL python logging
+        self._install_logging_bridge()
 
         # Build tabs
         self._build_summaries_tab()
@@ -513,24 +546,61 @@ class MainWindow(QMainWindow):
         self.reload_summaries()
         self.reload_articles()
 
-        # Emit bootstrap info into log
-        print(f"[bootstrap] frozen={RUNTIME.is_frozen} base_dir={RUNTIME.base_dir}")
-        print(f"[bootstrap] app_data_dir={RUNTIME.app_data_dir}")
-        print(f"[bootstrap] config_path={RUNTIME.config_path}")
+        # Bootstrap info into log (uses logging + print)
+        logging.getLogger("feedsum.qt").info("Bootstrap: frozen=%s base_dir=%s", RUNTIME.is_frozen, RUNTIME.base_dir)
+        logging.getLogger("feedsum.qt").info("Bootstrap: app_data_dir=%s", RUNTIME.app_data_dir)
+        logging.getLogger("feedsum.qt").info("Bootstrap: config_path=%s", RUNTIME.config_path)
+
+    def _install_logging_bridge(self) -> None:
+        """
+        Capture Python logging into the Qt log panel.
+        Default level INFO (override with FEEDSUMMARY_LOG_LEVEL).
+        """
+        level = _env_log_level(logging.INFO)
+
+        # Ensure root has a sane level; do not remove existing handlers (console/file etc).
+        root = logging.getLogger()
+        root.setLevel(level)
+
+        self._qt_log_handler = QtLoggingHandler(self._log_emitter)
+        self._qt_log_handler.setLevel(level)
+
+        fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+        self._qt_log_handler.setFormatter(fmt)
+
+        # Avoid adding duplicate handler if window recreated
+        for h in root.handlers:
+            if isinstance(h, QtLoggingHandler):
+                return
+
+        root.addHandler(self._qt_log_handler)
+
+        # Make sure common noisy libs don't spam too much at INFO
+        logging.getLogger("asyncio").setLevel(logging.WARNING)
 
     def _append_log(self, text: str) -> None:
-        # Normalize: avoid doubling of linebreaks on partial writes
+        # Normalize partial writes
         if text == "\n":
             self.log_view.appendPlainText("")
             return
         self.log_view.appendPlainText(text.rstrip("\n"))
 
     def closeEvent(self, event) -> None:
+        # Restore streams
         try:
             sys.stdout = self._orig_stdout
             sys.stderr = self._orig_stderr
         except Exception:
             pass
+
+        # Remove our handler from root to avoid dangling Qt signals
+        try:
+            root = logging.getLogger()
+            if hasattr(self, "_qt_log_handler"):
+                root.removeHandler(self._qt_log_handler)
+        except Exception:
+            pass
+
         super().closeEvent(event)
 
     # ---- Summaries tab ----
@@ -600,7 +670,7 @@ class MainWindow(QMainWindow):
         overrides = dlg.overrides()
         self.btn_refresh.setEnabled(False)
         self.lbl_status.setText("running…")
-        print(f"[ui] refresh overrides={overrides}")
+        logging.getLogger("feedsum.qt").info("Refresh overrides=%s", overrides)
 
         self.worker = PipelineWorker(self.cfg, overrides)
         self.worker.status.connect(self.lbl_status.setText)
@@ -611,7 +681,7 @@ class MainWindow(QMainWindow):
     def on_pipeline_done(self, _sid: object):
         self.lbl_status.setText("done")
         self.btn_refresh.setEnabled(True)
-        print("[ui] pipeline done -> reloading config/store/ui options")
+        logging.getLogger("feedsum.qt").info("Pipeline done -> reloading config/store/ui options")
 
         self.cfg = load_config(CONFIG_PATH)
         self.store = get_store(self.cfg)
@@ -624,7 +694,7 @@ class MainWindow(QMainWindow):
     def on_pipeline_failed(self, err: str):
         self.lbl_status.setText("error")
         self.btn_refresh.setEnabled(True)
-        print(f"[ui] pipeline error: {err}")
+        logging.getLogger("feedsum.qt").error("Pipeline error: %s", err)
         QMessageBox.critical(self, "Refresh misslyckades", err)
 
     # ---- Articles tab ----
@@ -788,6 +858,15 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # Ensure basicConfig does not swallow records without handlers
+    # (we still add our Qt handler, but this makes source-mode sane)
+    level = _env_log_level(logging.INFO)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        )
+
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()
