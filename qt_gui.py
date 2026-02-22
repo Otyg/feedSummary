@@ -42,8 +42,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QUrl
 from PySide6.QtCore import QRectF, QSizeF
-from PySide6.QtGui import QFontMetrics, QPainter, QTextDocument
-from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+from PySide6.QtGui import QFontMetrics
 from summarizer.main import run_pipeline
 
 from uicommon import (
@@ -607,9 +606,11 @@ class MainWindow(QMainWindow):
         )
 
     # -------- printing helpers --------
-    
 
-def _print_document_with_header(self, html: str, header_left: str, header_right: str, title: str) -> None:
+
+def _print_document_with_header(
+    self, html: str, header_left: str, header_right: str, title: str
+) -> None:
     printer = QPrinter(QPrinter.HighResolution)
     printer.setDocName(title)
 
