@@ -69,6 +69,7 @@ class QtStream:
     """
     File-like stream that emits text to a Qt signal. Suitable for sys.stdout/sys.stderr redirection.
     """
+
     def __init__(self, emitter: QtLogEmitter):
         self.emitter = emitter
         self._lock = threading.Lock()
@@ -88,6 +89,7 @@ class QtLoggingHandler(logging.Handler):
     """
     Logging handler that forwards formatted log records to a Qt signal.
     """
+
     def __init__(self, emitter: QtLogEmitter):
         super().__init__()
         self.emitter = emitter
@@ -219,7 +221,9 @@ class RefreshDialog(QDialog):
             v_topics.addLayout(btns)
 
             grid = QGridLayout()
-            cols = self._choose_columns(len(self.ui_opts.topic_options), preferred=3, max_cols=5)
+            cols = self._choose_columns(
+                len(self.ui_opts.topic_options), preferred=3, max_cols=5
+            )
 
             for i, t in enumerate(self.ui_opts.topic_options):
                 cb = QCheckBox(t)
@@ -227,7 +231,9 @@ class RefreshDialog(QDialog):
                 r = i // cols
                 c = i % cols
                 grid.addWidget(cb, r, c)
-                cb.stateChanged.connect(lambda _=None, topic=t: self._on_topic_changed(topic))
+                cb.stateChanged.connect(
+                    lambda _=None, topic=t: self._on_topic_changed(topic)
+                )
 
             v_topics.addLayout(grid)
             root.addWidget(gb_topics)
@@ -391,6 +397,7 @@ class ArticleReaderDialog(QDialog):
     """
     Shows full stored article text + metadata.
     """
+
     def __init__(self, parent: QWidget, article: Dict[str, Any]):
         super().__init__(parent)
         self.article = article or {}
@@ -416,7 +423,11 @@ class ArticleReaderDialog(QDialog):
         published = _val("published")
         pub_ts = published_ts(self.article)
         fetched_at = self.article.get("fetched_at")
-        fetched_h = format_ts(int(fetched_at)) if isinstance(fetched_at, int) else _val("fetched_at")
+        fetched_h = (
+            format_ts(int(fetched_at))
+            if isinstance(fetched_at, int)
+            else _val("fetched_at")
+        )
 
         pub_h = published
         if not pub_h and pub_ts:
@@ -459,15 +470,9 @@ class ArticleReaderDialog(QDialog):
         if not full_text:
             full_text = "(Ingen text lagrad för artikeln.)"
 
-        safe = (
-            full_text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        safe = full_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         self.text_view.setHtml(
-            "<pre style='white-space: pre-wrap; font-family: system-ui;'>"
-            f"{safe}"
-            "</pre>"
+            f"<pre style='white-space: pre-wrap; font-family: system-ui;'>{safe}</pre>"
         )
 
     def _open_in_browser(self) -> None:
@@ -547,9 +552,15 @@ class MainWindow(QMainWindow):
         self.reload_articles()
 
         # Bootstrap info into log (uses logging + print)
-        logging.getLogger("feedsum.qt").info("Bootstrap: frozen=%s base_dir=%s", RUNTIME.is_frozen, RUNTIME.base_dir)
-        logging.getLogger("feedsum.qt").info("Bootstrap: app_data_dir=%s", RUNTIME.app_data_dir)
-        logging.getLogger("feedsum.qt").info("Bootstrap: config_path=%s", RUNTIME.config_path)
+        logging.getLogger("feedsum.qt").info(
+            "Bootstrap: frozen=%s base_dir=%s", RUNTIME.is_frozen, RUNTIME.base_dir
+        )
+        logging.getLogger("feedsum.qt").info(
+            "Bootstrap: app_data_dir=%s", RUNTIME.app_data_dir
+        )
+        logging.getLogger("feedsum.qt").info(
+            "Bootstrap: config_path=%s", RUNTIME.config_path
+        )
 
     def _install_logging_bridge(self) -> None:
         """
@@ -681,7 +692,9 @@ class MainWindow(QMainWindow):
     def on_pipeline_done(self, _sid: object):
         self.lbl_status.setText("done")
         self.btn_refresh.setEnabled(True)
-        logging.getLogger("feedsum.qt").info("Pipeline done -> reloading config/store/ui options")
+        logging.getLogger("feedsum.qt").info(
+            "Pipeline done -> reloading config/store/ui options"
+        )
 
         self.cfg = load_config(CONFIG_PATH)
         self.store = get_store(self.cfg)
@@ -745,7 +758,9 @@ class MainWindow(QMainWindow):
         self.btn_clear.clicked.connect(self.clear_article_filters)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Titel", "Källa", "Publicerad", "Preview"])
+        self.table.setHorizontalHeaderLabels(
+            ["Titel", "Källa", "Publicerad", "Preview"]
+        )
         self.table.cellDoubleClicked.connect(self.open_article)
         layout.addWidget(self.table, 1)
 
@@ -774,7 +789,9 @@ class MainWindow(QMainWindow):
             cb = QCheckBox(t)
             self.topic_checks_articles[t] = cb
             vb_t.addWidget(cb)
-            cb.stateChanged.connect(lambda _=None, topic=t: self._apply_topic_to_sources_articles(topic))
+            cb.stateChanged.connect(
+                lambda _=None, topic=t: self._apply_topic_to_sources_articles(topic)
+            )
 
         self.gb_sources = QGroupBox("Källor")
         vb_s = QVBoxLayout(self.gb_sources)

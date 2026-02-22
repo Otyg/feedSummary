@@ -1,3 +1,35 @@
+# LICENSE HEADER MANAGED BY add-license-header
+#
+# BSD 3-Clause License
+#
+# Copyright (c) 2026, Martin Vesterlund
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
 from __future__ import annotations
 
 import logging
@@ -7,7 +39,6 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 APP_NAME = "FeedSummary"
 
@@ -46,6 +77,7 @@ class RuntimePaths:
     config_path: resolved config.yaml to use
     is_frozen: running as PyInstaller/frozen
     """
+
     base_dir: Path
     app_data_dir: Path
     config_path: Path
@@ -198,7 +230,9 @@ def resolve_config_path(app_name: str = APP_NAME) -> RuntimePaths:
         else:
             cfg_path = defaults_cfg
             if cfg_path.exists():
-                _LOGGER.info("User config missing; using bundled defaults: %s", cfg_path)
+                _LOGGER.info(
+                    "User config missing; using bundled defaults: %s", cfg_path
+                )
             else:
                 _LOGGER.error("Bundled defaults missing: %s", cfg_path)
 
@@ -219,10 +253,15 @@ def resolve_config_path(app_name: str = APP_NAME) -> RuntimePaths:
         _LOGGER.info("Source-mode -> using repo config.yaml: %s", cfg_path)
     elif dist.exists():
         cfg_path = dist
-        _LOGGER.info("Source-mode -> config.yaml missing; using config.yaml.dist: %s", cfg_path)
+        _LOGGER.info(
+            "Source-mode -> config.yaml missing; using config.yaml.dist: %s", cfg_path
+        )
     else:
         cfg_path = dist
-        _LOGGER.warning("Source-mode -> no config.yaml or config.yaml.dist found; expected at: %s", cfg_path)
+        _LOGGER.warning(
+            "Source-mode -> no config.yaml or config.yaml.dist found; expected at: %s",
+            cfg_path,
+        )
 
     return RuntimePaths(
         base_dir=repo,
