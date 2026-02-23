@@ -12,7 +12,7 @@ permissions:
 
 env:
   APP_NAME: FeedSummary
-  ENTRY_SCRIPT: webapp.py
+  ENTRY_SCRIPT: qt_gui.py
 
 jobs:
   prepare:
