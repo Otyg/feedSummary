@@ -32,12 +32,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import sys
-import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -52,8 +48,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDialog,
-    QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -66,7 +60,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QScrollArea,
     QSplitter,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -120,7 +113,7 @@ class MainWindow(QMainWindow):
         self.store = get_store(self.cfg)
         self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
 
-        splitter = QSplitter(Qt.Vertical) # type: ignore
+        splitter = QSplitter(Qt.Vertical)  # type: ignore
 
         self.tabs = QTabWidget()
         splitter.addWidget(self.tabs)
@@ -232,7 +225,7 @@ class MainWindow(QMainWindow):
                 self, "Ingen sammanfattning", "Välj en sammanfattning först."
             )
             return
-        sid = current.data(Qt.UserRole) # type: ignore
+        sid = current.data(Qt.UserRole)  # type: ignore
         sdoc = self.store.get_summary_doc(str(sid))
         if not sdoc:
             QMessageBox.warning(self, "Saknas", "Kunde inte läsa sammanfattningen.")
@@ -241,11 +234,11 @@ class MainWindow(QMainWindow):
         md_text = sdoc.get("summary", "") or ""
         html = md.markdown(md_text, extensions=["extra"])
 
-        printer = QPrinter(QPrinter.HighResolution) # type: ignore
+        printer = QPrinter(QPrinter.HighResolution)  # type: ignore
         printer.setDocName("Sammanfattning")
         dlg = QPrintDialog(printer, self)
         dlg.setWindowTitle("Skriv ut sammanfattning")
-        if dlg.exec() != QDialog.Accepted: # type: ignore
+        if dlg.exec() != QDialog.Accepted:  # type: ignore
             return
 
         doc = QTextDocument()
@@ -292,7 +285,7 @@ class MainWindow(QMainWindow):
             created = int(d.get("created") or 0)
             n = len(d.get("sources") or [])
             item = QListWidgetItem(f"{format_ts(created)} · Artiklar: {n}")
-            item.setData(Qt.UserRole, sid) # type: ignore
+            item.setData(Qt.UserRole, sid)  # type: ignore
             self.summary_list.addItem(item)
         self.summary_list.blockSignals(False)
 
@@ -304,7 +297,7 @@ class MainWindow(QMainWindow):
     def on_summary_selected(self, current: QListWidgetItem, _prev: QListWidgetItem):
         if not current:
             return
-        sid = current.data(Qt.UserRole) # type: ignore
+        sid = current.data(Qt.UserRole)  # type: ignore
         doc = self.store.get_summary_doc(str(sid))
         if not doc:
             self.summary_view.setHtml("<p>Kunde inte läsa sammanfattning.</p>")
@@ -315,7 +308,7 @@ class MainWindow(QMainWindow):
 
     def open_refresh(self):
         dlg = RefreshDialog(self, self.ui_opts)
-        if dlg.exec() != QDialog.Accepted: # type: ignore
+        if dlg.exec() != QDialog.Accepted:  # type: ignore
             return
 
         overrides = dlg.overrides()
@@ -397,7 +390,7 @@ class MainWindow(QMainWindow):
     def _clear_layout(self, layout: QHBoxLayout) -> None:
         while layout.count():
             item = layout.takeAt(0)
-            w = item.widget() # type: ignore
+            w = item.widget()  # type: ignore
             if w is not None:
                 w.setParent(None)
                 w.deleteLater()
@@ -475,7 +468,7 @@ class MainWindow(QMainWindow):
 
             it0 = QTableWidgetItem(title)
             it0.setToolTip(str(a.get("url") or ""))
-            it0.setData(Qt.UserRole, a) # type: ignore
+            it0.setData(Qt.UserRole, a)  # type: ignore
 
             self.table.setItem(r, 0, it0)
             self.table.setItem(r, 1, QTableWidgetItem(src))
@@ -488,7 +481,7 @@ class MainWindow(QMainWindow):
         it = self.table.item(row, 0)
         if not it:
             return
-        a = it.data(Qt.UserRole) # type: ignore
+        a = it.data(Qt.UserRole)  # type: ignore
         if not isinstance(a, dict):
             return
         dlg = ArticleReaderDialog(self, a)
@@ -503,7 +496,7 @@ class MainWindow(QMainWindow):
         top.addWidget(QLabel("Promptlab"))
 
         self.pl_loaded_summary = QLabel("Laddad summary: (ingen)")
-        self.pl_loaded_summary.setTextFormat(Qt.PlainText) # type: ignore
+        self.pl_loaded_summary.setTextFormat(Qt.PlainText)  # type: ignore
         top.addSpacing(12)
         top.addWidget(self.pl_loaded_summary, 1)
 
@@ -511,7 +504,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.pl_status)
         layout.addLayout(top)
 
-        main_split = QSplitter(Qt.Horizontal) # type: ignore
+        main_split = QSplitter(Qt.Horizontal)  # type: ignore
 
         left = QWidget()
         left_l = QVBoxLayout(left)
@@ -550,7 +543,7 @@ class MainWindow(QMainWindow):
         self.pl_meta_system.setPlaceholderText("meta_system…")
         self.pl_meta_user.setPlaceholderText("meta_user_template…")
 
-        ed_split = QSplitter(Qt.Vertical) # type: ignore
+        ed_split = QSplitter(Qt.Vertical)  # type: ignore
         ed1 = QWidget()
         ed1_l = QVBoxLayout(ed1)
         ed1_l.addWidget(QLabel("batch_system"))
@@ -605,7 +598,7 @@ class MainWindow(QMainWindow):
             created = int(d.get("created") or 0)
             n = len(d.get("sources") or [])
             it = QListWidgetItem(f"{format_ts(created)} · Artiklar: {n}")
-            it.setData(Qt.UserRole, sid) # type: ignore
+            it.setData(Qt.UserRole, sid)  # type: ignore
             self.pl_summary_list.addItem(it)
         self.pl_summary_list.blockSignals(False)
 
@@ -621,7 +614,7 @@ class MainWindow(QMainWindow):
 
     def _pl_current_summary_id(self) -> Optional[str]:
         return self.pl_selected_summary_id or (
-            str(self.pl_summary_list.currentItem().data(Qt.UserRole)) # type: ignore
+            str(self.pl_summary_list.currentItem().data(Qt.UserRole))  # type: ignore
             if self.pl_summary_list.currentItem()
             else None
         )
@@ -633,7 +626,7 @@ class MainWindow(QMainWindow):
             self.pl_status.setText("idle")
             return
 
-        sid = str(current.data(Qt.UserRole)) # type: ignore
+        sid = str(current.data(Qt.UserRole))  # type: ignore
         self.pl_selected_summary_id = sid
 
         sdoc = self.store.get_summary_doc(sid) or {}
@@ -844,7 +837,7 @@ class MainWindow(QMainWindow):
 
     def _feeds_add(self) -> None:
         dlg = FeedEditDialog(self, None)
-        if dlg.exec() != QDialog.Accepted: # type: ignore
+        if dlg.exec() != QDialog.Accepted:  # type: ignore
             return
         f = dlg.value()
         if not f.get("name") or not f.get("url"):
@@ -872,7 +865,7 @@ class MainWindow(QMainWindow):
             return
         current = self._feeds_items[row]
         dlg = FeedEditDialog(self, current)
-        if dlg.exec() != QDialog.Accepted: # type: ignore
+        if dlg.exec() != QDialog.Accepted:  # type: ignore
             return
         updated = dlg.value()
         if not updated.get("name") or not updated.get("url"):
@@ -903,9 +896,12 @@ class MainWindow(QMainWindow):
 
         name = str(self._feeds_items[row].get("name") or "")
         resp = QMessageBox.question(
-            self, "Ta bort", f"Ta bort '{name}'?", QMessageBox.Yes | QMessageBox.No # type: ignore
+            self,
+            "Ta bort",
+            f"Ta bort '{name}'?",
+            QMessageBox.Yes | QMessageBox.No,  # type: ignore
         )
-        if resp != QMessageBox.Yes: # type: ignore
+        if resp != QMessageBox.Yes:  # type: ignore
             return
 
         del self._feeds_items[row]

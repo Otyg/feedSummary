@@ -1,3 +1,35 @@
+# LICENSE HEADER MANAGED BY add-license-header
+#
+# BSD 3-Clause License
+#
+# Copyright (c) 2026, Martin Vesterlund
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -32,12 +64,12 @@ class RefreshDialog(QDialog):
 
         outer = QVBoxLayout(self)
 
-        self.scroll = QScrollArea() # type: ignore
-        self.scroll.setWidgetResizable(True) # type: ignore
-        outer.addWidget(self.scroll, 1) # type: ignore
+        self.scroll = QScrollArea()  # type: ignore
+        self.scroll.setWidgetResizable(True)  # type: ignore
+        outer.addWidget(self.scroll, 1)  # type: ignore
 
         content = QWidget()
-        self.scroll.setWidget(content) # type: ignore
+        self.scroll.setWidget(content)  # type: ignore
         root = QVBoxLayout(content)
 
         form_box = QGroupBox("Grundinställningar")
@@ -174,7 +206,7 @@ class RefreshDialog(QDialog):
         return max_cols
 
     def _cap_to_screen(self, *, max_w: int, max_h: int) -> None:
-        screen = self.screen() or (self.parent().screen() if self.parent() else None) # type: ignore
+        screen = self.screen() or (self.parent().screen() if self.parent() else None)  # type: ignore
         if not screen:
             self.setMaximumSize(max_w, max_h)
             return
