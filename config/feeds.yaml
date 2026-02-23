@@ -15,11 +15,15 @@
   - Cybersecurity
   category_include:
   - Security
+- name: Arxiv CS.cr
+  url: https://export.arxiv.org/rss/cs.CR
+  topics:
+  - Forskning
+  - Science
 - name: BleepingComputer
   url: https://www.bleepingcomputer.com/feed/
   topics:
   - Cybersecurity
-  - Incident
   - Sårbarheter
 - name: CERT-SE
   url: https://www.cert.se/feed.rss
@@ -32,7 +36,6 @@
   topics:
   - Cybersecurity
   - Threat Intel
-  - Malware
 - name: ComputerSweden
   url: https://computersweden.se/feed/
   topics:
@@ -41,7 +44,6 @@
   url: https://cvefeed.io/rssfeed/severity/high.xml
   topics:
   - Sårbarheter
-  - CVE
 - name: Cybersecuritynews
   url: https://Cybersecuritynews.com/news/feed/
   topics:
@@ -50,20 +52,23 @@
 - name: DataBreaches.net
   url: https://www.databreaches.net/feed/
   topics:
-  - Privacy
+  - Dataskydd
   - Dataintrång
-  - Incident
 - name: Der Spiegel
   url: https://www.spiegel.de/international/index.rss
   topics:
   - Nyheter
   - Europa
   - Utrikes
+- name: Diva
+  url: https://diva-portal.org/smash/export.jsf?aq=%5B%5B%7B%22categoryId%22%3A%2245852%22%7D%5D%2C%5B%7B%22categoryId%22%3A%2245907%22%7D%5D%5D&aq2=%5B%5B%7B%22publicationStatus%22%3A%22published%22%7D%5D%5D&aqe=%5B%5D&sortOrder2=title_sort_asc&sortOrder=dateIssued_sort_asc&format=rss&onlyFullText=true&addFilename=true&noOfRows=500&dswid=-9314
+  topics:
+  - Forskning
+  - Science
 - name: Enforcement Tracker
   url: https://www.enforcementtracker.com/feed/
   topics:
-  - Privacy
-  - Regulatoriskt
+  - Dataskydd
   - GDPR
 - name: Greynoise
   url: https://www.greynoise.io/blog/rss.xml
@@ -73,31 +78,27 @@
 - name: Hunton Privacy Blog
   url: https://www.huntonprivacyblog.com/feed/
   topics:
-  - Privacy
-  - Regulatoriskt
+  - Dataskydd
   - GDPR
 - name: IAPP (Privacy Advisor)
   url: https://iapp.org/rss/news/
   topics:
-  - Privacy
-  - Regulatoriskt
+  - Dataskydd
   - GDPR
 - name: IMY Bloggen
   url: https://www.imy.se/blogg/rss
   topics:
-  - Privacy
+  - Dataskydd
   - Sverige
 - name: IMY Nyheter
   url: https://www.imy.se/nyheter/rss
   topics:
-  - Privacy
-  - Regulatoriskt
+  - Dataskydd
   - Sverige
 - name: IMY Tillsyner och beslut
   url: https://www.imy.se/tillsyner/rss
   topics:
-  - Privacy
-  - Regulatoriskt
+  - Dataskydd
   - Sverige
 - name: Krebs on Security
   url: https://krebsonsecurity.com/feed/
@@ -110,14 +111,11 @@
   topics:
   - Cybersecurity
   - Threat Intel
-  - Incident
-  - Hotaktörer
 - name: Microsoft Security Blog
   url: https://www.microsoft.com/en-us/security/blog/feed/
   topics:
   - Cybersecurity
   - Sårbarheter
-  - Plattformar
 - name: NyTeknik
   url: https://www.nyteknik.se/?lab_viewport=rss
   topics:
@@ -127,7 +125,6 @@
   topics:
   - Cybersecurity
   - Sårbarheter
-  - Incident
   - Threat Intel
 - name: Recorded Future
   url: https://therecord.media/feed
@@ -166,7 +163,7 @@
   topics:
   - Dataintrång
   - Cybersecurity
-  - Privacy
+  - Dataskydd
 - name: TV4
   url: https://www.tv4.se/rss
   category_include:
@@ -180,5 +177,3 @@
   topics:
   - Cybersecurity
   - Threat Intel
-  - Incident
-  - Malware
