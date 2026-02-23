@@ -36,10 +36,12 @@ from typing import Any, Dict
 from PySide6.QtCore import QThread, Signal
 
 
-from qt_gui import CONFIG_PATH
 from summarizer.main import run_pipeline
 from summarizer.prompt_replay import PromptSet, rerun_summary_from_existing
+from uicommon.bootstrap_ui import resolve_config_path
 
+RUNTIME = resolve_config_path()
+CONFIG_PATH = str(RUNTIME.config_path)
 
 class PipelineWorker(QThread):
     status = Signal(str)
