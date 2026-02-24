@@ -28,7 +28,6 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
 
 from __future__ import annotations
 
@@ -74,7 +73,7 @@ from qt_ui.helpers import _safe_list_str, resolve_feeds_path
 from qt_ui.log import _env_log_level, QtLogEmitter, QtStream, QtLoggingHandler
 from qt_ui.refresh import RefreshDialog
 from qt_ui.replay import ReplayResultWindow
-from qt_ui.workers import PipelineWorker, PromptReplayWorker
+from qt_ui.workers import PipelineWorker, PromptReplayWorker, ResumeWorker
 from qt_ui.richtexteditor import RichTextEditorDialog
 
 from uicommon import (
@@ -91,11 +90,12 @@ from uicommon.bootstrap_ui import resolve_config_path
 from summarizer.prompt_replay import (
     PromptSet,
     get_promptset_for_summary,
-    # returns ephemeral dict (NOT persisted)
     list_prompt_packages,
     load_prompt_package,
     save_prompt_package,
 )
+
+from llmClient import create_llm_client  # NEW: for resume
 
 RUNTIME = resolve_config_path()
 CONFIG_PATH = str(RUNTIME.config_path)
@@ -113,6 +113,12 @@ class MainWindow(QMainWindow):
         self.cfg = load_config(CONFIG_PATH)
         self.store = get_store(self.cfg)
         self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
+
+        self._last_replay_window: Optional[ReplayResultWindow] = None
+        self.pl_selected_summary_id: Optional[str] = None
+
+        # NEW: remember job_id of last refresh so we can offer resume
+        self._last_job_id: Optional[int] = None
 
         splitter = QSplitter(Qt.Vertical)  # type: ignore
 
@@ -158,10 +164,6 @@ class MainWindow(QMainWindow):
         self._build_promptlab_tab()
         self._build_feeds_tab()
 
-        # State
-        self._last_replay_window: Optional[ReplayResultWindow] = None
-        self.pl_selected_summary_id: Optional[str] = None
-
         # Initial load
         self.reload_summaries()
         self.reload_articles()
@@ -172,12 +174,10 @@ class MainWindow(QMainWindow):
 
     # -------- shared reload of config-dependent UI --------
     def _reload_all_config_dependent_ui(self) -> None:
-        # Re-read config + ui options
         self.cfg = load_config(CONFIG_PATH)
         self.store = get_store(self.cfg)
         self.ui_opts = get_ui_options(self.cfg, config_path=CONFIG_PATH)
 
-        # Refresh UI parts that depend on topics/sources
         self.reload_summaries()
         self._rebuild_article_filters_from_ui_opts()
         self.reload_articles()
@@ -218,6 +218,57 @@ class MainWindow(QMainWindow):
             pass
         super().closeEvent(event)
 
+    # -------- timeout/resume helpers --------
+    def _looks_like_timeout(self, err: str) -> bool:
+        s = (err or "").lower()
+        needles = [
+            "timeout",
+            "timed out",
+            "readtimeout",
+            "connecttimeout",
+            "deadline exceeded",
+            "gateway timeout",
+            "504",
+        ]
+        return any(n in s for n in needles)
+
+    def _maybe_create_job(self) -> Optional[int]:
+        fn = getattr(self.store, "create_job", None)
+        if not callable(fn):
+            return None
+        try:
+            jid = fn()
+            return int(jid)
+        except Exception:
+            return None
+
+    def _start_resume(self, job_id: int) -> None:
+        self.lbl_status.setText("resuming…")
+        self.btn_refresh.setEnabled(False)
+
+        # Create fresh store+llm for resume (avoid stale handles)
+        cfg = self.cfg
+        store = get_store(cfg)
+        llm = create_llm_client(cfg)
+
+        self.resume_worker = ResumeWorker(cfg=cfg, store=store, llm=llm, job_id=int(job_id))
+        self.resume_worker.status.connect(self.lbl_status.setText)
+        self.resume_worker.done.connect(self._on_resume_done)
+        self.resume_worker.failed.connect(self._on_resume_failed)
+        self.resume_worker.start()
+
+    def _on_resume_done(self, summary_id: object) -> None:
+        self.lbl_status.setText("resume done")
+        self.btn_refresh.setEnabled(True)
+        self._reload_all_config_dependent_ui()
+        self._feeds_reload()
+        QMessageBox.information(self, "Klart", f"Resume klar. Summary id: {summary_id}")
+
+    def _on_resume_failed(self, err: str) -> None:
+        self.lbl_status.setText("resume error")
+        self.btn_refresh.setEnabled(True)
+        QMessageBox.critical(self, "Resume misslyckades", err)
+
     # -------- printing --------
     def print_current_summary(self) -> None:
         current = self.summary_list.currentItem()
@@ -233,7 +284,6 @@ class MainWindow(QMainWindow):
 
         md_text = sdoc.get("summary", "") or ""
         html = md.markdown(md_text, extensions=["extra"])
-
         title = f"Sammanfattning – {sid}"
         dlg = RichTextEditorDialog(self, title=title, initial_html=f"<html><body>{html}</body></html>")
         dlg.exec()
@@ -309,22 +359,57 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("running…")
         logging.getLogger("feedsum.qt").info("Refresh overrides=%s", overrides)
 
-        self.worker = PipelineWorker(self.cfg, overrides)
+        # NEW: create job id for checkpoint/resume support (if store supports it)
+        job_id = self._maybe_create_job()
+        self._last_job_id = job_id
+
+        self.worker = PipelineWorker(self.cfg, overrides, job_id)
         self.worker.status.connect(self.lbl_status.setText)
         self.worker.done.connect(self.on_pipeline_done)
         self.worker.failed.connect(self.on_pipeline_failed)
         self.worker.start()
 
-    def on_pipeline_done(self, _sid: object):
+    def on_pipeline_done(self, payload: object):
+        summary_id = None
+        job_id = None
+        if isinstance(payload, tuple) and len(payload) == 2:
+            summary_id, job_id = payload
+        else:
+            summary_id = payload
+
         self.lbl_status.setText("done")
         self.btn_refresh.setEnabled(True)
         self._reload_all_config_dependent_ui()
         self._feeds_reload()
 
+        # Keep last job id for potential later resume (or debugging)
+        if isinstance(job_id, int) or (isinstance(job_id, str) and str(job_id).isdigit()):
+            try:
+                self._last_job_id = int(job_id)
+            except Exception:
+                pass
+
+        if summary_id is None:
+            QMessageBox.information(self, "Klart", "Refresh klar: inga artiklar matchade urvalet.")
+        # else: UI list is reloaded anyway
+
     def on_pipeline_failed(self, err: str):
         self.lbl_status.setText("error")
         self.btn_refresh.setEnabled(True)
         logging.getLogger("feedsum.qt").error("Pipeline error: %s", err)
+
+        job_id = self._last_job_id
+        if job_id is not None and self._looks_like_timeout(err):
+            resp = QMessageBox.question(
+                self,
+                "Timeout",
+                "Refresh verkar ha fått timeout.\n\nVill du återuppta från checkpoint?",
+                QMessageBox.Yes | QMessageBox.No,  # type: ignore
+            )
+            if resp == QMessageBox.Yes:  # type: ignore
+                self._start_resume(job_id)
+                return
+
         QMessageBox.critical(self, "Refresh misslyckades", err)
 
     # ---- Articles tab ----
@@ -371,9 +456,7 @@ class MainWindow(QMainWindow):
         self.btn_clear.clicked.connect(self.clear_article_filters)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(
-            ["Titel", "Källa", "Publicerad", "Preview"]
-        )
+        self.table.setHorizontalHeaderLabels(["Titel", "Källa", "Publicerad", "Preview"])
         self.table.cellDoubleClicked.connect(self.open_article)
         layout.addWidget(self.table, 1)
 
@@ -400,9 +483,7 @@ class MainWindow(QMainWindow):
             cb = QCheckBox(t)
             self.topic_checks_articles[t] = cb
             vb_t.addWidget(cb)
-            cb.stateChanged.connect(
-                lambda _=None, topic=t: self._apply_topic_to_sources_articles(topic)
-            )
+            cb.stateChanged.connect(lambda _=None, topic=t: self._apply_topic_to_sources_articles(topic))
 
         gb_sources = QGroupBox("Källor")
         vb_s = QVBoxLayout(gb_sources)
@@ -537,26 +618,11 @@ class MainWindow(QMainWindow):
         self.pl_meta_user.setPlaceholderText("meta_user_template…")
 
         ed_split = QSplitter(Qt.Vertical)  # type: ignore
-        ed1 = QWidget()
-        ed1_l = QVBoxLayout(ed1)
-        ed1_l.addWidget(QLabel("batch_system"))
-        ed1_l.addWidget(self.pl_batch_system)
-        ed2 = QWidget()
-        ed2_l = QVBoxLayout(ed2)
-        ed2_l.addWidget(QLabel("batch_user_template"))
-        ed2_l.addWidget(self.pl_batch_user)
-        ed3 = QWidget()
-        ed3_l = QVBoxLayout(ed3)
-        ed3_l.addWidget(QLabel("meta_system"))
-        ed3_l.addWidget(self.pl_meta_system)
-        ed4 = QWidget()
-        ed4_l = QVBoxLayout(ed4)
-        ed4_l.addWidget(QLabel("meta_user_template"))
-        ed4_l.addWidget(self.pl_meta_user)
-        ed_split.addWidget(ed1)
-        ed_split.addWidget(ed2)
-        ed_split.addWidget(ed3)
-        ed_split.addWidget(ed4)
+        ed1 = QWidget(); ed1_l = QVBoxLayout(ed1); ed1_l.addWidget(QLabel("batch_system")); ed1_l.addWidget(self.pl_batch_system)
+        ed2 = QWidget(); ed2_l = QVBoxLayout(ed2); ed2_l.addWidget(QLabel("batch_user_template")); ed2_l.addWidget(self.pl_batch_user)
+        ed3 = QWidget(); ed3_l = QVBoxLayout(ed3); ed3_l.addWidget(QLabel("meta_system")); ed3_l.addWidget(self.pl_meta_system)
+        ed4 = QWidget(); ed4_l = QVBoxLayout(ed4); ed4_l.addWidget(QLabel("meta_user_template")); ed4_l.addWidget(self.pl_meta_user)
+        ed_split.addWidget(ed1); ed_split.addWidget(ed2); ed_split.addWidget(ed3); ed_split.addWidget(ed4)
         ed_split.setSizes([160, 220, 160, 220])
         right_l.addWidget(ed_split, 2)
 
@@ -572,9 +638,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(w, "Promptlab")
 
         self.pl_summary_list.currentItemChanged.connect(self._pl_on_summary_selected)
-        self.btn_pl_load_from_summary.clicked.connect(
-            self._pl_load_prompts_from_selected_summary
-        )
+        self.btn_pl_load_from_summary.clicked.connect(self._pl_load_prompts_from_selected_summary)
         self.btn_pl_run.clicked.connect(self._pl_run_replay)
         self.btn_pl_pkg_reload.clicked.connect(self._pl_reload_prompt_packages)
         self.btn_pl_pkg_load.clicked.connect(self._pl_load_selected_package)
@@ -626,9 +690,7 @@ class MainWindow(QMainWindow):
         created = int(sdoc.get("created") or 0)
         created_s = format_ts(created) if created else "(okänd tid)"
         n = len(sdoc.get("sources") or [])
-        self.pl_loaded_summary.setText(
-            f"Laddad summary: {created_s} · Artiklar: {n} · ID: {sid}"
-        )
+        self.pl_loaded_summary.setText(f"Laddad summary: {created_s} · Artiklar: {n} · ID: {sid}")
         self.pl_status.setText("idle")
 
     def _pl_load_prompts_from_selected_summary(self) -> None:
@@ -676,9 +738,7 @@ class MainWindow(QMainWindow):
             return
         ps = self._pl_promptset_from_ui()
         try:
-            path = save_prompt_package(
-                self.cfg, config_path=CONFIG_PATH, package_name=name, promptset=ps
-            )
+            path = save_prompt_package(self.cfg, config_path=CONFIG_PATH, package_name=name, promptset=ps)
         except Exception as e:
             QMessageBox.critical(self, "Fel", str(e))
             return
@@ -697,9 +757,7 @@ class MainWindow(QMainWindow):
         self.pl_status.setText("running…")
         self.btn_pl_run.setEnabled(False)
 
-        self.replay_worker = PromptReplayWorker(
-            cfg=self.cfg, store=self.store, summary_id=sid, prompts=prompts
-        )
+        self.replay_worker = PromptReplayWorker(cfg=self.cfg, store=self.store, summary_id=sid, prompts=prompts)
         self.replay_worker.status.connect(self.pl_status.setText)
         self.replay_worker.done.connect(self._pl_replay_done)
         self.replay_worker.failed.connect(self._pl_replay_failed)
@@ -759,12 +817,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(btns)
 
         self.feeds_table = QTableWidget(0, 4)
-        self.feeds_table.setHorizontalHeaderLabels(
-            ["Name", "URL", "Topics", "Category include"]
-        )
-        self.feeds_table.cellDoubleClicked.connect(
-            lambda r, c: self._feeds_edit_selected()
-        )
+        self.feeds_table.setHorizontalHeaderLabels(["Name", "URL", "Topics", "Category include"])
+        self.feeds_table.cellDoubleClicked.connect(lambda r, c: self._feeds_edit_selected())
         layout.addWidget(self.feeds_table, 1)
 
         self.btn_feeds_reload.clicked.connect(self._feeds_reload)
@@ -791,7 +845,6 @@ class MainWindow(QMainWindow):
 
     def _read_feeds_yaml(self, path: Path) -> List[Dict[str, Any]]:
         if not path.exists():
-            # allow create on save
             return []
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or []
@@ -841,9 +894,7 @@ class MainWindow(QMainWindow):
             str(x.get("name") or "").strip().lower() == str(f["name"]).strip().lower()
             for x in self._feeds_items
         ):
-            QMessageBox.warning(
-                self, "Dublett", "Det finns redan en feed med samma name."
-            )
+            QMessageBox.warning(self, "Dublett", "Det finns redan en feed med samma name.")
             return
 
         self._feeds_items.append(f)
@@ -865,15 +916,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Saknas", "Name och URL måste anges.")
             return
 
-        # Validate unique name (allow same row)
         new_name = str(updated["name"]).strip().lower()
         for i, x in enumerate(self._feeds_items):
             if i == row:
                 continue
             if str(x.get("name") or "").strip().lower() == new_name:
-                QMessageBox.warning(
-                    self, "Dublett", "Det finns redan en feed med samma name."
-                )
+                QMessageBox.warning(self, "Dublett", "Det finns redan en feed med samma name.")
                 return
 
         self._feeds_items[row] = updated
@@ -906,12 +954,9 @@ class MainWindow(QMainWindow):
             feeds_path = resolve_feeds_path(self.cfg, config_path=CONFIG_PATH)
             feeds_path.parent.mkdir(parents=True, exist_ok=True)
             with open(feeds_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(
-                    self._feeds_items, f, sort_keys=False, allow_unicode=True
-                )
+                yaml.safe_dump(self._feeds_items, f, sort_keys=False, allow_unicode=True)
             self.feeds_status.setText("sparat")
 
-            # reload config-dependent UI so new feeds/topics show up
             self._reload_all_config_dependent_ui()
             self._feeds_reload()
         except Exception as e:

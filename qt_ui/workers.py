@@ -31,27 +31,32 @@
 #
 
 from __future__ import annotations
-import asyncio
-from typing import Any, Dict
-from PySide6.QtCore import QThread, Signal
 
+import asyncio
+from typing import Any, Dict, Optional, Tuple
+
+from PySide6.QtCore import QThread, Signal
 
 from summarizer.main import run_pipeline
 from summarizer.prompt_replay import PromptSet, rerun_summary_from_existing
+from summarizer.summarizer import run_resume_and_persist_summary
+
 from uicommon.bootstrap_ui import resolve_config_path
 
 RUNTIME = resolve_config_path()
 CONFIG_PATH = str(RUNTIME.config_path)
 
+
 class PipelineWorker(QThread):
     status = Signal(str)
-    done = Signal(object)
+    done = Signal(object)   # (summary_id, job_id)
     failed = Signal(str)
 
-    def __init__(self, cfg: Dict[str, Any], overrides: Dict[str, Any]):
+    def __init__(self, cfg: Dict[str, Any], overrides: Dict[str, Any], job_id: Optional[int]):
         super().__init__()
         self.cfg = cfg
         self.overrides = overrides
+        self.job_id = job_id
 
     def run(self) -> None:
         try:
@@ -59,9 +64,40 @@ class PipelineWorker(QThread):
             summary_id = asyncio.run(
                 run_pipeline(
                     CONFIG_PATH,
-                    job_id=None,
+                    job_id=self.job_id,
                     overrides=self.overrides,
                     config_dict=self.cfg,
+                )
+            )
+            self.done.emit((summary_id, self.job_id))
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+class ResumeWorker(QThread):
+    """
+    Resume-from-checkpoint and persist a summary_doc.
+    """
+    status = Signal(str)
+    done = Signal(object)   # summary_id (str)
+    failed = Signal(str)
+
+    def __init__(self, *, cfg: Dict[str, Any], store, llm, job_id: int):
+        super().__init__()
+        self.cfg = cfg
+        self.store = store
+        self.llm = llm
+        self.job_id = int(job_id)
+
+    def run(self) -> None:
+        try:
+            self.status.emit(f"Återupptar från checkpoint (job {self.job_id})…")
+            summary_id = asyncio.run(
+                run_resume_and_persist_summary(
+                    config=self.cfg,
+                    store=self.store,
+                    llm=self.llm,
+                    job_id=self.job_id,
                 )
             )
             self.done.emit(summary_id)
@@ -78,9 +114,7 @@ class PromptReplayWorker(QThread):
     done = Signal(object)  # result dict
     failed = Signal(str)
 
-    def __init__(
-        self, *, cfg: Dict[str, Any], store, summary_id: str, prompts: PromptSet
-    ):
+    def __init__(self, *, cfg: Dict[str, Any], store, summary_id: str, prompts: PromptSet):
         super().__init__()
         self.cfg = cfg
         self.store = store
