@@ -51,7 +51,10 @@ from summarizer.helpers import (
     load_feeds_into_config,
 )
 from summarizer.ingest import gather_articles_to_store
-from summarizer.summarizer import summarize_batches_then_meta_with_stats
+from summarizer.summarizer import (
+    summarize_batches_then_meta_with_stats,
+    super_meta_from_topic_sections_with_stats,
+)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -564,10 +567,27 @@ async def run_pipeline(
 
     stitched_summary = "\n".join(stitched_parts).strip() + "\n"
 
-    # Append sources appendix to stitched summary (uses overall sources_snapshots)
+    # --- NEW: Super-meta overview from sections (optional, prompt-driven) ---
+    overview_text = ""
+    overview_stats: Dict[str, Any] = {"super_meta_budget_tokens": 0, "super_meta_enabled": 0}
+    try:
+        overview_text, overview_stats = await super_meta_from_topic_sections_with_stats(
+            config=config, sections=sections, llm=llm, store=store, job_id=job_id
+        )
+    except KeyError:
+        # prompt package doesn't define super_meta templates => skip silently
+        overview_text = ""
+        overview_stats = {"super_meta_budget_tokens": 0, "super_meta_enabled": 0}
+
+    # Build final summary body: overview (if any) + stitched per-topic summary
+    final_summary = stitched_summary
+    if overview_text.strip():
+        final_summary = overview_text.strip() + "\n\n" + stitched_summary.strip() + "\n"
+
+    # Append sources appendix (overall)
     appendix = _build_sources_appendix_markdown(all_snaps)
     if appendix:
-        stitched_summary = stitched_summary.rstrip() + "\n\n" + appendix
+        final_summary = final_summary.rstrip() + "\n\n" + appendix
 
     summary_doc = {
         "id": _summary_doc_id(created_ts, job_id),
@@ -587,8 +607,13 @@ async def run_pipeline(
         "sources_snapshots": all_snaps,
         "from": overall_from,
         "to": overall_to,
-        "summary": stitched_summary,
+        "overview": overview_text,  # NEW
+        "summary": final_summary,
         "sections": sections,
+        "meta": {
+            "super_meta_enabled": int(overview_stats.get("super_meta_enabled") or 0),
+            "super_meta_budget_tokens": int(overview_stats.get("super_meta_budget_tokens") or 0),
+        },
         "selection": {
             "lookback": str((config.get("ingest") or {}).get("lookback") or ""),
             "sources": _selected_source_names(config),

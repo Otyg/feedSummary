@@ -186,6 +186,171 @@ def _load_ordered_articles_from_checkpoint(
 
 
 # ----------------------------
+# NEW: Super-meta (overview) from topic sections
+# ----------------------------
+def _budgeted_super_meta_user(
+    *,
+    prompts: Dict[str, Any],
+    topic_summaries_text: str,
+    lookback: str,
+    budget_tokens: int,
+    chars_per_token: float,
+) -> str:
+    """
+    Build a super-meta user prompt using prompts['super_meta_user_template'].
+
+    The template must accept:
+      - {lookback}
+      - {topic_summaries}
+
+    We budget by trimming only the topic_summaries_text (tail) to fit in budget.
+    """
+    tmpl = str(prompts.get("super_meta_user_template") or "").strip()
+    if not tmpl:
+        raise KeyError("super_meta_user_template")
+
+    # Try progressively clipping topic_summaries_text until it fits budget
+    # (estimate tokens from user text length; keep it simple + robust).
+    topic_text = topic_summaries_text or ""
+    for _ in range(6):
+        user = tmpl.format(lookback=lookback, topic_summaries=topic_text)
+        est = _est_user_tokens(user, chars_per_token)
+        if est <= budget_tokens:
+            return user
+        # remove ~15% and retry
+        cut_chars = max(500, int(len(topic_text) * 0.85))
+        topic_text = topic_text[:cut_chars]
+
+    # final fallback: hard truncate
+    user = tmpl.format(lookback=lookback, topic_summaries=topic_text[:2000])
+    return user
+
+
+async def super_meta_from_topic_sections_with_stats(
+    *,
+    config: Dict[str, Any],
+    sections: List[Dict[str, Any]],
+    llm: LLMClient,
+    store: NewsStore,
+    job_id: Optional[int] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Create a final overview summary from topic summaries (sections).
+
+    Requires prompt keys in selected package:
+      - super_meta_system
+      - super_meta_user_template (uses {lookback} and {topic_summaries})
+    """
+    prompts = load_prompts(config)
+
+    super_system = str(prompts.get("super_meta_system") or "").strip()
+    super_user_tmpl = str(prompts.get("super_meta_user_template") or "").strip()
+    if not super_system or not super_user_tmpl:
+        # Not configured -> opt-out (caller decides)
+        return "", {"super_meta_budget_tokens": 0, "super_meta_enabled": 0}
+
+    batching = config.get("batching", {}) or {}
+    llm_cfg = config.get("llm") or {}
+    max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
+    max_out = int(llm_cfg.get("max_output_tokens", 700))
+    margin = int(llm_cfg.get("prompt_safety_margin", 1024))
+    chars_per_token = float(llm_cfg.get("token_chars_per_token", 2.4))
+
+    # Optional override in config:
+    super_budget_cfg = int(batching.get("super_meta_budget_tokens") or 0)
+    budget_tokens = (
+        super_budget_cfg if super_budget_cfg > 0 else max(512, max_ctx - max_out - margin)
+    )
+
+    lookback = str((config.get("ingest") or {}).get("lookback") or "").strip()
+
+    # Build input text from sections (topic + summary)
+    parts: List[str] = []
+    for s in sections:
+        topic = str(s.get("topic") or "").strip() or "Okategoriserat"
+        txt = str(s.get("summary") or "").strip()
+        if not txt:
+            continue
+        parts.append(f"Ämne: {topic}\n{txt}")
+    topic_summaries_text = "\n\n".join(parts).strip()
+
+    if not topic_summaries_text:
+        return "", {"super_meta_budget_tokens": 0, "super_meta_enabled": 0}
+
+    set_job("Skapar ämnesöversikt (super-meta)...", job_id, store)
+
+    # Retry on context overflows similarly to meta
+    meta_attempts = 6
+    last_err: Optional[Exception] = None
+    budget_tokens_final = 0
+
+    for attempt in range(1, meta_attempts + 1):
+        try:
+            user = _budgeted_super_meta_user(
+                prompts=prompts,
+                topic_summaries_text=topic_summaries_text,
+                lookback=lookback,
+                budget_tokens=budget_tokens,
+                chars_per_token=chars_per_token,
+            )
+
+            msgs = [
+                {"role": "system", "content": super_system},
+                {"role": "user", "content": user},
+            ]
+
+            overview = await llm.chat(msgs, temperature=0.2)
+            budget_tokens_final = budget_tokens
+            return (overview or "").strip(), {
+                "super_meta_budget_tokens": int(budget_tokens_final),
+                "super_meta_enabled": 1,
+            }
+
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            overflow = _extract_overflow_tokens(e)
+
+            if (
+                not (
+                    ("prompt too long" in msg)
+                    or ("max context" in msg)
+                    or ("context length" in msg)
+                )
+                or overflow is None
+            ):
+                raise
+
+            overflow_i = int(overflow)
+            # estimate prompt tokens
+            user_try = super_user_tmpl.format(
+                lookback=lookback, topic_summaries=topic_summaries_text
+            )
+            est_prompt = _est_user_tokens(user_try, chars_per_token)
+
+            ctx_limit_est = max(2048, est_prompt - overflow_i)
+            new_budget = max(512, ctx_limit_est - 1200)
+
+            logger.warning(
+                "Super-meta too long: server_overflow=%s est_prompt=%s => ctx_limit_est~%s. "
+                "Budget %s -> %s (attempt %s/%s)",
+                overflow_i,
+                est_prompt,
+                ctx_limit_est,
+                budget_tokens,
+                new_budget,
+                attempt,
+                meta_attempts,
+            )
+
+            if new_budget >= budget_tokens:
+                new_budget = max(512, int(budget_tokens * 0.6))
+            budget_tokens = new_budget
+
+    raise RuntimeError(f"Super-meta misslyckades efter {meta_attempts} försök: {last_err}")
+
+
+# ----------------------------
 # Main summarization: batches -> meta (+ checkpoints)
 # ----------------------------
 async def summarize_batches_then_meta_with_stats(
@@ -473,7 +638,6 @@ async def summarize_batches_then_meta_with_stats(
         ]
 
         try:
-            # llm.chat direkt här (för meta: estimator != server tokenizer)
             meta = await llm.chat(meta_messages, temperature=0.2)
             meta_budget_tokens_final = budget_tokens
             break
@@ -514,7 +678,6 @@ async def summarize_batches_then_meta_with_stats(
                 meta_attempts,
             )
 
-            # om vi inte sjunker, skala ner mer för att undvika loop
             if new_budget >= budget_tokens:
                 new_budget = max(512, int(budget_tokens * 0.6))
 
@@ -641,12 +804,10 @@ async def run_resume_and_persist_summary(
     Kör resume från checkpoint och sparar resultatet som summary_doc.
     Returnerar summary_doc_id (str).
     """
-    # load corpus (stable order)
     _article_ids, ordered = _load_ordered_articles_from_checkpoint(
         config, store, job_id
     )
 
-    # run resume summarization
     meta_text, stats = await summarize_batches_then_meta_with_stats(
         config=config,
         articles=ordered,
@@ -687,13 +848,11 @@ async def run_resume_and_persist_summary(
 
     summary_doc_id = str(_persist_summary_doc(store, summary_doc))
 
-    # optional: mark summarized (legacy article-flag, but harmless)
     try:
         store.mark_articles_summarized(sources)
     except Exception as e:
         logger.warning("Resume: kunde inte markera artiklar som summerade: %s", e)
 
-    # update job
     try:
         store.update_job(
             job_id,
@@ -703,7 +862,6 @@ async def run_resume_and_persist_summary(
             summary_id=summary_doc_id,
         )
     except Exception as e:
-        logger.warn(f"{e}")
-        pass
+        logger.warning("%s", e)
 
     return summary_doc_id
