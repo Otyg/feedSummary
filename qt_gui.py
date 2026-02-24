@@ -39,8 +39,6 @@ from typing import Any, Dict, List, Optional
 import markdown as md
 import yaml
 from PySide6.QtCore import Qt, QDate
-from PySide6.QtGui import QTextDocument
-from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -251,7 +249,9 @@ class MainWindow(QMainWindow):
         store = get_store(cfg)
         llm = create_llm_client(cfg)
 
-        self.resume_worker = ResumeWorker(cfg=cfg, store=store, llm=llm, job_id=int(job_id))
+        self.resume_worker = ResumeWorker(
+            cfg=cfg, store=store, llm=llm, job_id=int(job_id)
+        )
         self.resume_worker.status.connect(self.lbl_status.setText)
         self.resume_worker.done.connect(self._on_resume_done)
         self.resume_worker.failed.connect(self._on_resume_failed)
@@ -273,7 +273,9 @@ class MainWindow(QMainWindow):
     def print_current_summary(self) -> None:
         current = self.summary_list.currentItem()
         if not current:
-            QMessageBox.information(self, "Ingen sammanfattning", "Välj en sammanfattning först.")
+            QMessageBox.information(
+                self, "Ingen sammanfattning", "Välj en sammanfattning först."
+            )
             return
 
         sid = str(current.data(Qt.UserRole))
@@ -285,7 +287,9 @@ class MainWindow(QMainWindow):
         md_text = sdoc.get("summary", "") or ""
         html = md.markdown(md_text, extensions=["extra"])
         title = f"Sammanfattning – {sid}"
-        dlg = RichTextEditorDialog(self, title=title, initial_html=f"<html><body>{html}</body></html>")
+        dlg = RichTextEditorDialog(
+            self, title=title, initial_html=f"<html><body>{html}</body></html>"
+        )
         dlg.exec()
 
     # ---- Summaries tab ----
@@ -383,14 +387,18 @@ class MainWindow(QMainWindow):
         self._feeds_reload()
 
         # Keep last job id for potential later resume (or debugging)
-        if isinstance(job_id, int) or (isinstance(job_id, str) and str(job_id).isdigit()):
+        if isinstance(job_id, int) or (
+            isinstance(job_id, str) and str(job_id).isdigit()
+        ):
             try:
                 self._last_job_id = int(job_id)
             except Exception:
                 pass
 
         if summary_id is None:
-            QMessageBox.information(self, "Klart", "Refresh klar: inga artiklar matchade urvalet.")
+            QMessageBox.information(
+                self, "Klart", "Refresh klar: inga artiklar matchade urvalet."
+            )
         # else: UI list is reloaded anyway
 
     def on_pipeline_failed(self, err: str):
@@ -456,7 +464,9 @@ class MainWindow(QMainWindow):
         self.btn_clear.clicked.connect(self.clear_article_filters)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Titel", "Källa", "Publicerad", "Preview"])
+        self.table.setHorizontalHeaderLabels(
+            ["Titel", "Källa", "Publicerad", "Preview"]
+        )
         self.table.cellDoubleClicked.connect(self.open_article)
         layout.addWidget(self.table, 1)
 
@@ -483,7 +493,9 @@ class MainWindow(QMainWindow):
             cb = QCheckBox(t)
             self.topic_checks_articles[t] = cb
             vb_t.addWidget(cb)
-            cb.stateChanged.connect(lambda _=None, topic=t: self._apply_topic_to_sources_articles(topic))
+            cb.stateChanged.connect(
+                lambda _=None, topic=t: self._apply_topic_to_sources_articles(topic)
+            )
 
         gb_sources = QGroupBox("Källor")
         vb_s = QVBoxLayout(gb_sources)
@@ -618,11 +630,26 @@ class MainWindow(QMainWindow):
         self.pl_meta_user.setPlaceholderText("meta_user_template…")
 
         ed_split = QSplitter(Qt.Vertical)  # type: ignore
-        ed1 = QWidget(); ed1_l = QVBoxLayout(ed1); ed1_l.addWidget(QLabel("batch_system")); ed1_l.addWidget(self.pl_batch_system)
-        ed2 = QWidget(); ed2_l = QVBoxLayout(ed2); ed2_l.addWidget(QLabel("batch_user_template")); ed2_l.addWidget(self.pl_batch_user)
-        ed3 = QWidget(); ed3_l = QVBoxLayout(ed3); ed3_l.addWidget(QLabel("meta_system")); ed3_l.addWidget(self.pl_meta_system)
-        ed4 = QWidget(); ed4_l = QVBoxLayout(ed4); ed4_l.addWidget(QLabel("meta_user_template")); ed4_l.addWidget(self.pl_meta_user)
-        ed_split.addWidget(ed1); ed_split.addWidget(ed2); ed_split.addWidget(ed3); ed_split.addWidget(ed4)
+        ed1 = QWidget()
+        ed1_l = QVBoxLayout(ed1)
+        ed1_l.addWidget(QLabel("batch_system"))
+        ed1_l.addWidget(self.pl_batch_system)
+        ed2 = QWidget()
+        ed2_l = QVBoxLayout(ed2)
+        ed2_l.addWidget(QLabel("batch_user_template"))
+        ed2_l.addWidget(self.pl_batch_user)
+        ed3 = QWidget()
+        ed3_l = QVBoxLayout(ed3)
+        ed3_l.addWidget(QLabel("meta_system"))
+        ed3_l.addWidget(self.pl_meta_system)
+        ed4 = QWidget()
+        ed4_l = QVBoxLayout(ed4)
+        ed4_l.addWidget(QLabel("meta_user_template"))
+        ed4_l.addWidget(self.pl_meta_user)
+        ed_split.addWidget(ed1)
+        ed_split.addWidget(ed2)
+        ed_split.addWidget(ed3)
+        ed_split.addWidget(ed4)
         ed_split.setSizes([160, 220, 160, 220])
         right_l.addWidget(ed_split, 2)
 
@@ -638,7 +665,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(w, "Promptlab")
 
         self.pl_summary_list.currentItemChanged.connect(self._pl_on_summary_selected)
-        self.btn_pl_load_from_summary.clicked.connect(self._pl_load_prompts_from_selected_summary)
+        self.btn_pl_load_from_summary.clicked.connect(
+            self._pl_load_prompts_from_selected_summary
+        )
         self.btn_pl_run.clicked.connect(self._pl_run_replay)
         self.btn_pl_pkg_reload.clicked.connect(self._pl_reload_prompt_packages)
         self.btn_pl_pkg_load.clicked.connect(self._pl_load_selected_package)
@@ -690,7 +719,9 @@ class MainWindow(QMainWindow):
         created = int(sdoc.get("created") or 0)
         created_s = format_ts(created) if created else "(okänd tid)"
         n = len(sdoc.get("sources") or [])
-        self.pl_loaded_summary.setText(f"Laddad summary: {created_s} · Artiklar: {n} · ID: {sid}")
+        self.pl_loaded_summary.setText(
+            f"Laddad summary: {created_s} · Artiklar: {n} · ID: {sid}"
+        )
         self.pl_status.setText("idle")
 
     def _pl_load_prompts_from_selected_summary(self) -> None:
@@ -738,7 +769,9 @@ class MainWindow(QMainWindow):
             return
         ps = self._pl_promptset_from_ui()
         try:
-            path = save_prompt_package(self.cfg, config_path=CONFIG_PATH, package_name=name, promptset=ps)
+            path = save_prompt_package(
+                self.cfg, config_path=CONFIG_PATH, package_name=name, promptset=ps
+            )
         except Exception as e:
             QMessageBox.critical(self, "Fel", str(e))
             return
@@ -757,7 +790,9 @@ class MainWindow(QMainWindow):
         self.pl_status.setText("running…")
         self.btn_pl_run.setEnabled(False)
 
-        self.replay_worker = PromptReplayWorker(cfg=self.cfg, store=self.store, summary_id=sid, prompts=prompts)
+        self.replay_worker = PromptReplayWorker(
+            cfg=self.cfg, store=self.store, summary_id=sid, prompts=prompts
+        )
         self.replay_worker.status.connect(self.pl_status.setText)
         self.replay_worker.done.connect(self._pl_replay_done)
         self.replay_worker.failed.connect(self._pl_replay_failed)
@@ -817,8 +852,12 @@ class MainWindow(QMainWindow):
         layout.addLayout(btns)
 
         self.feeds_table = QTableWidget(0, 4)
-        self.feeds_table.setHorizontalHeaderLabels(["Name", "URL", "Topics", "Category include"])
-        self.feeds_table.cellDoubleClicked.connect(lambda r, c: self._feeds_edit_selected())
+        self.feeds_table.setHorizontalHeaderLabels(
+            ["Name", "URL", "Topics", "Category include"]
+        )
+        self.feeds_table.cellDoubleClicked.connect(
+            lambda r, c: self._feeds_edit_selected()
+        )
         layout.addWidget(self.feeds_table, 1)
 
         self.btn_feeds_reload.clicked.connect(self._feeds_reload)
@@ -894,7 +933,9 @@ class MainWindow(QMainWindow):
             str(x.get("name") or "").strip().lower() == str(f["name"]).strip().lower()
             for x in self._feeds_items
         ):
-            QMessageBox.warning(self, "Dublett", "Det finns redan en feed med samma name.")
+            QMessageBox.warning(
+                self, "Dublett", "Det finns redan en feed med samma name."
+            )
             return
 
         self._feeds_items.append(f)
@@ -921,7 +962,9 @@ class MainWindow(QMainWindow):
             if i == row:
                 continue
             if str(x.get("name") or "").strip().lower() == new_name:
-                QMessageBox.warning(self, "Dublett", "Det finns redan en feed med samma name.")
+                QMessageBox.warning(
+                    self, "Dublett", "Det finns redan en feed med samma name."
+                )
                 return
 
         self._feeds_items[row] = updated
@@ -954,7 +997,9 @@ class MainWindow(QMainWindow):
             feeds_path = resolve_feeds_path(self.cfg, config_path=CONFIG_PATH)
             feeds_path.parent.mkdir(parents=True, exist_ok=True)
             with open(feeds_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(self._feeds_items, f, sort_keys=False, allow_unicode=True)
+                yaml.safe_dump(
+                    self._feeds_items, f, sort_keys=False, allow_unicode=True
+                )
             self.feeds_status.setText("sparat")
 
             self._reload_all_config_dependent_ui()

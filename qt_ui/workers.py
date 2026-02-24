@@ -33,7 +33,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QThread, Signal
 
@@ -49,10 +49,12 @@ CONFIG_PATH = str(RUNTIME.config_path)
 
 class PipelineWorker(QThread):
     status = Signal(str)
-    done = Signal(object)   # (summary_id, job_id)
+    done = Signal(object)  # (summary_id, job_id)
     failed = Signal(str)
 
-    def __init__(self, cfg: Dict[str, Any], overrides: Dict[str, Any], job_id: Optional[int]):
+    def __init__(
+        self, cfg: Dict[str, Any], overrides: Dict[str, Any], job_id: Optional[int]
+    ):
         super().__init__()
         self.cfg = cfg
         self.overrides = overrides
@@ -78,8 +80,9 @@ class ResumeWorker(QThread):
     """
     Resume-from-checkpoint and persist a summary_doc.
     """
+
     status = Signal(str)
-    done = Signal(object)   # summary_id (str)
+    done = Signal(object)  # summary_id (str)
     failed = Signal(str)
 
     def __init__(self, *, cfg: Dict[str, Any], store, llm, job_id: int):
@@ -114,7 +117,9 @@ class PromptReplayWorker(QThread):
     done = Signal(object)  # result dict
     failed = Signal(str)
 
-    def __init__(self, *, cfg: Dict[str, Any], store, summary_id: str, prompts: PromptSet):
+    def __init__(
+        self, *, cfg: Dict[str, Any], store, summary_id: str, prompts: PromptSet
+    ):
         super().__init__()
         self.cfg = cfg
         self.store = store

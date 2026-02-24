@@ -569,7 +569,10 @@ async def run_pipeline(
 
     # --- NEW: Super-meta overview from sections (optional, prompt-driven) ---
     overview_text = ""
-    overview_stats: Dict[str, Any] = {"super_meta_budget_tokens": 0, "super_meta_enabled": 0}
+    overview_stats: Dict[str, Any] = {
+        "super_meta_budget_tokens": 0,
+        "super_meta_enabled": 0,
+    }
     try:
         overview_text, overview_stats = await super_meta_from_topic_sections_with_stats(
             config=config, sections=sections, llm=llm, store=store, job_id=job_id
@@ -612,7 +615,9 @@ async def run_pipeline(
         "sections": sections,
         "meta": {
             "super_meta_enabled": int(overview_stats.get("super_meta_enabled") or 0),
-            "super_meta_budget_tokens": int(overview_stats.get("super_meta_budget_tokens") or 0),
+            "super_meta_budget_tokens": int(
+                overview_stats.get("super_meta_budget_tokens") or 0
+            ),
         },
         "selection": {
             "lookback": str((config.get("ingest") or {}).get("lookback") or ""),

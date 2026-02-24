@@ -259,7 +259,9 @@ async def super_meta_from_topic_sections_with_stats(
     # Optional override in config:
     super_budget_cfg = int(batching.get("super_meta_budget_tokens") or 0)
     budget_tokens = (
-        super_budget_cfg if super_budget_cfg > 0 else max(512, max_ctx - max_out - margin)
+        super_budget_cfg
+        if super_budget_cfg > 0
+        else max(512, max_ctx - max_out - margin)
     )
 
     lookback = str((config.get("ingest") or {}).get("lookback") or "").strip()
@@ -347,7 +349,9 @@ async def super_meta_from_topic_sections_with_stats(
                 new_budget = max(512, int(budget_tokens * 0.6))
             budget_tokens = new_budget
 
-    raise RuntimeError(f"Super-meta misslyckades efter {meta_attempts} försök: {last_err}")
+    raise RuntimeError(
+        f"Super-meta misslyckades efter {meta_attempts} försök: {last_err}"
+    )
 
 
 # ----------------------------

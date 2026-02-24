@@ -210,19 +210,11 @@ def interleave_by_source_oldest_first(
     source_key: str = "source",
     ts_key_fn: Callable[[dict], int] = _published_ts,
 ) -> List[dict]:
-    """
-    1) Grupp per källa
-    2) Sortera varje grupp äldst->nyast
-    3) Round-robin plock: en från varje källa i tur och ordning,
-       men alltid med källorna sorterade efter sin *nästa* (äldsta kvarvarande) artikel,
-       så att global ordning lutar mot äldst först.
-    """
     groups: Dict[str, List[dict]] = defaultdict(list)
     for a in articles:
         src = str(a.get(source_key) or "unknown")
         groups[src].append(a)
 
-    # sortera varje grupp äldst->nyast
     queues: Dict[str, Deque[dict]] = {}
     for src, items in groups.items():
         items_sorted = sorted(items, key=ts_key_fn)  # äldst först
@@ -230,15 +222,12 @@ def interleave_by_source_oldest_first(
 
     out: List[dict] = []
 
-    # Vi vill att "äldst globalt" ska komma först, men ändå interleava.
-    # Vi gör därför varje varv: sortera källor efter timestamp på nästa element i kön,
-    # plocka 1 från varje (i den ordningen).
     while True:
         active = [(src, q) for src, q in queues.items() if q]
         if not active:
             break
 
-        active.sort(key=lambda sq: ts_key_fn(sq[1][0]))  # nästa äldsta per källa
+        active.sort(key=lambda sq: ts_key_fn(sq[1][0]))
 
         for src, q in active:
             if q:
@@ -274,9 +263,6 @@ def _extract_overflow_tokens(err: Exception) -> Optional[int]:
 
 
 def parse_lookback_to_seconds(s: str) -> int:
-    """
-    "90m" -> 5400, "24h" -> 86400, "3d" -> 259200, "2w" -> 1209600
-    """
     if not s:
         raise ValueError("lookback är tom")
     m = _DURATION_RE.match(s)
@@ -302,10 +288,6 @@ def parse_lookback_to_seconds(s: str) -> int:
 
 
 def entry_published_ts(entry: feedparser.FeedParserDict) -> Optional[int]:
-    """
-    Försök få ett unix-timestamp för entry.
-    Prioriterar feedparser's *_parsed (struct_time) men kan även parse:a text.
-    """
     for attr in ("published_parsed", "updated_parsed"):
         st = getattr(entry, attr, None)
         if st:
@@ -343,18 +325,35 @@ def load_prompts(
            selected: ""  (kan sättas av webappen)
     2) BAKÅTKOMP: om config["prompts"] redan innehåller batch_system/meta_system etc,
        använd det direkt.
+
+    Viktigt:
+    - Vi returnerar alltid basnycklarna.
+    - Vi tar även med valfria super-meta-nycklar om de finns i paketet:
+        super_meta_system
+        super_meta_user_template
     """
+
     p_cfg = config.get("prompts") or {}
 
-    # Backward compat: prompts directly embedded in config.yaml
-    embedded_keys = (
+    base_keys = (
         "batch_system",
         "batch_user_template",
         "meta_system",
         "meta_user_template",
     )
-    if isinstance(p_cfg, dict) and any(k in p_cfg for k in embedded_keys):
-        return {k: str(p_cfg.get(k, "")) for k in embedded_keys}
+    optional_keys = (
+        "super_meta_system",
+        "super_meta_user_template",
+    )
+
+    # Backward compat: prompts directly embedded in config.yaml
+    if isinstance(p_cfg, dict) and any(k in p_cfg for k in base_keys):
+        out: Dict[str, str] = {k: str(p_cfg.get(k, "")) for k in base_keys}
+        for k in optional_keys:
+            if k in p_cfg:
+                out[k] = str(p_cfg.get(k, ""))
+        out["_package"] = str(p_cfg.get("_package") or "embedded")
+        return out
 
     # New: prompts.yaml packages
     path = "config/prompts.yaml"
@@ -371,14 +370,12 @@ def load_prompts(
     if not pkg:
         pkg = default_pkg
 
-    # Expand env + ~
     path = os.path.expanduser(os.path.expandvars(path))
 
     with open(path, "r", encoding="utf-8") as f:
         all_pkgs = yaml.safe_load(f) or {}
 
     if pkg not in all_pkgs:
-        # fallback: first key if default missing
         if isinstance(all_pkgs, dict) and all_pkgs:
             pkg = next(iter(all_pkgs.keys()))
         else:
@@ -388,12 +385,16 @@ def load_prompts(
     if not isinstance(blob, dict):
         raise RuntimeError(f"Prompt-paket '{pkg}' i {path} är inte ett dict-objekt")
 
-    out = {}
-    for k in embedded_keys:
+    out: Dict[str, str] = {}
+    for k in base_keys:
         out[k] = str(blob.get(k, ""))
 
-    # (valfritt) ta med fler nycklar om du vill, men ovan räcker för pipeline
-    out["_package"] = pkg  # bra för spårbarhet/loggning om du vill
+    # NEW: include optional super-meta keys if present
+    for k in optional_keys:
+        if k in blob:
+            out[k] = str(blob.get(k, ""))
+
+    out["_package"] = pkg
     return out
 
 
@@ -403,9 +404,6 @@ def set_job(msg: str, job_id, store):
 
 
 def _resolve_path(base_config_path: str, p: str) -> str:
-    """
-    Expand env + ~ and resolve relative paths relative to config.yaml location.
-    """
     p2 = os.path.expanduser(os.path.expandvars(p))
     if os.path.isabs(p2):
         return p2
@@ -416,23 +414,11 @@ def _resolve_path(base_config_path: str, p: str) -> str:
 def load_feeds_into_config(
     config: Dict[str, Any], *, base_config_path: str = "config.yaml"
 ) -> Dict[str, Any]:
-    """
-    Ensures config["feeds"] is a list loaded from config/feeds.yaml (default),
-    unless config already has a list in "feeds".
-
-    Supported config patterns:
-      - config["feeds"] is already a list -> keep as-is
-      - config["feeds"] is a dict with {"path": "..."} -> load that file
-      - config["feeds_path"] = "..." -> load that file
-      - default file path: "config/feeds.yaml" (relative to config.yaml)
-    """
     logger.info("Reading feed-configs")
-    # already list -> keep
     feeds = config.get("feeds")
     if isinstance(feeds, list):
         return config
 
-    # path from config
     feeds_path: Optional[str] = None
     if isinstance(feeds, dict) and isinstance(feeds.get("path"), str):
         feeds_path = feeds["path"]
@@ -449,7 +435,6 @@ def load_feeds_into_config(
         if not isinstance(loaded, list):
             raise ValueError(f"feeds.yaml must be a list, got {type(loaded)}")
 
-        # Minimal validation: expect dict items
         for i, item in enumerate(loaded):
             if not isinstance(item, dict):
                 raise ValueError(

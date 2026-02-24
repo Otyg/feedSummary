@@ -33,8 +33,7 @@
 from __future__ import annotations
 from typing import Any, Dict
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices, QTextDocument
-from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -122,12 +121,21 @@ class ArticleReaderDialog(QDialog):
         title = str(self.article.get("title") or "").strip()
         source = str(self.article.get("source") or "").strip()
         url = str(self.article.get("url") or "").strip()
-        pub = str(self.article.get("published") or "").strip() or _fmt_dt_hm(published_ts(self.article))
-        full_text = (self.article.get("text") or "").strip() or "(Ingen text lagrad för artikeln.)"
+        pub = str(self.article.get("published") or "").strip() or _fmt_dt_hm(
+            published_ts(self.article)
+        )
+        full_text = (
+            self.article.get("text") or ""
+        ).strip() or "(Ingen text lagrad för artikeln.)"
 
         # Build initial HTML with a nice header
         def esc(s: str) -> str:
-            return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return (
+                (s or "")
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
 
         html = f"""
         <h1>{esc(title)}</h1>
@@ -138,5 +146,9 @@ class ArticleReaderDialog(QDialog):
         <p style="white-space: pre-wrap;">{esc(full_text).replace("\\n", "<br/>")}</p>
         """
 
-        dlg = RichTextEditorDialog(self, title="Artikel – redigera före utskrift", initial_html=f"<html><body>{html}</body></html>")
+        dlg = RichTextEditorDialog(
+            self,
+            title="Artikel – redigera före utskrift",
+            initial_html=f"<html><body>{html}</body></html>",
+        )
         dlg.exec()

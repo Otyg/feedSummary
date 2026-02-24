@@ -1,7 +1,6 @@
 from PySide6.QtWidgets import QTextEdit, QToolBar, QFileDialog
 from PySide6.QtGui import QAction, QTextCursor, QTextCharFormat, QFont
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
-from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -11,16 +10,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtGui import QTextBlockFormat
-from PySide6.QtGui import QTextBlockFormat, QTextCharFormat
 import re
 from html.parser import HTMLParser
 from docx import Document
+
 
 class RichTextEditorDialog(QDialog):
     """
     Rich text editor for last-mile formatting before printing/export.
     Supports basic formatting and inserting page breaks.
     """
+
     def __init__(self, parent: QWidget, *, title: str, initial_html: str):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -188,6 +188,7 @@ class RichTextEditorDialog(QDialog):
         cursor.insertHtml("<!--FS_PAGEBREAK-->")
 
         cursor.endEditBlock()
+
     # -------- Print / PDF --------
     def _print(self) -> None:
         printer = QPrinter(QPrinter.HighResolution)
@@ -198,7 +199,9 @@ class RichTextEditorDialog(QDialog):
         self.editor.document().print_(printer)
 
     def _export_pdf(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Exportera PDF", "document.pdf", "PDF (*.pdf)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera PDF", "document.pdf", "PDF (*.pdf)"
+        )
         if not path:
             return
         if not path.lower().endswith(".pdf"):
@@ -212,7 +215,9 @@ class RichTextEditorDialog(QDialog):
 
     # -------- DOCX --------
     def _export_docx(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Exportera DOCX", "document.docx", "Word (*.docx)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportera DOCX", "document.docx", "Word (*.docx)"
+        )
         if not path:
             return
         if not path.lower().endswith(".docx"):
@@ -249,6 +254,7 @@ class _DocxHTMLParser(HTMLParser):
     Very small HTML parser that writes into python-docx.
     Handles: p, h1/h2/h3, br, b/strong, i/em, u
     """
+
     def __init__(self, doc: Document):
         super().__init__()
         self.doc = doc
@@ -303,7 +309,7 @@ class _DocxHTMLParser(HTMLParser):
             self._block_tag = None
 
     def handle_data(self, data):
-        text = (data or "")
+        text = data or ""
         if not text.strip():
             # preserve spacing lightly
             return
