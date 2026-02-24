@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 )
 
 from qt_ui.helpers import _fmt_dt_hm
+from qt_ui.richtexteditor import RichTextEditorDialog
 from uicommon import published_ts
 
 
