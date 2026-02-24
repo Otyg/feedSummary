@@ -1,6 +1,15 @@
 from PySide6.QtWidgets import QTextEdit, QToolBar, QFileDialog
 from PySide6.QtGui import QAction, QTextCursor, QTextCharFormat, QFont
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 import re
 from html.parser import HTMLParser
