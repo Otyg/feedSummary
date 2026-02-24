@@ -75,6 +75,7 @@ from qt_ui.log import _env_log_level, QtLogEmitter, QtStream, QtLoggingHandler
 from qt_ui.refresh import RefreshDialog
 from qt_ui.replay import ReplayResultWindow
 from qt_ui.workers import PipelineWorker, PromptReplayWorker
+from qt_ui.richtexteditor import RichTextEditorDialog
 
 from uicommon import (
     load_config,
