@@ -118,44 +118,24 @@ class ArticleReaderDialog(QDialog):
         QDesktopServices.openUrl(QUrl(url))
 
     def _print_article(self) -> None:
-        printer = QPrinter(QPrinter.HighResolution)  # type: ignore
-        printer.setDocName("Artikel")
-
-        dlg = QPrintDialog(printer, self)
-        dlg.setWindowTitle("Skriv ut artikel")
-        if dlg.exec() != QDialog.Accepted:  # type: ignore
-            return
-
         title = str(self.article.get("title") or "").strip()
         source = str(self.article.get("source") or "").strip()
         url = str(self.article.get("url") or "").strip()
-        pub = str(self.article.get("published") or "").strip() or _fmt_dt_hm(
-            published_ts(self.article)
-        )
+        pub = str(self.article.get("published") or "").strip() or _fmt_dt_hm(published_ts(self.article))
+        full_text = (self.article.get("text") or "").strip() or "(Ingen text lagrad för artikeln.)"
 
-        full_text = (
-            self.article.get("text") or ""
-        ).strip() or "(Ingen text lagrad för artikeln.)"
-
-        safe_text = (
-            full_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        )
-        safe_title = (
-            title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        )
-        safe_source = (
-            source.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        )
-        safe_url = url.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Build initial HTML with a nice header
+        def esc(s: str) -> str:
+            return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         html = f"""
-        <h2>{safe_title}</h2>
-        <p><b>Källa:</b> {safe_source}<br/>
-           <b>Publicerad:</b> {pub}<br/>
-           <b>URL:</b> {safe_url}</p>
+        <h1>{esc(title)}</h1>
+        <p><b>Källa:</b> {esc(source)}<br/>
+            <b>Publicerad:</b> {esc(pub)}<br/>
+            <b>URL:</b> {esc(url)}</p>
         <hr/>
-        <pre style="white-space: pre-wrap; font-family: system-ui;">{safe_text}</pre>
+        <p style="white-space: pre-wrap;">{esc(full_text).replace("\\n", "<br/>")}</p>
         """
-        doc = QTextDocument()
-        doc.setHtml(html)
-        doc.print_(printer)
+
+        dlg = RichTextEditorDialog(self, title="Artikel – redigera före utskrift", initial_html=f"<html><body>{html}</body></html>")
+        dlg.exec()

@@ -221,12 +221,11 @@ class MainWindow(QMainWindow):
     def print_current_summary(self) -> None:
         current = self.summary_list.currentItem()
         if not current:
-            QMessageBox.information(
-                self, "Ingen sammanfattning", "Välj en sammanfattning först."
-            )
+            QMessageBox.information(self, "Ingen sammanfattning", "Välj en sammanfattning först.")
             return
-        sid = current.data(Qt.UserRole)  # type: ignore
-        sdoc = self.store.get_summary_doc(str(sid))
+
+        sid = str(current.data(Qt.UserRole))
+        sdoc = self.store.get_summary_doc(sid)
         if not sdoc:
             QMessageBox.warning(self, "Saknas", "Kunde inte läsa sammanfattningen.")
             return
@@ -234,16 +233,9 @@ class MainWindow(QMainWindow):
         md_text = sdoc.get("summary", "") or ""
         html = md.markdown(md_text, extensions=["extra"])
 
-        printer = QPrinter(QPrinter.HighResolution)  # type: ignore
-        printer.setDocName("Sammanfattning")
-        dlg = QPrintDialog(printer, self)
-        dlg.setWindowTitle("Skriv ut sammanfattning")
-        if dlg.exec() != QDialog.Accepted:  # type: ignore
-            return
-
-        doc = QTextDocument()
-        doc.setHtml(f"<html><body>{html}</body></html>")
-        doc.print_(printer)
+        title = f"Sammanfattning – {sid}"
+        dlg = RichTextEditorDialog(self, title=title, initial_html=f"<html><body>{html}</body></html>")
+        dlg.exec()
 
     # ---- Summaries tab ----
     def _build_summaries_tab(self):
