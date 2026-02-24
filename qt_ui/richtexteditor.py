@@ -10,7 +10,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
+from PySide6.QtGui import QTextBlockFormat
+from PySide6.QtGui import QTextBlockFormat, QTextCharFormat
 import re
 from html.parser import HTMLParser
 from docx import Document
@@ -126,31 +127,67 @@ class RichTextEditorDialog(QDialog):
         cursor = self.editor.textCursor()
         cursor.beginEditBlock()
 
-        char_fmt = QTextCharFormat()
-        char_fmt.setFontWeight(QFont.Bold)
-        size = {1: 20, 2: 16, 3: 14}.get(level, 14)
-        char_fmt.setFontPointSize(size)
-
+        # Apply to the entire current block
         cursor.select(QTextCursor.BlockUnderCursor)
-        cursor.mergeCharFormat(char_fmt)
+
+        # Block spacing (gör rubriker visuellt tydliga)
+        bf = cursor.blockFormat()
+        bf.setTopMargin(10)
+        bf.setBottomMargin(6)
+        cursor.setBlockFormat(bf)
+
+        # Character formatting
+        cf = QTextCharFormat()
+        cf.setFontWeight(QFont.Bold)
+        cf.setFontUnderline(False)
+        size = {1: 20, 2: 16, 3: 14}.get(level, 14)
+        cf.setFontPointSize(size)
+
+        cursor.mergeCharFormat(cf)
 
         cursor.endEditBlock()
 
     def _apply_paragraph(self) -> None:
         cursor = self.editor.textCursor()
         cursor.beginEditBlock()
-        char_fmt = QTextCharFormat()
-        char_fmt.setFontWeight(QFont.Normal)
-        char_fmt.setFontPointSize(11)
+
         cursor.select(QTextCursor.BlockUnderCursor)
-        cursor.mergeCharFormat(char_fmt)
+
+        bf = cursor.blockFormat()
+        bf.setTopMargin(0)
+        bf.setBottomMargin(0)
+        cursor.setBlockFormat(bf)
+
+        cf = QTextCharFormat()
+        cf.setFontWeight(QFont.Normal)
+        cf.setFontPointSize(11)
+        cf.setFontUnderline(False)
+        cursor.mergeCharFormat(cf)
+
         cursor.endEditBlock()
 
     def _insert_page_break(self) -> None:
-        # This works well for PDF printing from Qt and is detectable for DOCX conversion below
+        """
+        Insert a real page break in the QTextDocument so Qt printing/PDF respects it.
+        Also insert an HTML marker for DOCX export.
+        """
         cursor = self.editor.textCursor()
-        cursor.insertHtml("<div style='page-break-after: always;'></div><p></p>")
+        cursor.beginEditBlock()
 
+        # Insert an empty block with page break policy
+        cursor.insertBlock()
+        bf = cursor.blockFormat()
+        bf.setPageBreakPolicy(QTextBlockFormat.PageBreak_AlwaysBefore)
+        cursor.setBlockFormat(bf)
+
+        # Optional visible separator in editor (can remove if you prefer)
+        cursor.insertText("— Sidbrytning —")
+        cursor.insertBlock()
+
+        # Also add a hidden-ish marker for DOCX exporter (parser looks for it)
+        cursor.insertHtml("<!--FS_PAGEBREAK-->")
+
+        cursor.endEditBlock()
     # -------- Print / PDF --------
     def _print(self) -> None:
         printer = QPrinter(QPrinter.HighResolution)
@@ -191,18 +228,9 @@ class RichTextEditorDialog(QDialog):
         QMessageBox.information(self, "Klart", f"DOCX exporterad:\n{path}")
 
     def _html_to_docx(self, html: str, out_path: str) -> None:
-        """
-        Minimal, robust HTML->DOCX conversion for our editor output:
-        - headings (h1/h2/h3) -> docx headings
-        - paragraphs -> docx paragraphs
-        - b/strong, i/em, u -> run formatting
-        - br -> line break
-        - page breaks inserted by our editor (<div style='page-break-after: always;'>)
-        """
         doc = Document()
 
-        # Split on our page-break marker
-        parts = re.split(r"page-break-after:\s*always", html, flags=re.IGNORECASE)
+        parts = re.split(r"<!--\s*FS_PAGEBREAK\s*-->", html, flags=re.IGNORECASE)
         for idx, part in enumerate(parts):
             self._parse_html_into_doc(doc, part)
             if idx < len(parts) - 1:
