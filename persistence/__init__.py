@@ -72,11 +72,14 @@ class NewsStore(Protocol):
 
     def get_latest_summary_doc(self) -> Optional[Dict[str, Any]]: ...
 
+    # Jobs / resume support
     def create_job(self) -> int: ...
 
     def update_job(self, job_id: int, **fields) -> None: ...
 
     def get_job(self, job_id: int) -> Optional[Dict[str, Any]]: ...
+
+    def list_jobs(self, limit: int = 200) -> List[Dict[str, Any]]: ...
 
     def get_articles_by_ids(self, article_ids: List[str]) -> List[Dict[str, Any]]: ...
 
@@ -99,12 +102,12 @@ def create_store(cfg: Dict[str, Any]) -> NewsStore:
         raw_path = cfg.get("path", "news_docs.json")
         path = _expand_path(raw_path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        return TinyDBStore(path=path)
+        return TinyDBStore(path=path) # type: ignore
 
     if provider in ("sqlite", "sqlite3"):
         raw_path = cfg.get("path", "news_docs.sqlite")
         path = _expand_path(raw_path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        return SqliteStore(path=path)
+        return SqliteStore(path=path) # type: ignore
 
     raise ValueError(f"Unsupported store provider: {provider}")

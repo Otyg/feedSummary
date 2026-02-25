@@ -28,7 +28,6 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-# ... (oförändrad header)
 
 from __future__ import annotations
 
@@ -198,22 +197,67 @@ class TinyDBStore:
             }
         )
         db.close()
-        logger.info(f"Job {jid} created")
-        return jid
+        logger.info("Job %s created", jid)
+        return int(jid)
 
     def update_job(self, job_id: int, **fields) -> None:
         db = self._db()
-        db.table("jobs").update(fields, doc_ids=[job_id])
-        logger.info(f"Job {job_id} updated: {fields}")
+        db.table("jobs").update(fields, doc_ids=[int(job_id)])
+        logger.info("Job %s updated: %s", job_id, fields)
         db.close()
 
     def get_job(self, job_id: int) -> Optional[Dict[str, Any]]:
         db = self._db()
-        doc = db.table("jobs").get(doc_id=job_id)
+        doc = db.table("jobs").get(doc_id=int(job_id))
         db.close()
         if not doc:
             return None
-        return {"id": job_id, **dict(doc)}  # pyright: ignore[reportCallIssue, reportArgumentType, reportReturnType]
+        return {"id": int(job_id), **dict(doc)} # type: ignore
+
+    def list_jobs(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Returnerar jobs som dictar med 'id' (TinyDB doc_id) inkluderad.
+        Robust mot TinyDB-versioner: försök läsa doc_id från Document om möjligt,
+        annars fall back till intern 'doc_id' om den finns.
+        """
+        lim = int(limit) if limit and int(limit) > 0 else 200
+
+        db = self._db()
+        t = db.table("jobs")
+
+        out: List[Dict[str, Any]] = []
+
+        # TinyDB >=4: Table.all() returnerar Document med .doc_id
+        try:
+            rows = t.all()
+            for r in rows:
+                try:
+                    jid = int(getattr(r, "doc_id"))  # Document
+                except Exception:
+                    # fallback: om någon råkat skriva in "id" i payloaden
+                    jid = int((r.get("id") or 0))
+                if jid <= 0:
+                    continue
+                out.append({"id": jid, **dict(r)})
+        except Exception:
+            # Ultimat fallback: iterera t (brukar också ge Document)
+            try:
+                for r in t:
+                    try:
+                        jid = int(getattr(r, "doc_id"))
+                    except Exception:
+                        jid = int((r.get("id") or 0))
+                    if jid <= 0:
+                        continue
+                    out.append({"id": jid, **dict(r)})
+            except Exception as e:
+                logger.warning("list_jobs failed: %s", e)
+                out = []
+
+        db.close()
+
+        out.sort(key=lambda r: int(r.get("created_at") or 0), reverse=True)
+        return out[:lim]
 
     def get_articles_by_ids(self, article_ids: List[str]) -> List[Dict[str, Any]]:
         db = self._db()
@@ -231,10 +275,10 @@ class TinyDBStore:
         t = db.table("temp_summaries")
         T = Query()
         doc = dict(payload or {})
-        doc["job_id"] = job_id
+        doc["job_id"] = int(job_id)
         if "created_at" not in doc:
             doc["created_at"] = int(time.time())
-        t.upsert(doc, T.job_id == job_id)
+        t.upsert(doc, T.job_id == int(job_id))
         db.close()
 
     def save_temp_summary(
@@ -246,6 +290,6 @@ class TinyDBStore:
         db = self._db()
         t = db.table("temp_summaries")
         T = Query()
-        rows = t.search(T.job_id == job_id)
+        rows = t.search(T.job_id == int(job_id))
         db.close()
         return rows[0] if rows else None

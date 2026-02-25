@@ -236,7 +236,7 @@ class MainWindow(QMainWindow):
             return None
         try:
             jid = fn()
-            return int(jid)
+            return int(jid) # type: ignore
         except Exception:
             return None
 
@@ -278,7 +278,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        sid = str(current.data(Qt.UserRole))
+        sid = str(current.data(Qt.UserRole)) # type: ignore
         sdoc = self.store.get_summary_doc(sid)
         if not sdoc:
             QMessageBox.warning(self, "Saknas", "Kunde inte läsa sammanfattningen.")
@@ -299,10 +299,12 @@ class MainWindow(QMainWindow):
 
         top = QHBoxLayout()
         self.btn_refresh = QPushButton("Refresh…")
+        self.btn_jobs = QPushButton("Återuppta jobb…")  # NEW
         self.btn_print_summary = QPushButton("Skriv ut")
         self.lbl_status = QLabel("idle")
 
         top.addWidget(self.btn_refresh)
+        top.addWidget(self.btn_jobs)  # NEW
         top.addWidget(self.btn_print_summary)
         top.addWidget(self.lbl_status, 1)
         layout.addLayout(top)
@@ -316,10 +318,25 @@ class MainWindow(QMainWindow):
         layout.addWidget(split, 1)
 
         self.btn_refresh.clicked.connect(self.open_refresh)
+        self.btn_jobs.clicked.connect(self.open_jobs_dialog)  # NEW
         self.btn_print_summary.clicked.connect(self.print_current_summary)
         self.summary_list.currentItemChanged.connect(self.on_summary_selected)
 
         self.tabs.addTab(w, "Sammanfattningar")
+
+    # NEW
+    def open_jobs_dialog(self) -> None:
+        from qt_ui.jobs import JobsDialog
+
+        dlg = JobsDialog(self, cfg=self.cfg, store=self.store)
+        if dlg.exec() != QDialog.Accepted:  # type: ignore
+            return
+        jid = dlg.property("selected_job_id")
+        try:
+            jid_i = int(jid)
+        except Exception:
+            return
+        self._start_resume(jid_i)
 
     def reload_summaries(self):
         docs = self.store.list_summary_docs() or []
@@ -399,7 +416,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self, "Klart", "Refresh klar: inga artiklar matchade urvalet."
             )
-        # else: UI list is reloaded anyway
 
     def on_pipeline_failed(self, err: str):
         self.lbl_status.setText("error")

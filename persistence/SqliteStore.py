@@ -580,6 +580,43 @@ class SqliteStore:
         finally:
             con.close()
 
+    def list_jobs(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Listar jobs i senaste-först ordning.
+        Används av Qt för att visa avbrutna/återupptagbara jobb.
+        """
+        lim = _safe_int(limit, 200)
+        con = self._connect()
+        try:
+            rows = con.execute(
+                """
+                SELECT id, created_at, started_at, finished_at, status, message, summary_id, fields_json
+                FROM jobs
+                ORDER BY COALESCE(created_at, 0) DESC
+                LIMIT ?
+                """,
+                (lim,),
+            ).fetchall()
+
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                doc: Dict[str, Any] = {
+                    "id": int(row["id"]),
+                    "created_at": row["created_at"],
+                    "started_at": row["started_at"],
+                    "finished_at": row["finished_at"],
+                    "status": row["status"],
+                    "message": row["message"],
+                    "summary_id": row["summary_id"],
+                }
+                extra = _json_loads(row["fields_json"])
+                if isinstance(extra, dict):
+                    doc.update(extra)
+                out.append(doc)
+            return out
+        finally:
+            con.close()
+
     def get_articles_by_ids(self, article_ids: List[str]) -> List[Dict[str, Any]]:
         ids = [str(x) for x in (article_ids or []) if str(x).strip()]
         if not ids:
