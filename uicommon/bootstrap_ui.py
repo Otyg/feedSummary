@@ -126,7 +126,9 @@ def resource_path(rel: str) -> Path:
     return (base / rel).resolve()
 
 
-def _safe_copy2(src: Path, dst: Path, *, retries: int = 12, sleep_s: float = 0.12) -> bool:
+def _safe_copy2(
+    src: Path, dst: Path, *, retries: int = 12, sleep_s: float = 0.12
+) -> bool:
     """
     Copy with retries. In frozen/PyInstaller, AV/Defender can briefly lock files in _MEI*.
     Never crash startup due to transient PermissionError.
@@ -207,7 +209,9 @@ def ensure_app_data_initialized(app_name: str = APP_NAME) -> Path:
             if _safe_copy2(dist_src, dist_dst):
                 _LOGGER.info("Copied config.yaml.dist -> %s", dist_dst)
             else:
-                _LOGGER.warning("Could not copy config.yaml.dist from bundle: %s", dist_src)
+                _LOGGER.warning(
+                    "Could not copy config.yaml.dist from bundle: %s", dist_src
+                )
         else:
             _LOGGER.warning("Missing bundled config.yaml.dist at: %s", dist_src)
 
@@ -244,7 +248,9 @@ def _ensure_user_config_from_template(app_dir: Path) -> Path:
         if _safe_copy2(dist_in_appdata, user_cfg):
             _LOGGER.info("Created user config from AppData template: %s", user_cfg)
             return user_cfg
-        _LOGGER.warning("Could not copy AppData template to user config: %s", dist_in_appdata)
+        _LOGGER.warning(
+            "Could not copy AppData template to user config: %s", dist_in_appdata
+        )
 
     # 2) Try to create from bundled template (may be in _MEI*)
     bundled_template = resource_path(BUNDLED_CONFIG_TEMPLATE)
@@ -252,7 +258,9 @@ def _ensure_user_config_from_template(app_dir: Path) -> Path:
         if _safe_copy2(bundled_template, user_cfg):
             _LOGGER.info("Created user config from bundled template: %s", user_cfg)
             return user_cfg
-        _LOGGER.warning("Could not copy bundled template to user config: %s", bundled_template)
+        _LOGGER.warning(
+            "Could not copy bundled template to user config: %s", bundled_template
+        )
 
     # 3) Last resort: write a minimal config so app can still start and show UI/errors
     minimal = (
@@ -264,7 +272,9 @@ def _ensure_user_config_from_template(app_dir: Path) -> Path:
         "  path: config/prompts.yaml\n"
     )
     if _safe_write_text(user_cfg, minimal):
-        _LOGGER.warning("Wrote minimal user config (template unavailable): %s", user_cfg)
+        _LOGGER.warning(
+            "Wrote minimal user config (template unavailable): %s", user_cfg
+        )
         return user_cfg
 
     # Absolute last resort: return AppData path anyway (caller will likely fail later)
@@ -332,7 +342,9 @@ def resolve_config_path(app_name: str = APP_NAME) -> RuntimePaths:
         _LOGGER.info("Source-mode -> using repo config.yaml: %s", cfg_path)
     elif dist.exists():
         cfg_path = dist
-        _LOGGER.info("Source-mode -> config.yaml missing; using config.yaml.dist: %s", cfg_path)
+        _LOGGER.info(
+            "Source-mode -> config.yaml missing; using config.yaml.dist: %s", cfg_path
+        )
     else:
         cfg_path = dist
         _LOGGER.warning(

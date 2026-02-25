@@ -49,6 +49,10 @@ from summarizer.helpers import (
     load_prompts,
     parse_lookback_to_seconds,
     load_feeds_into_config,
+    _checkpoint_key,
+    _checkpoint_path,
+    _meta_ckpt_path,
+    _load_checkpoint,
 )
 from summarizer.ingest import gather_articles_to_store
 from summarizer.summarizer import (
@@ -205,6 +209,22 @@ def _selected_topics_from_config(config: Dict[str, Any]) -> List[str]:
     return topics
 
 
+def _selected_prompt_package(config: Dict[str, Any]) -> str:
+    p = config.get("prompts") or {}
+    if isinstance(p, dict):
+        return str(p.get("selected") or "").strip()
+    return ""
+
+
+def _selection_doc(config: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "lookback": str((config.get("ingest") or {}).get("lookback") or ""),
+        "sources": _selected_source_names(config),
+        "topics": _selected_topics_from_config(config),
+        "prompt_package": _selected_prompt_package(config),
+    }
+
+
 def _select_articles_for_summary(
     config: Dict[str, Any], store: NewsStore, *, limit: int = 2000
 ) -> List[dict]:
@@ -289,12 +309,6 @@ def _fmt_dt_hm(ts: int) -> str:
 def _build_sources_appendix_markdown(snapshots: List[Dict[str, Any]]) -> str:
     """
     Builds a markdown appendix grouped by source.
-
-    Fields:
-      - title
-      - url
-      - published_ts -> readable date
-
     Output:
       ## Källor
       ### <Source>
@@ -344,60 +358,95 @@ def _build_sources_appendix_markdown(snapshots: List[Dict[str, Any]]) -> str:
     return "\n".join(out).strip() + "\n"
 
 
-async def run_pipeline(
-    config_path: str = "config.yaml",
-    job_id: Optional[int] = None,
-    overrides: Optional[Dict[str, Any]] = None,
-    config_dict: Optional[Dict[str, Any]] = None,
-) -> Optional[Any]:
-    if config_dict is None:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-    else:
-        config = config_dict
-
-    config = load_feeds_into_config(config, base_config_path=config_path)
-
-    config = _apply_overrides(config, overrides)
-
-    store = create_store(config.get("store", {}))
-    llm = create_llm_client(config)
-
-    if job_id is not None:
+def _snapshot_topic_map_for_job(
+    store: NewsStore,
+    job_id: int,
+    *,
+    topic_map: Dict[str, List[str]],
+    selection: Dict[str, Any],
+    overrides: Optional[Dict[str, Any]],
+) -> None:
+    """
+    Sparar job-kontext i store så resume blir stabil även om config ändras efteråt.
+    SqliteStore lägger detta i fields_json; TinyDB lägger som vanliga keys.
+    """
+    try:
         store.update_job(
             job_id,
-            status="running",
-            started_at=int(time.time()),
-            message="Startar ingest...",
+            selection=selection,
+            source_topics_map=topic_map,
+            overrides=overrides or {},
         )
-        if overrides:
-            store.update_job(
-                job_id, message=f"Startar ingest... (overrides: {overrides})"
-            )
-
-    ins, upd = await gather_articles_to_store(config, store, job_id=job_id)
-
-    if job_id is not None:
-        store.update_job(
-            job_id,
-            message=f"Ingest klart. Inserted={ins}, Updated={upd}. Förbereder summering...",
+    except Exception as e:
+        logger.warning(
+            "Kunde inte spara job context (selection/topic_map) i store: %s", e
         )
 
-    to_sum = _select_articles_for_summary(config, store, limit=2000)
-    if not to_sum:
-        if job_id is not None:
-            store.update_job(
-                job_id,
-                status="done",
-                finished_at=int(time.time()),
-                message="Klart: inga artiklar matchade urvalet (lookback/källor/ämnen).",
-            )
-        return None
 
-    topic_map = _source_topics_map(config)
-    groups = _group_articles_by_primary_topic(to_sum, topic_map)
+def _load_job_context(store: NewsStore, job_id: int) -> Dict[str, Any]:
+    try:
+        j = store.get_job(job_id) or {}
+        if isinstance(j, dict):
+            return j
+    except Exception:
+        pass
+    return {}
+
+
+def _load_ordered_articles_from_job_checkpoint(
+    config: Dict[str, Any], store: NewsStore, job_id: int
+) -> Tuple[List[str], List[dict]]:
+    """
+    Ladda article_ids från checkpoint (job_<id>.json eller job_<id>.meta.json),
+    hämta artiklar från store och returnera i samma stabila ordning.
+    """
+    key = _checkpoint_key(job_id, [])
+    cp_path = _checkpoint_path(config, key)
+    meta_path = _meta_ckpt_path(config, key)
+
+    cp = None
+    if meta_path.exists():
+        cp = _load_checkpoint(meta_path)
+    if not cp and cp_path.exists():
+        cp = _load_checkpoint(cp_path)
+
+    if not cp:
+        raise RuntimeError(
+            f"Ingen checkpoint hittades för job {job_id} ({cp_path} / {meta_path})"
+        )
+
+    article_ids = cp.get("article_ids") or []
+    if not article_ids:
+        raise RuntimeError(f"Checkpoint saknar article_ids för job {job_id}")
+
+    articles = store.get_articles_by_ids(article_ids)
+    if not articles:
+        raise RuntimeError(
+            "Kunde inte ladda artiklar från store för checkpointens article_ids"
+        )
+
+    by_id = {str(a.get("id")): a for a in articles if a.get("id")}
+    ordered = [by_id[i] for i in article_ids if i in by_id]
+    return article_ids, ordered
+
+
+async def _summarize_and_persist_like_refresh(
+    *,
+    config: Dict[str, Any],
+    store: NewsStore,
+    llm,
+    job_id: Optional[int],
+    articles: List[dict],
+    topic_map: Dict[str, List[str]],
+    selection: Dict[str, Any],
+) -> Any:
+    """
+    Bygger summary_doc IDENTISKT med refresh-flödet:
+      - single-topic => meta + källappendix + selection
+      - multi-topic  => sections + overview (super-meta) + appendix + selection
+    """
+    groups = _group_articles_by_primary_topic(articles, topic_map)
     topics = _topic_order(groups)
-
     created_ts = int(time.time())
 
     # ----------------------------
@@ -405,12 +454,12 @@ async def run_pipeline(
     # ----------------------------
     if len(topics) <= 1:
         meta_text, stats = await summarize_batches_then_meta_with_stats(
-            config, to_sum, llm=llm, store=store, job_id=job_id
+            config, articles, llm=llm, store=store, job_id=job_id
         )
 
-        ids = [a.get("id") for a in to_sum if a.get("id")]
+        ids = [a.get("id") for a in articles if a.get("id")]
 
-        pts = [_published_ts(a) for a in to_sum]
+        pts = [_published_ts(a) for a in articles]
         pts2 = [p for p in pts if p > 0]
         from_ts = min(pts2) if pts2 else 0
         to_ts = max(pts2) if pts2 else 0
@@ -424,7 +473,7 @@ async def run_pipeline(
                 "published_ts": _published_ts(a),
                 "content_hash": a.get("content_hash", ""),
             }
-            for a in to_sum
+            for a in articles
         ]
 
         appendix = _build_sources_appendix_markdown(snapshots)
@@ -456,33 +505,10 @@ async def run_pipeline(
                 "drops": int(stats.get("drops") or 0),
                 "meta_budget_tokens": int(stats.get("meta_budget_tokens") or 0),
             },
-            "selection": {
-                "lookback": str((config.get("ingest") or {}).get("lookback") or ""),
-                "sources": _selected_source_names(config),
-                "topics": _selected_topics_from_config(config),
-                "prompt_package": str(
-                    (
-                        (config.get("prompts") or {})
-                        if isinstance(config.get("prompts"), dict)
-                        else {}
-                    ).get("selected")
-                    or ""
-                ),
-            },
+            "selection": dict(selection or {}),
         }
 
-        summary_doc_id = _persist_summary_doc(store, summary_doc)
-
-        if job_id is not None:
-            store.update_job(
-                job_id,
-                status="done",
-                finished_at=int(time.time()),
-                message=f"Klart: summerade {len(ids)} artiklar (urval: lookback/källor/ämnen).",
-                summary_id=str(summary_doc_id),
-            )
-
-        return summary_doc_id
+        return _persist_summary_doc(store, summary_doc)
 
     # ----------------------------
     # Multi-topic summary
@@ -499,10 +525,12 @@ async def run_pipeline(
     all_ids: List[str] = []
     all_snaps: List[Dict[str, Any]] = []
 
-    pts_all = [_published_ts(a) for a in to_sum]
+    pts_all = [_published_ts(a) for a in articles]
     pts_all2 = [p for p in pts_all if p > 0]
     overall_from = min(pts_all2) if pts_all2 else 0
     overall_to = max(pts_all2) if pts_all2 else 0
+
+    topics = _topic_order(groups)
 
     for i, topic in enumerate(topics, start=1):
         items = groups.get(topic) or []
@@ -567,7 +595,7 @@ async def run_pipeline(
 
     stitched_summary = "\n".join(stitched_parts).strip() + "\n"
 
-    # --- NEW: Super-meta overview from sections (optional, prompt-driven) ---
+    # Super-meta overview (optional, prompt-driven)
     overview_text = ""
     overview_stats: Dict[str, Any] = {
         "super_meta_budget_tokens": 0,
@@ -578,16 +606,13 @@ async def run_pipeline(
             config=config, sections=sections, llm=llm, store=store, job_id=job_id
         )
     except KeyError:
-        # prompt package doesn't define super_meta templates => skip silently
         overview_text = ""
         overview_stats = {"super_meta_budget_tokens": 0, "super_meta_enabled": 0}
 
-    # Build final summary body: overview (if any) + stitched per-topic summary
     final_summary = stitched_summary
     if overview_text.strip():
         final_summary = overview_text.strip() + "\n\n" + stitched_summary.strip() + "\n"
 
-    # Append sources appendix (overall)
     appendix = _build_sources_appendix_markdown(all_snaps)
     if appendix:
         final_summary = final_summary.rstrip() + "\n\n" + appendix
@@ -606,11 +631,11 @@ async def run_pipeline(
         },
         "prompts": load_prompts(config),
         "batching": config.get("batching", {}) or {},
-        "sources": list(dict.fromkeys([x for x in all_ids if x])),  # dedupe keep order
+        "sources": list(dict.fromkeys([x for x in all_ids if x])),
         "sources_snapshots": all_snaps,
         "from": overall_from,
         "to": overall_to,
-        "overview": overview_text,  # NEW
+        "overview": overview_text,
         "summary": final_summary,
         "sections": sections,
         "meta": {
@@ -619,33 +644,186 @@ async def run_pipeline(
                 overview_stats.get("super_meta_budget_tokens") or 0
             ),
         },
-        "selection": {
-            "lookback": str((config.get("ingest") or {}).get("lookback") or ""),
-            "sources": _selected_source_names(config),
-            "topics": _selected_topics_from_config(config),
-            "prompt_package": str(
-                (
-                    (config.get("prompts") or {})
-                    if isinstance(config.get("prompts"), dict)
-                    else {}
-                ).get("selected")
-            )
-            or "",  # Here be dragons...
-        },
+        "selection": dict(selection or {}),
     }
 
-    summary_doc_id = _persist_summary_doc(store, summary_doc)
+    return _persist_summary_doc(store, summary_doc)
 
-    if job_id is not None:
-        store.update_job(
-            job_id,
-            status="done",
-            finished_at=int(time.time()),
-            message=f"Klart: summerade {len(to_sum)} artiklar i {len(sections)} ämnesområden.",
-            summary_id=str(summary_doc_id),
+
+async def run_pipeline(
+    config_path: str = "config.yaml",
+    job_id: Optional[int] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+    config_dict: Optional[Dict[str, Any]] = None,
+) -> Optional[Any]:
+    """
+    Normal refresh pipeline.
+
+    NEW:
+      - status="failed" + finished_at vid exception
+      - sparar selection/topic_map/overrides i job record för stabil resume
+    """
+    try:
+        if config_dict is None:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+        else:
+            config = config_dict
+
+        config = load_feeds_into_config(config, base_config_path=config_path)
+        config = _apply_overrides(config, overrides)
+
+        store = create_store(config.get("store", {}))
+        llm = create_llm_client(config)
+
+        if job_id is not None:
+            store.update_job(
+                job_id,
+                status="running",
+                started_at=int(time.time()),
+                message="Startar ingest...",
+            )
+
+        # Ingest
+        ins, upd = await gather_articles_to_store(config, store, job_id=job_id)
+
+        if job_id is not None:
+            store.update_job(
+                job_id,
+                message=f"Ingest klart. Inserted={ins}, Updated={upd}. Förbereder summering...",
+            )
+
+        # Selection
+        to_sum = _select_articles_for_summary(config, store, limit=2000)
+        if not to_sum:
+            if job_id is not None:
+                store.update_job(
+                    job_id,
+                    status="done",
+                    finished_at=int(time.time()),
+                    message="Klart: inga artiklar matchade urvalet (lookback/källor/ämnen).",
+                )
+            return None
+
+        topic_map = _source_topics_map(config)
+        selection = _selection_doc(config)
+
+        # Save job context for stable resume
+        if job_id is not None:
+            _snapshot_topic_map_for_job(
+                store,
+                job_id,
+                topic_map=topic_map,
+                selection=selection,
+                overrides=overrides,
+            )
+
+        # Summarize + persist (same structure as refresh)
+        summary_doc_id = await _summarize_and_persist_like_refresh(
+            config=config,
+            store=store,
+            llm=llm,
+            job_id=job_id,
+            articles=to_sum,
+            topic_map=topic_map,
+            selection=selection,
         )
 
-    return summary_doc_id
+        if job_id is not None:
+            store.update_job(
+                job_id,
+                status="done",
+                finished_at=int(time.time()),
+                message=f"Klart: summerade {len(to_sum)} artiklar.",
+                summary_id=str(summary_doc_id),
+            )
+
+        return summary_doc_id
+
+    except Exception as e:
+        # NEW: mark job failed on exception
+        if job_id is not None:
+            try:
+                store.update_job(
+                    job_id,
+                    status="failed",
+                    finished_at=int(time.time()),
+                    message=f"Fel: {e}",
+                )
+            except Exception:
+                pass
+        raise
+
+
+async def run_resume_job(
+    *,
+    config: Dict[str, Any],
+    store: NewsStore,
+    llm,
+    job_id: int,
+) -> str:
+    """
+    Resume som producerar samma summary_doc-struktur som en vanlig refresh.
+
+    - Läser artiklarna från checkpoint (stabil corpus)
+    - Försöker läsa selection/topic_map från job-recorden (stabilt även om config ändrats)
+    - Bygger sections + appendix + selection osv
+    - Sätter job status failed vid exception
+    """
+    jid = int(job_id)
+    try:
+        # Try load job context (saved during original run)
+        ctx = _load_job_context(store, jid)
+
+        selection = ctx.get("selection")
+        if not isinstance(selection, dict):
+            selection = _selection_doc(config)
+
+        topic_map = ctx.get("source_topics_map")
+        if not isinstance(topic_map, dict):
+            topic_map = _source_topics_map(config)
+
+        # Load stable ordered articles from checkpoint/meta-checkpoint
+        _article_ids, ordered_articles = _load_ordered_articles_from_job_checkpoint(
+            config, store, jid
+        )
+
+        # Summarize + persist like refresh
+        summary_doc_id = await _summarize_and_persist_like_refresh(
+            config=config,
+            store=store,
+            llm=llm,
+            job_id=jid,
+            articles=ordered_articles,
+            topic_map=topic_map,
+            selection=selection,
+        )
+
+        # Mark job done
+        try:
+            store.update_job(
+                jid,
+                status="done",
+                finished_at=int(time.time()),
+                message=f"Resume klart: summerade {len(ordered_articles)} artiklar.",
+                summary_id=str(summary_doc_id),
+            )
+        except Exception:
+            pass
+
+        return str(summary_doc_id)
+
+    except Exception as e:
+        try:
+            store.update_job(
+                jid,
+                status="failed",
+                finished_at=int(time.time()),
+                message=f"Resume fel: {e}",
+            )
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":

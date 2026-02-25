@@ -1,3 +1,35 @@
+# LICENSE HEADER MANAGED BY add-license-header
+#
+# BSD 3-Clause License
+#
+# Copyright (c) 2026, Martin Vesterlund
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
 from __future__ import annotations
 
 import os
@@ -122,8 +154,8 @@ class JobsDialog(QDialog):
                 "Meddelande",
             ]
         )
-        self.table.setSelectionBehavior(QTableWidget.SelectRows) # type: ignore
-        self.table.setSelectionMode(QTableWidget.SingleSelection) # type: ignore
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)  # type: ignore
+        self.table.setSelectionMode(QTableWidget.SingleSelection)  # type: ignore
         root.addWidget(self.table, 1)
 
         btn_row = QHBoxLayout()
@@ -156,8 +188,10 @@ class JobsDialog(QDialog):
     def _call_store_list_jobs(self) -> List[Dict[str, Any]]:
         fn = getattr(self.store, "list_jobs", None)
         if not callable(fn):
-            raise RuntimeError("Store saknar list_jobs(). Uppdatera persistence-storen.")
-        return fn(300) or [] # type: ignore
+            raise RuntimeError(
+                "Store saknar list_jobs(). Uppdatera persistence-storen."
+            )
+        return fn(300) or []  # type: ignore
 
     def reload(self) -> None:
         try:
@@ -188,7 +222,11 @@ class JobsDialog(QDialog):
             temp_preview = ""
             try:
                 temp = self.store.get_temp_summary(jid)
-                if temp and isinstance(temp, dict) and (temp.get("summary") or "").strip():
+                if (
+                    temp
+                    and isinstance(temp, dict)
+                    and (temp.get("summary") or "").strip()
+                ):
                     has_temp = True
                     temp_preview = _clip(str(temp.get("summary") or ""), 220)
             except Exception:
@@ -221,7 +259,7 @@ class JobsDialog(QDialog):
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             it0 = QTableWidgetItem(str(r.job_id))
-            it0.setData(Qt.UserRole, r.job_id) # type: ignore
+            it0.setData(Qt.UserRole, r.job_id)  # type: ignore
 
             it1 = QTableWidgetItem(format_ts(r.created_at) if r.created_at else "")
             it2 = QTableWidgetItem(format_ts(r.started_at) if r.started_at else "")
@@ -259,7 +297,7 @@ class JobsDialog(QDialog):
         it = self.table.item(r, 0)
         if not it:
             return None
-        jid = it.data(Qt.UserRole) # type: ignore
+        jid = it.data(Qt.UserRole)  # type: ignore
         try:
             return int(jid)
         except Exception:
@@ -303,8 +341,16 @@ class JobsDialog(QDialog):
             QMessageBox.warning(self, "Kunde inte läsa temp", str(e))
             return
 
-        if not temp or not isinstance(temp, dict) or not (temp.get("summary") or "").strip():
-            QMessageBox.information(self, "Ingen temp summary", "Det finns inget delresultat sparat för det här jobbet.")
+        if (
+            not temp
+            or not isinstance(temp, dict)
+            or not (temp.get("summary") or "").strip()
+        ):
+            QMessageBox.information(
+                self,
+                "Ingen temp summary",
+                "Det finns inget delresultat sparat för det här jobbet.",
+            )
             return
 
         text = str(temp.get("summary") or "")
@@ -321,7 +367,11 @@ class JobsDialog(QDialog):
         cp = Path(row.ckpt_path)
         mp = Path(row.meta_path)
         if not cp.exists() and not mp.exists():
-            QMessageBox.information(self, "Inget att radera", "Det finns inga checkpoint-filer för det här jobbet.")
+            QMessageBox.information(
+                self,
+                "Inget att radera",
+                "Det finns inga checkpoint-filer för det här jobbet.",
+            )
             return
 
         msg = (
@@ -330,7 +380,9 @@ class JobsDialog(QDialog):
             f"- {mp}\n\n"
             "Det går inte att ångra."
         )
-        resp = QMessageBox.question(self, "Bekräfta", msg, QMessageBox.Yes | QMessageBox.No)  # type: ignore
+        resp = QMessageBox.question(
+            self, "Bekräfta", msg, QMessageBox.Yes | QMessageBox.No
+        )  # type: ignore
         if resp != QMessageBox.Yes:  # type: ignore
             return
 
@@ -360,7 +412,9 @@ class JobsDialog(QDialog):
             cp, _mp = _job_checkpoint_paths(self.cfg, 1)
             d = cp.parent
             if not d.exists():
-                QMessageBox.information(self, "Saknas", f"Checkpoint-mappen finns inte än:\n{d}")
+                QMessageBox.information(
+                    self, "Saknas", f"Checkpoint-mappen finns inte än:\n{d}"
+                )
                 return
 
             # Windows/macOS/Linux: använd os.startfile / open / xdg-open

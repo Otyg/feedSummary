@@ -102,12 +102,12 @@ def create_store(cfg: Dict[str, Any]) -> NewsStore:
         raw_path = cfg.get("path", "news_docs.json")
         path = _expand_path(raw_path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        return TinyDBStore(path=path) # type: ignore
+        return TinyDBStore(path=path)  # type: ignore
 
     if provider in ("sqlite", "sqlite3"):
         raw_path = cfg.get("path", "news_docs.sqlite")
         path = _expand_path(raw_path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        return SqliteStore(path=path) # type: ignore
+        return SqliteStore(path=path)  # type: ignore
 
     raise ValueError(f"Unsupported store provider: {provider}")

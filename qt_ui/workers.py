@@ -37,9 +37,8 @@ from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QThread, Signal
 
-from summarizer.main import run_pipeline
+from summarizer.main import run_pipeline, run_resume_job
 from summarizer.prompt_replay import PromptSet, rerun_summary_from_existing
-from summarizer.summarizer import run_resume_and_persist_summary
 
 from uicommon.bootstrap_ui import resolve_config_path
 
@@ -79,6 +78,7 @@ class PipelineWorker(QThread):
 class ResumeWorker(QThread):
     """
     Resume-from-checkpoint and persist a summary_doc.
+    Produces the SAME summary_doc structure as a normal refresh.
     """
 
     status = Signal(str)
@@ -96,7 +96,7 @@ class ResumeWorker(QThread):
         try:
             self.status.emit(f"Återupptar från checkpoint (job {self.job_id})…")
             summary_id = asyncio.run(
-                run_resume_and_persist_summary(
+                run_resume_job(
                     config=self.cfg,
                     store=self.store,
                     llm=self.llm,

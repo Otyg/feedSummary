@@ -236,7 +236,7 @@ class MainWindow(QMainWindow):
             return None
         try:
             jid = fn()
-            return int(jid) # type: ignore
+            return int(jid)  # type: ignore
         except Exception:
             return None
 
@@ -278,7 +278,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        sid = str(current.data(Qt.UserRole)) # type: ignore
+        sid = str(current.data(Qt.UserRole))  # type: ignore
         sdoc = self.store.get_summary_doc(sid)
         if not sdoc:
             QMessageBox.warning(self, "Saknas", "Kunde inte läsa sammanfattningen.")
