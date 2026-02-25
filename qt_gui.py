@@ -746,7 +746,7 @@ class MainWindow(QMainWindow):
         ed_split.addWidget(ed2)
         ed_split.addWidget(ed3)
         ed_split.addWidget(ed4)
-        ed_split.setSizes([160, 220, 160, 220])
+        ed_split.setSizes([160, 220, 160, 220, 160, 220])
         right_l.addWidget(ed_split, 2)
 
         run_row = QHBoxLayout()
