@@ -199,6 +199,12 @@ class OllamaCloudClient:
                 return (resp.get("message") or {}).get("content", "") or ""
             return getattr(resp.message, "content", "") or ""
         except Exception as e:
+            try:
+                body = getattr(e, "error", None) or getattr(e, "message", None) or str(e)
+                if isinstance(body, str) and body.strip():
+                    self.log.error("Ollama Cloud error response/body:\n%s", body[:12000])
+            except Exception:
+                pass
             if _is_status(e, 401) or _is_status(e, 403):
                 raise LLMAuthError(
                     "Ollama Cloud: auth misslyckades (api_key fel/nekad)."
