@@ -655,6 +655,7 @@ async def run_pipeline(
     job_id: Optional[int] = None,
     overrides: Optional[Dict[str, Any]] = None,
     config_dict: Optional[Dict[str, Any]] = None,
+    llm=None,
 ) -> Optional[Any]:
     """
     Normal refresh pipeline.
@@ -674,7 +675,8 @@ async def run_pipeline(
         config = _apply_overrides(config, overrides)
 
         store = create_store(config.get("store", {}))
-        llm = create_llm_client(config)
+        if llm is None:
+            llm = create_llm_client(config)
 
         if job_id is not None:
             store.update_job(

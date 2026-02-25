@@ -170,6 +170,77 @@ class MainWindow(QMainWindow):
 
         logging.getLogger("feedsum.qt").info("Bootstrap config_path=%s", CONFIG_PATH)
 
+    def _on_llm_decision_requested(self, payload: object) -> None:
+        try:
+            p = payload if isinstance(payload, dict) else {}
+            provider = str(p.get("provider") or "unknown")
+            model = str(p.get("model") or "unknown")
+            attempt = int(p.get("attempt") or 1)
+            et = str(p.get("exception_type") or "Error")
+            em = str(p.get("exception_message") or "")
+            body = str(p.get("response_body") or "")
+        except Exception:
+            provider, model, attempt, et, em, body = (
+                "unknown",
+                "unknown",
+                1,
+                "Error",
+                "",
+                "",
+            )
+
+        # Visa kort sammanfattning + möjlighet att expandera body i loggen
+        msg = (
+            f"LLM-anrop misslyckades.\n\n"
+            f"Provider: {provider}\n"
+            f"Model: {model}\n"
+            f"Försök: {attempt}\n"
+            f"Fel: {et}\n"
+            f"Meddelande: {em}\n\n"
+            f"Response/body har loggats i loggpanelen."
+        )
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("LLM-fel")
+        box.setText(msg)
+
+        btn_retry = box.addButton("Försök igen", QMessageBox.AcceptRole)
+        btn_skip = box.addButton("Gå vidare (hoppa över)", QMessageBox.DestructiveRole)
+        btn_abort = box.addButton("Avbryt", QMessageBox.RejectRole)
+        box.setDefaultButton(btn_retry)
+
+        # Extra info (Qt visar "Details" som utfällbar)
+        if body.strip():
+            box.setDetailedText(body)
+
+        box.exec()
+
+        clicked = box.clickedButton()
+        decision = "abort"
+        if clicked == btn_retry:
+            decision = "retry"
+        elif clicked == btn_skip:
+            decision = "skip"
+        else:
+            decision = "abort"
+
+        # Skicka beslut till aktiv worker (pipeline eller resume)
+        try:
+            w = getattr(self, "worker", None)
+            if w and getattr(w, "isRunning", lambda: False)():
+                w.set_llm_decision(decision)
+                return
+        except Exception:
+            pass
+        try:
+            rw = getattr(self, "resume_worker", None)
+            if rw and getattr(rw, "isRunning", lambda: False)():
+                rw.set_llm_decision(decision)
+                return
+        except Exception:
+            pass
+
     # -------- shared reload of config-dependent UI --------
     def _reload_all_config_dependent_ui(self) -> None:
         self.cfg = load_config(CONFIG_PATH)
@@ -251,6 +322,9 @@ class MainWindow(QMainWindow):
 
         self.resume_worker = ResumeWorker(
             cfg=cfg, store=store, llm=llm, job_id=int(job_id)
+        )
+        self.resume_worker.llm_decision_requested.connect(
+            self._on_llm_decision_requested
         )
         self.resume_worker.status.connect(self.lbl_status.setText)
         self.resume_worker.done.connect(self._on_resume_done)
@@ -385,6 +459,7 @@ class MainWindow(QMainWindow):
         self._last_job_id = job_id
 
         self.worker = PipelineWorker(self.cfg, overrides, job_id)
+        self.worker.llm_decision_requested.connect(self._on_llm_decision_requested)
         self.worker.status.connect(self.lbl_status.setText)
         self.worker.done.connect(self.on_pipeline_done)
         self.worker.failed.connect(self.on_pipeline_failed)
