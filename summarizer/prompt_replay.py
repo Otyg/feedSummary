@@ -56,6 +56,8 @@ class PromptSet:
     batch_user_template: str
     meta_system: str
     meta_user_template: str
+    super_meta_system: str
+    super_meta_user_template:str
 
 
 def _published_ts(a: dict) -> int:
@@ -115,6 +117,8 @@ def _extract_promptset_from_summary_doc(summary_doc: Dict[str, Any]) -> PromptSe
         batch_user_template=str(p.get("batch_user_template") or ""),
         meta_system=str(p.get("meta_system") or ""),
         meta_user_template=str(p.get("meta_user_template") or ""),
+        super_meta_system=str(p.get("super_meta_system") or ""),
+        super_meta_user_template=str(p.get("super_meta_user_template") or ""),
     )
 
 
@@ -176,6 +180,8 @@ def load_prompt_package(
         batch_user_template=str(pkg.get("batch_user_template") or ""),
         meta_system=str(pkg.get("meta_system") or ""),
         meta_user_template=str(pkg.get("meta_user_template") or ""),
+        super_meta_system=str(pkg.get("super_meta_system") or ""),
+        super_meta_user_template=str(pkg.get("super_meta_user_template") or ""),
     )
 
 

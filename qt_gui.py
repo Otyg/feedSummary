@@ -189,7 +189,6 @@ class MainWindow(QMainWindow):
                 "",
             )
 
-        # Visa kort sammanfattning + möjlighet att expandera body i loggen
         msg = (
             f"LLM-anrop misslyckades.\n\n"
             f"Provider: {provider}\n"
@@ -210,7 +209,6 @@ class MainWindow(QMainWindow):
         btn_abort = box.addButton("Avbryt", QMessageBox.RejectRole)
         box.setDefaultButton(btn_retry)
 
-        # Extra info (Qt visar "Details" som utfällbar)
         if body.strip():
             box.setDetailedText(body)
 
@@ -225,7 +223,6 @@ class MainWindow(QMainWindow):
         else:
             decision = "abort"
 
-        # Skicka beslut till aktiv worker (pipeline eller resume)
         try:
             w = getattr(self, "worker", None)
             if w and getattr(w, "isRunning", lambda: False)():
@@ -241,7 +238,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # -------- shared reload of config-dependent UI --------
     def _reload_all_config_dependent_ui(self) -> None:
         self.cfg = load_config(CONFIG_PATH)
         self.store = get_store(self.cfg)
@@ -398,7 +394,6 @@ class MainWindow(QMainWindow):
 
         self.tabs.addTab(w, "Sammanfattningar")
 
-    # NEW
     def open_jobs_dialog(self) -> None:
         from qt_ui.jobs import JobsDialog
 
@@ -454,7 +449,6 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("running…")
         logging.getLogger("feedsum.qt").info("Refresh overrides=%s", overrides)
 
-        # NEW: create job id for checkpoint/resume support (if store supports it)
         job_id = self._maybe_create_job()
         self._last_job_id = job_id
 
@@ -478,7 +472,6 @@ class MainWindow(QMainWindow):
         self._reload_all_config_dependent_ui()
         self._feeds_reload()
 
-        # Keep last job id for potential later resume (or debugging)
         if isinstance(job_id, int) or (
             isinstance(job_id, str) and str(job_id).isdigit()
         ):
@@ -715,10 +708,14 @@ class MainWindow(QMainWindow):
         self.pl_batch_user = QPlainTextEdit()
         self.pl_meta_system = QPlainTextEdit()
         self.pl_meta_user = QPlainTextEdit()
+        self.pl_super_meta_system = QPlainTextEdit()
+        self.pl_super_meta_user = QPlainTextEdit()
         self.pl_batch_system.setPlaceholderText("batch_system…")
         self.pl_batch_user.setPlaceholderText("batch_user_template…")
         self.pl_meta_system.setPlaceholderText("meta_system…")
         self.pl_meta_user.setPlaceholderText("meta_user_template…")
+        self.pl_super_meta_system.setPlaceholderText("super_meta_system...")
+        self.pl_super_meta_user.setPlaceholderText("super_meta_user...")
 
         ed_split = QSplitter(Qt.Vertical)  # type: ignore
         ed1 = QWidget()
@@ -737,6 +734,14 @@ class MainWindow(QMainWindow):
         ed4_l = QVBoxLayout(ed4)
         ed4_l.addWidget(QLabel("meta_user_template"))
         ed4_l.addWidget(self.pl_meta_user)
+        ed5 = QWidget()
+        ed5_l = QVBoxLayout(ed5)
+        ed5_l.addWidget(QLabel("super_meta_system"))
+        ed5_l.addWidget(self.pl_super_meta_system)
+        ed6 = QWidget()
+        ed6_l = QVBoxLayout(ed6)
+        ed6_l.addWidget(QLabel("super_meta_user_template"))
+        ed6_l.addWidget(self.pl_super_meta_user)
         ed_split.addWidget(ed1)
         ed_split.addWidget(ed2)
         ed_split.addWidget(ed3)
@@ -829,6 +834,8 @@ class MainWindow(QMainWindow):
         self.pl_batch_user.setPlainText(ps.batch_user_template)
         self.pl_meta_system.setPlainText(ps.meta_system)
         self.pl_meta_user.setPlainText(ps.meta_user_template)
+        self.pl_super_meta_system.setPlainText(ps.super_meta_system)
+        self.pl_super_meta_user.setPlainText(ps.super_meta_user_template)
         self.pl_status.setText(f"Prompts laddade från: {sid}")
 
     def _pl_promptset_from_ui(self) -> PromptSet:
@@ -837,6 +844,8 @@ class MainWindow(QMainWindow):
             batch_user_template=self.pl_batch_user.toPlainText(),
             meta_system=self.pl_meta_system.toPlainText(),
             meta_user_template=self.pl_meta_user.toPlainText(),
+            super_meta_system=self.pl_super_meta_system.toPlainText(),
+            super_meta_user_template=self.pl_super_meta_user.toPlainText()
         )
 
     def _pl_load_selected_package(self) -> None:

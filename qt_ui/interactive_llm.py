@@ -53,13 +53,12 @@ class LLMFailureContext:
     exception_type: str
     exception_message: str
     response_body: str
-    message_roles: str  # compact: "system,user"
+    message_roles: str
     user_chars: int
     total_chars: int
 
 
 DecisionProvider = Callable[[LLMFailureContext], str]
-# expected decisions: "retry" | "skip" | "abort"
 
 
 def _clip(s: str, n: int = 6000) -> str:
@@ -90,7 +89,6 @@ def _extract_response_body_best_effort(err: BaseException) -> str:
 
         resp = getattr(cur, "response", None)
         if resp is not None:
-            # requests/httpx style
             try:
                 txt = getattr(resp, "text", None)
                 if isinstance(txt, str) and txt.strip():
@@ -103,17 +101,12 @@ def _extract_response_body_best_effort(err: BaseException) -> str:
                     bodies.append(f"response.content(bytes): {content[:8000]!r}")
             except Exception:
                 pass
-
-        # move to cause/context
         nxt = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
         cur = nxt if isinstance(nxt, BaseException) else None
 
-    # If the exception string itself looks like it contains a body snippet, include it.
     s = str(err).strip()
     if s:
         bodies.append(f"exception.str: {s}")
-
-    # Deduplicate while keeping order
     out: List[str] = []
     used = set()
     for b in bodies:
@@ -180,8 +173,6 @@ class InteractiveLLMClient:
                     user_chars=int(user_chars),
                     total_chars=int(total_chars),
                 )
-
-                # Log response body (best effort). Keep at INFO/WARNING levels.
                 logger.error(
                     "LLM call failed (provider=%s model=%s attempt=%s type=%s). Response/body:\n%s",
                     ctx.provider,
@@ -210,6 +201,4 @@ class InteractiveLLMClient:
                         f"- Model: `{ctx.model}`\n"
                         f"- Fel: `{ctx.exception_type}`: {ctx.exception_message}\n"
                     )
-
-                # abort
-                raise
+                raise e

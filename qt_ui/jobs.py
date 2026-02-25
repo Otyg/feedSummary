@@ -230,10 +230,8 @@ class JobsDialog(QDialog):
                     has_temp = True
                     temp_preview = _clip(str(temp.get("summary") or ""), 220)
             except Exception:
-                # temp_summaries är "nice to have" – ignorera fel
                 has_temp = False
 
-            # Visa alla jobb, men sorteras och användaren väljer.
             rows.append(
                 JobRow(
                     job_id=jid,
@@ -252,7 +250,6 @@ class JobsDialog(QDialog):
                 )
             )
 
-        # senaste först
         rows.sort(key=lambda r: r.created_at, reverse=True)
         self._rows = rows
 
@@ -325,7 +322,6 @@ class JobsDialog(QDialog):
             )
             return
 
-        # Returnera vald job_id till caller
         self.setProperty("selected_job_id", int(row.job_id))
         self.accept()
 
@@ -405,10 +401,7 @@ class JobsDialog(QDialog):
         self.reload()
 
     def _open_ckpt_dir(self) -> None:
-        # Best effort: öppna checkpoint-dir (om konfigurerad)
-        # summarizer.helpers default: ./.checkpoints
         try:
-            # Vi räknar ut en checkpoint-path för ett "fake" key så vi får dir
             cp, _mp = _job_checkpoint_paths(self.cfg, 1)
             d = cp.parent
             if not d.exists():
@@ -417,7 +410,6 @@ class JobsDialog(QDialog):
                 )
                 return
 
-            # Windows/macOS/Linux: använd os.startfile / open / xdg-open
             if os.name == "nt":
                 os.startfile(str(d))  # type: ignore[attr-defined]
                 return
