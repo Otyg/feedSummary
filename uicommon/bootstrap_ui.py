@@ -37,10 +37,12 @@ import os
 import platform
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 APP_NAME = "FeedSummary"
+BUNDLED_CONFIG_TEMPLATE = "config.yaml.dist"  # <-- REPLACED config.yaml.defaults
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,11 +56,8 @@ def _setup_logging_if_needed() -> None:
     if _LOGGER.handlers:
         return
 
-    # If root has handlers, respect that and just set our level.
     root = logging.getLogger()
-    if root.handlers:
-        pass
-    else:
+    if not root.handlers:
         level_name = (os.environ.get("FEEDSUMMARY_LOG_LEVEL") or "INFO").upper().strip()
         level = getattr(logging, level_name, logging.INFO)
         logging.basicConfig(
@@ -85,17 +84,14 @@ class RuntimePaths:
 
 
 def is_pyinstaller() -> bool:
-    frozen = bool(getattr(sys, "frozen", False)) and hasattr(sys, "_MEIPASS")
-    return frozen
+    return bool(getattr(sys, "frozen", False)) and hasattr(sys, "_MEIPASS")
 
 
 def _bundled_base_dir() -> Path:
-    # Where bundled files are unpacked when frozen
     return Path(getattr(sys, "_MEIPASS")) if hasattr(sys, "_MEIPASS") else Path.cwd()
 
 
 def _repo_base_dir() -> Path:
-    # Repo root heuristic: directory containing this file
     return Path(__file__).resolve().parent.parent
 
 
@@ -130,9 +126,48 @@ def resource_path(rel: str) -> Path:
     return (base / rel).resolve()
 
 
+def _safe_copy2(src: Path, dst: Path, *, retries: int = 12, sleep_s: float = 0.12) -> bool:
+    """
+    Copy with retries. In frozen/PyInstaller, AV/Defender can briefly lock files in _MEI*.
+    Never crash startup due to transient PermissionError.
+
+    Returns True if copied, False if failed.
+    """
+    if not src.exists():
+        return False
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    last_err: Exception | None = None
+    for i in range(retries):
+        try:
+            shutil.copy2(src, dst)
+            return True
+        except (PermissionError, OSError) as e:
+            last_err = e
+            time.sleep(sleep_s * (i + 1))
+
+    _LOGGER.warning("Copy failed after retries: %s -> %s (%s)", src, dst, last_err)
+    return False
+
+
+def _safe_write_text(dst: Path, text: str) -> bool:
+    """
+    Best-effort write without crashing bootstrap.
+    """
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(text, encoding="utf-8")
+        return True
+    except Exception as e:
+        _LOGGER.warning("Write failed: %s (%s)", dst, e)
+        return False
+
+
 def _copy_tree(src_dir: Path, dst_dir: Path) -> None:
     """
     Copy a directory tree. If dst exists, merge (do not delete).
+    Robust: never crash on copy errors.
     """
     dst_dir.mkdir(parents=True, exist_ok=True)
     for item in src_dir.rglob("*"):
@@ -140,48 +175,101 @@ def _copy_tree(src_dir: Path, dst_dir: Path) -> None:
         target = dst_dir / rel
         if item.is_dir():
             target.mkdir(parents=True, exist_ok=True)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, target)
+            continue
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        ok = _safe_copy2(item, target)
+        if not ok:
+            _LOGGER.warning("Skipped copying resource (unreadable/locked?): %s", item)
 
 
 def ensure_app_data_initialized(app_name: str = APP_NAME) -> Path:
     """
-    If the app data dir does not exist:
-      - create it
-      - copy config.yaml.dist and config/ into it
+    Ensure the app data dir exists and is populated.
 
-    Returns the app data dir path.
+    - Idempotent: even if AppData exists, ensure baseline resources are present.
+    - Robust: never crash if bundled resources (in _MEI*) are temporarily locked.
     """
     _setup_logging_if_needed()
     app_dir = get_app_data_dir(app_name)
 
     if app_dir.exists():
         _LOGGER.info("AppData exists: %s", app_dir)
-        return app_dir
+    else:
+        _LOGGER.info("AppData missing; creating: %s", app_dir)
+        app_dir.mkdir(parents=True, exist_ok=True)
 
-    _LOGGER.info("AppData missing; creating: %s", app_dir)
-    app_dir.mkdir(parents=True, exist_ok=True)
-
-    # Copy config.yaml.dist (if present in bundle/source)
+    # Copy config.yaml.dist (if present) -> AppData, if missing
     dist_src = resource_path("config.yaml.dist")
     dist_dst = app_dir / "config.yaml.dist"
-    if dist_src.exists():
-        shutil.copy2(dist_src, dist_dst)
-        _LOGGER.info("Copied config.yaml.dist -> %s", dist_dst)
-    else:
-        _LOGGER.warning("Missing bundled config.yaml.dist at: %s", dist_src)
+    if not dist_dst.exists():
+        if dist_src.exists():
+            if _safe_copy2(dist_src, dist_dst):
+                _LOGGER.info("Copied config.yaml.dist -> %s", dist_dst)
+            else:
+                _LOGGER.warning("Could not copy config.yaml.dist from bundle: %s", dist_src)
+        else:
+            _LOGGER.warning("Missing bundled config.yaml.dist at: %s", dist_src)
 
-    # Copy config directory (if present)
+    # Copy config directory (if present) -> merge into AppData/config
     config_dir_src = resource_path("config")
     config_dir_dst = app_dir / "config"
     if config_dir_src.exists() and config_dir_src.is_dir():
         _copy_tree(config_dir_src, config_dir_dst)
-        _LOGGER.info("Copied config/ -> %s", config_dir_dst)
+        _LOGGER.info("Ensured config/ -> %s", config_dir_dst)
     else:
         _LOGGER.warning("Missing bundled config/ dir at: %s", config_dir_src)
 
     return app_dir
+
+
+def _ensure_user_config_from_template(app_dir: Path) -> Path:
+    """
+    Ensure app_dir/config.yaml exists.
+
+    Replacement for the old config.yaml.defaults flow:
+      - Use config.yaml.dist as template (bundled + copied to AppData).
+      - Avoid reading config directly from _MEI* (can be locked).
+      - Never crash: if copying fails, write a minimal YAML config.
+
+    Returns the config.yaml path (in AppData).
+    """
+    user_cfg = app_dir / "config.yaml"
+    if user_cfg.exists():
+        return user_cfg
+
+    # 1) Try to create from AppData/config.yaml.dist (preferred, stable location)
+    dist_in_appdata = app_dir / "config.yaml.dist"
+    if dist_in_appdata.exists():
+        if _safe_copy2(dist_in_appdata, user_cfg):
+            _LOGGER.info("Created user config from AppData template: %s", user_cfg)
+            return user_cfg
+        _LOGGER.warning("Could not copy AppData template to user config: %s", dist_in_appdata)
+
+    # 2) Try to create from bundled template (may be in _MEI*)
+    bundled_template = resource_path(BUNDLED_CONFIG_TEMPLATE)
+    if bundled_template.exists():
+        if _safe_copy2(bundled_template, user_cfg):
+            _LOGGER.info("Created user config from bundled template: %s", user_cfg)
+            return user_cfg
+        _LOGGER.warning("Could not copy bundled template to user config: %s", bundled_template)
+
+    # 3) Last resort: write a minimal config so app can still start and show UI/errors
+    minimal = (
+        "# Auto-generated minimal config because template could not be copied.\n"
+        "store: {}\n"
+        "ingest:\n"
+        "  lookback: 24h\n"
+        "prompts:\n"
+        "  path: config/prompts.yaml\n"
+    )
+    if _safe_write_text(user_cfg, minimal):
+        _LOGGER.warning("Wrote minimal user config (template unavailable): %s", user_cfg)
+        return user_cfg
+
+    # Absolute last resort: return AppData path anyway (caller will likely fail later)
+    _LOGGER.error("Failed to create any user config at: %s", user_cfg)
+    return user_cfg
 
 
 def resolve_config_path(app_name: str = APP_NAME) -> RuntimePaths:
@@ -189,9 +277,9 @@ def resolve_config_path(app_name: str = APP_NAME) -> RuntimePaths:
     Shared startup logic.
 
     If frozen (PyInstaller):
-      1) Ensure app data dir exists (create + copy config.yaml.dist + config/)
-      2) If app_data/config.yaml exists -> use it
-         else -> use bundled config.yaml.defaults
+      1) Ensure app data dir exists (create + copy config.yaml.dist + config/) [robust]
+      2) Ensure app_data/config.yaml exists from config.yaml.dist [robust]
+      3) Use app_data/config.yaml
 
     If not frozen:
       1) If FEEDSUMMARY_CONFIG is set -> use it
@@ -207,7 +295,6 @@ def resolve_config_path(app_name: str = APP_NAME) -> RuntimePaths:
     _LOGGER.info("Bootstrap start (frozen=%s, base_dir=%s)", frozen, base_dir)
     _LOGGER.info("AppData dir resolved: %s", app_dir)
 
-    # allow override always (useful for debugging even in frozen)
     env_cfg = os.environ.get("FEEDSUMMARY_CONFIG")
     if env_cfg:
         p = Path(env_cfg).expanduser().resolve()
@@ -221,20 +308,12 @@ def resolve_config_path(app_name: str = APP_NAME) -> RuntimePaths:
 
     if frozen:
         app_dir = ensure_app_data_initialized(app_name)
-        user_cfg = app_dir / "config.yaml"
-        defaults_cfg = resource_path("config.yaml.defaults")
+        cfg_path = _ensure_user_config_from_template(app_dir)
 
-        if user_cfg.exists():
-            cfg_path = user_cfg
-            _LOGGER.info("Using user config: %s", cfg_path)
+        if cfg_path.exists():
+            _LOGGER.info("Using config: %s", cfg_path)
         else:
-            cfg_path = defaults_cfg
-            if cfg_path.exists():
-                _LOGGER.info(
-                    "User config missing; using bundled defaults: %s", cfg_path
-                )
-            else:
-                _LOGGER.error("Bundled defaults missing: %s", cfg_path)
+            _LOGGER.error("Config path does not exist: %s", cfg_path)
 
         return RuntimePaths(
             base_dir=base_dir,
@@ -253,9 +332,7 @@ def resolve_config_path(app_name: str = APP_NAME) -> RuntimePaths:
         _LOGGER.info("Source-mode -> using repo config.yaml: %s", cfg_path)
     elif dist.exists():
         cfg_path = dist
-        _LOGGER.info(
-            "Source-mode -> config.yaml missing; using config.yaml.dist: %s", cfg_path
-        )
+        _LOGGER.info("Source-mode -> config.yaml missing; using config.yaml.dist: %s", cfg_path)
     else:
         cfg_path = dist
         _LOGGER.warning(
