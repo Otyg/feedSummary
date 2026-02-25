@@ -685,8 +685,19 @@ class MainWindow(QMainWindow):
         left_l.addWidget(self.btn_pl_load_from_summary)
         main_split.addWidget(left)
 
+        # --- replace the "right = QWidget(); right_l = QVBoxLayout(right)" block with this ---
+
+        # Scrollable right side (fix: editors can grow beyond screen)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+
         right = QWidget()
         right_l = QVBoxLayout(right)
+        right_l.setContentsMargins(6, 6, 6, 6)
+        right_l.setSpacing(8)
+
+        # IMPORTANT: put the right widget inside the scroll area
+        right_scroll.setWidget(right)
 
         pkg_row = QHBoxLayout()
         self.pl_pkg_combo = QComboBox()
@@ -710,43 +721,54 @@ class MainWindow(QMainWindow):
         self.pl_meta_user = QPlainTextEdit()
         self.pl_super_meta_system = QPlainTextEdit()
         self.pl_super_meta_user = QPlainTextEdit()
+
         self.pl_batch_system.setPlaceholderText("batch_system…")
         self.pl_batch_user.setPlaceholderText("batch_user_template…")
         self.pl_meta_system.setPlaceholderText("meta_system…")
         self.pl_meta_user.setPlaceholderText("meta_user_template…")
-        self.pl_super_meta_system.setPlaceholderText("super_meta_system...")
-        self.pl_super_meta_user.setPlaceholderText("super_meta_user...")
+        self.pl_super_meta_system.setPlaceholderText("super_meta_system…")
+        self.pl_super_meta_user.setPlaceholderText("super_meta_user_template…")
+
+        # Optional: make them a bit easier to use in a scroll area
+        for ed in (
+            self.pl_batch_system,
+            self.pl_batch_user,
+            self.pl_meta_system,
+            self.pl_meta_user,
+            self.pl_super_meta_system,
+            self.pl_super_meta_user,
+        ):
+            ed.setMinimumHeight(120)
 
         ed_split = QSplitter(Qt.Vertical)  # type: ignore
-        ed1 = QWidget()
-        ed1_l = QVBoxLayout(ed1)
-        ed1_l.addWidget(QLabel("batch_system"))
-        ed1_l.addWidget(self.pl_batch_system)
-        ed2 = QWidget()
-        ed2_l = QVBoxLayout(ed2)
-        ed2_l.addWidget(QLabel("batch_user_template"))
-        ed2_l.addWidget(self.pl_batch_user)
-        ed3 = QWidget()
-        ed3_l = QVBoxLayout(ed3)
-        ed3_l.addWidget(QLabel("meta_system"))
-        ed3_l.addWidget(self.pl_meta_system)
-        ed4 = QWidget()
-        ed4_l = QVBoxLayout(ed4)
-        ed4_l.addWidget(QLabel("meta_user_template"))
-        ed4_l.addWidget(self.pl_meta_user)
-        ed5 = QWidget()
-        ed5_l = QVBoxLayout(ed5)
-        ed5_l.addWidget(QLabel("super_meta_system"))
-        ed5_l.addWidget(self.pl_super_meta_system)
-        ed6 = QWidget()
-        ed6_l = QVBoxLayout(ed6)
-        ed6_l.addWidget(QLabel("super_meta_user_template"))
-        ed6_l.addWidget(self.pl_super_meta_user)
+
+        def _wrap_editor(title: str, editor: QPlainTextEdit) -> QWidget:
+            ww = QWidget()
+            ll = QVBoxLayout(ww)
+            ll.setContentsMargins(0, 0, 0, 0)
+            ll.setSpacing(4)
+            ll.addWidget(QLabel(title))
+            ll.addWidget(editor, 1)
+            return ww
+
+        ed1 = _wrap_editor("batch_system", self.pl_batch_system)
+        ed2 = _wrap_editor("batch_user_template", self.pl_batch_user)
+        ed3 = _wrap_editor("meta_system", self.pl_meta_system)
+        ed4 = _wrap_editor("meta_user_template", self.pl_meta_user)
+        ed5 = _wrap_editor("super_meta_system", self.pl_super_meta_system)
+        ed6 = _wrap_editor("super_meta_user_template", self.pl_super_meta_user)
+
+        # FIX 1: actually add the super-meta widgets to the splitter
         ed_split.addWidget(ed1)
         ed_split.addWidget(ed2)
         ed_split.addWidget(ed3)
         ed_split.addWidget(ed4)
+        ed_split.addWidget(ed5)
+        ed_split.addWidget(ed6)
+
+        # FIX 2: setSizes must match number of widgets (6)
         ed_split.setSizes([160, 220, 160, 220, 160, 220])
+
         right_l.addWidget(ed_split, 2)
 
         run_row = QHBoxLayout()
@@ -755,7 +777,8 @@ class MainWindow(QMainWindow):
         run_row.addStretch(1)
         right_l.addLayout(run_row)
 
-        main_split.addWidget(right)
+        # IMPORTANT: add the scroll area (not the right widget) to the main split
+        main_split.addWidget(right_scroll)
         main_split.setSizes([360, 980])
         layout.addWidget(main_split, 1)
         self.tabs.addTab(w, "Promptlab")
@@ -860,6 +883,8 @@ class MainWindow(QMainWindow):
         self.pl_batch_user.setPlainText(ps.batch_user_template)
         self.pl_meta_system.setPlainText(ps.meta_system)
         self.pl_meta_user.setPlainText(ps.meta_user_template)
+        self.pl_super_meta_system.setPlainText(ps.super_meta_system)
+        self.pl_super_meta_user.setPlainText(ps.super_meta_user_template)
         self.pl_status.setText(f"paket laddat: {name}")
 
     def _pl_save_package(self) -> None:
