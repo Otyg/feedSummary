@@ -181,7 +181,9 @@ class OllamaLocalClient:
                 if resp.status >= 400:
                     text = await resp.text(errors="ignore")
                     # logga mer (men cap)
-                    self.log.error("Ollama error %s response body:\n%s", resp.status, text[:12000])
+                    self.log.error(
+                        "Ollama error %s response body:\n%s", resp.status, text[:12000]
+                    )
                     raise RuntimeError(f"Ollama error {resp.status}: {text[:12000]}")
                 self.log.info("Request sent")
                 last_log = asyncio.get_event_loop().time()

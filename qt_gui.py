@@ -868,7 +868,7 @@ class MainWindow(QMainWindow):
             meta_system=self.pl_meta_system.toPlainText(),
             meta_user_template=self.pl_meta_user.toPlainText(),
             super_meta_system=self.pl_super_meta_system.toPlainText(),
-            super_meta_user_template=self.pl_super_meta_user.toPlainText()
+            super_meta_user_template=self.pl_super_meta_user.toPlainText(),
         )
 
     def _pl_load_selected_package(self) -> None:
