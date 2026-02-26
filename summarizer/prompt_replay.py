@@ -281,7 +281,7 @@ async def rerun_summary_from_existing(
     if not articles:
         raise RuntimeError("Kunde inte ladda artiklar för summary.sources.")
 
-    by_id = {str(a.get("id")): a for a in articles if a.get("id") is not None}
+    by_id = {str(a.get("id")): a for a in articles if a.get("id") is not None} # type: ignore
     ordered_all = [by_id[str(i)] for i in sources if str(i) in by_id]
 
     # Apply promptset correctly (embedded prompts)
