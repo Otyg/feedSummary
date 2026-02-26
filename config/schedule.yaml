@@ -1,4 +1,4 @@
-daily_hybrid_news_cyber_tech_se:
+daily_hybrid_news_tech_se:
   frequency: "daily"
   time: "08:00"
   categories: 
@@ -7,13 +7,28 @@ daily_hybrid_news_cyber_tech_se:
     - "Dataskydd"
     - "Teknik"
   promptpackage: "daily_hybrid_news_cyber_tech_se"
-weekly_hybrid_news_cyber_tech_se:
-  frequency: "weekly"
-  day: "sun"
-  time: "08:00"
+daily_hybrid_cyber:
+  frequency: "daily"
+  time: "06:00"
   categories: 
-    - "Nyheter"
     - "Cybersecurity"
     - "Dataskydd"
+    - "Sårbarheter"
+  promptpackage: "daily_hybrid_news_cyber_tech_se"
+weekly_hybrid_news_tech_se:
+  frequency: "weekly"
+  day: "sun"
+  time: "23:00"
+  categories: 
+    - "Nyheter"
     - "Teknik"
+  promptpackage: "weekly_hybrid_news_cyber_tech_se"
+weekly_hybrid_cyber:
+  frequency: "weekly"
+  day: "sun"
+  time: "23:59"
+  categories: 
+    - "Cybersecurity"
+    - "Dataskydd"
+    - "Sårbarheter"
   promptpackage: "weekly_hybrid_news_cyber_tech_se"
