@@ -453,3 +453,56 @@ def load_feeds_into_config(
         logger.error("failed to read feeds.yaml: %s -> %s", path, e)
         config["feeds"] = []
         raise e
+
+
+def _fmt_ymd(ts: int) -> str:
+    if not ts:
+        return ""
+    return datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+
+
+def lookback_label_from_range(lookback: str, from_ts: int, to_ts: int) -> str:
+    """
+    Turn "1d"/"1w"/etc into a human label based on actual article time span.
+
+    Rules:
+      - if no timestamps => fallback to lookback string
+      - if single-day span => "YYYY-MM-DD"
+      - else => "YYYY-MM-DD – YYYY-MM-DD"
+      - special case: 1d/24h => use to-date (today's date in practice)
+    """
+    lb = (lookback or "").strip().lower()
+    if not from_ts or not to_ts:
+        return lookback or ""
+
+    d_from = _fmt_ymd(from_ts)
+    d_to = _fmt_ymd(to_ts)
+
+    # 1d -> "dagens datum" (use end date)
+    if lb in ("1d", "24h", "1day"):
+        return d_to
+
+    # general: if same day, show single date
+    if d_from == d_to:
+        return d_to
+
+    return f"{d_from} – {d_to}"
+
+
+def lookback_label_from_articles(lookback: str, articles: List[dict]) -> str:
+    """
+    Compute from/to from articles published_ts (fallback fetched_at if needed)
+    and return a friendly label.
+    """
+    pts: List[int] = []
+    for a in articles or []:
+        ts = a.get("published_ts")
+        if not isinstance(ts, int) or ts <= 0:
+            ts = a.get("fetched_at")
+        if isinstance(ts, int) and ts > 0:
+            pts.append(ts)
+
+    if not pts:
+        return lookback or ""
+
+    return lookback_label_from_range(lookback, min(pts), max(pts))

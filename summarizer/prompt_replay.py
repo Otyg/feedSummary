@@ -49,6 +49,7 @@ from summarizer.summarizer import (
     summarize_batches_then_meta_with_stats,
     super_meta_from_topic_sections_with_stats,
 )
+from summarizer.helpers import lookback_label_from_range
 
 logger = logging.getLogger(__name__)
 
@@ -247,24 +248,29 @@ async def rerun_summary_from_existing(
     """
     Re-run summarization using ONLY the articles referenced by summary_doc["sources"].
 
-    NEW BEHAVIOR:
-      - If original summary has sections/topics -> replay will produce the SAME structure:
-          overview (super-meta) + stitched per-topic sections + sources appendix
-      - Returns an ephemeral result dict:
-          {
-            "replay_of": <orig_id>,
-            "created": <ts>,
-            "from": <ts>,
-            "to": <ts>,
-            "sources": [ids...],
-            "sources_snapshots": [...],
-            "overview": <string>,
-            "sections": [...],
-            "summary_markdown": <string>,
-            "meta": {...},
-            "selection": {...}
-          }
+    Behavior:
+      - If original summary has multi-topic structure (sections or topic-tagged snapshots),
+        replay produces the SAME style as normal multi-topic summary:
+          overview (super-meta) + stitched per-topic sections + sources appendix.
+      - Otherwise it produces a single meta summary + sources appendix.
+
+    Returns an ephemeral result dict (not persisted), roughly:
+      {
+        "replay_of": <orig_id>,
+        "created": <ts>,
+        "from": <ts>,
+        "to": <ts>,
+        "lookback_label": <"YYYY-MM-DD" or "YYYY-MM-DD – YYYY-MM-DD">,
+        "sources": [ids...],
+        "sources_snapshots": [...],
+        "overview": <string>,
+        "sections": [...],
+        "summary_markdown": <string>,
+        "meta": {...},
+        "selection": {...}
+      }
     """
+
     orig = store.get_summary_doc(str(summary_id))
     if not orig:
         raise RuntimeError(f"Summary not found: {summary_id}")
@@ -281,12 +287,25 @@ async def rerun_summary_from_existing(
     if not articles:
         raise RuntimeError("Kunde inte ladda artiklar för summary.sources.")
 
-    by_id = {str(a.get("id")): a for a in articles if a.get("id") is not None} # type: ignore
+    by_id = {str(a.get("id")): a for a in articles if a.get("id") is not None}
     ordered_all = [by_id[str(i)] for i in sources if str(i) in by_id]
 
-    # Apply promptset correctly (embedded prompts)
+    # Apply promptset correctly (embedded prompts keys under cfg["prompts"])
     cfg2 = _apply_promptset_to_config(cfg, new_prompts)
     llm = create_llm_client(cfg2)
+
+    # Compute actual from/to for this replay corpus
+    pts = [_published_ts(a) for a in ordered_all]
+    pts2 = [p for p in pts if p > 0]
+    from_ts = int(min(pts2) if pts2 else int(orig.get("from") or 0))
+    to_ts = int(max(pts2) if pts2 else int(orig.get("to") or 0))
+
+    # Compute a friendly lookback label from actual range
+    lookback_raw = ""
+    sel = orig.get("selection") or {}
+    if isinstance(sel, dict):
+        lookback_raw = str(sel.get("lookback") or "").strip()
+    lookback_label = lookback_label_from_range(lookback_raw, from_ts, to_ts)
 
     # Determine topic grouping based on original summary data
     # Prefer:
@@ -295,8 +314,6 @@ async def rerun_summary_from_existing(
     sections_orig = orig.get("sections")
     snaps_orig = orig.get("sources_snapshots") or []
 
-    # Build snapshots for ordered_all (we may add topic if we can infer it)
-    # If original has topic per snapshot, use that mapping.
     topic_by_article_id: Dict[str, str] = {}
     if isinstance(snaps_orig, list):
         for s in snaps_orig:
@@ -307,7 +324,6 @@ async def rerun_summary_from_existing(
                 continue
             topic_by_article_id[aid] = _topic_from_snapshot(s)
 
-    # Helper: create snapshots for a list of articles, with inferred topic if available
     def make_snaps(
         items: List[dict], topic: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -328,16 +344,14 @@ async def rerun_summary_from_existing(
             out.append(snap)
         return out
 
-    # Selection passthrough (nice to have)
     selection = orig.get("selection") if isinstance(orig.get("selection"), dict) else {}
-    lookback_str = _extract_lookback_from_orig(orig)
 
-    # MULTI-TOPIC replay path
+    # Build multi-topic groups
     multi_topic_groups: Dict[str, List[dict]] = {}
     topic_sequence: List[str] = []
 
     if isinstance(sections_orig, list) and sections_orig:
-        # Build groups using original sections sources list (stable and matches original grouping)
+        # Use original sections mapping (stable and matches original grouping)
         for sec in sections_orig:
             if not isinstance(sec, dict):
                 continue
@@ -359,7 +373,7 @@ async def rerun_summary_from_existing(
             multi_topic_groups.setdefault(t, []).append(a)
         topic_sequence = _topic_order(multi_topic_groups)
 
-    # If no multi-topic info, fall back to single-summary replay
+    # -------- Single-summary replay --------
     if not multi_topic_groups or len(multi_topic_groups.keys()) <= 1:
         meta_text, stats = await summarize_batches_then_meta_with_stats(
             cfg2, ordered_all, llm=llm, store=store, job_id=None
@@ -370,21 +384,17 @@ async def rerun_summary_from_existing(
         if appendix:
             meta_text = (meta_text or "").rstrip() + "\n\n" + appendix
 
-        pts = [_published_ts(a) for a in ordered_all]
-        pts2 = [p for p in pts if p > 0]
-        from_ts = min(pts2) if pts2 else int(orig.get("from") or 0)
-        to_ts = max(pts2) if pts2 else int(orig.get("to") or 0)
-
         return {
             "replay_of": str(orig.get("id")),
             "created": int(time.time()),
-            "from": int(from_ts or 0),
-            "to": int(to_ts or 0),
+            "from": from_ts,
+            "to": to_ts,
+            "lookback_label": lookback_label,
             "sources": sources,
             "sources_snapshots": snapshots,
             "overview": "",
             "sections": [],
-            "summary_markdown": meta_text or "",
+            "summary_markdown": (meta_text or "").strip(),
             "meta": {
                 "batch_total": int(stats.get("batch_total") or 0),
                 "trims": int(stats.get("trims") or 0),
@@ -394,23 +404,18 @@ async def rerun_summary_from_existing(
             "selection": dict(selection or {}),
         }
 
-    # Else: full multi-topic replay, same style as normal summary
+    # -------- Multi-topic replay (same style as normal summary) --------
     stitched_parts: List[str] = []
     stitched_parts.append("# Sammanfattning per ämnesområde")
-    if lookback_str:
-        stitched_parts.append(f"_Tidsfönster: {lookback_str}_")
+    if lookback_label:
+        stitched_parts.append(f"_Tidsfönster: {lookback_label}_")
     stitched_parts.append("")
 
     sections_out: List[Dict[str, Any]] = []
     all_snaps: List[Dict[str, Any]] = []
     all_ids: List[str] = []
 
-    pts_all = [_published_ts(a) for a in ordered_all]
-    pts_all2 = [p for p in pts_all if p > 0]
-    overall_from = min(pts_all2) if pts_all2 else int(orig.get("from") or 0)
-    overall_to = max(pts_all2) if pts_all2 else int(orig.get("to") or 0)
-
-    for i, topic in enumerate(topic_sequence, start=1):
+    for topic in topic_sequence:
         items = multi_topic_groups.get(topic) or []
         if not items:
             continue
@@ -425,16 +430,16 @@ async def rerun_summary_from_existing(
         snaps = make_snaps(items, topic=topic)
         all_snaps.extend(snaps)
 
-        pts = [_published_ts(a) for a in items]
-        pts2 = [p for p in pts if p > 0]
-        from_ts = min(pts2) if pts2 else 0
-        to_ts = max(pts2) if pts2 else 0
+        tpts = [_published_ts(a) for a in items]
+        tpts2 = [p for p in tpts if p > 0]
+        t_from = int(min(tpts2) if tpts2 else 0)
+        t_to = int(max(tpts2) if tpts2 else 0)
 
         sections_out.append(
             {
                 "topic": topic,
-                "from": int(from_ts or 0),
-                "to": int(to_ts or 0),
+                "from": t_from,
+                "to": t_to,
                 "sources": [a.get("id") for a in items if a.get("id")],
                 "sources_snapshots": snaps,
                 "summary": topic_meta,
@@ -456,7 +461,7 @@ async def rerun_summary_from_existing(
 
     stitched_summary = "\n".join(stitched_parts).strip() + "\n"
 
-    # Optional super-meta overview (uses super_meta_* prompts if present)
+    # Optional super-meta overview
     overview_text = ""
     overview_stats: Dict[str, Any] = {
         "super_meta_budget_tokens": 0,
@@ -478,19 +483,20 @@ async def rerun_summary_from_existing(
     if appendix:
         final_summary = final_summary.rstrip() + "\n\n" + appendix
 
-    # Dedupe source IDs (keep order)
+    # (nice-to-have) dedupe ids (keep order)
     dedup_ids = list(dict.fromkeys([x for x in all_ids if x]))
 
     return {
         "replay_of": str(orig.get("id")),
         "created": int(time.time()),
-        "from": int(overall_from or 0),
-        "to": int(overall_to or 0),
+        "from": from_ts,
+        "to": to_ts,
+        "lookback_label": lookback_label,
         "sources": sources,  # original stable corpus
         "sources_snapshots": all_snaps,
         "overview": overview_text,
         "sections": sections_out,
-        "summary_markdown": final_summary or "",
+        "summary_markdown": (final_summary or "").strip(),
         "meta": {
             "super_meta_enabled": int(overview_stats.get("super_meta_enabled") or 0),
             "super_meta_budget_tokens": int(
