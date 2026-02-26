@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row">
+  <div class="col-12">
+    <div class="d-flex justify-content-between align-items-center">
+      <h4>Artiklar</h4>
+      <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Till summaries</a>
+      {% if error %}
+        <div class="alert alert-danger">{{ error }}</div>
+      {% endif %}
+    </div>
+    <div class="table-responsive mt-2">
+      <table class="table table-sm table-striped align-middle">
+        <thead>
+          <tr>
+            <th>Titel</th>
+            <th>Källa</th>
+            <th>Publicerad</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in articles %}
+          <tr>
+            <td style="max-width: 520px;">
+              <div class="text-truncate">{{ a.get('title') or '' }}</div>
+              <div class="small text-muted text-truncate">{{ a.get('url') or '' }}</div>
+            </td>
+            <td>{{ a.get('source') or '' }}</td>
+            <td>
+              {% set ts = a.get('published_ts') or a.get('fetched_at') or 0 %}
+              {{ format_ts(ts) if format_ts else ts }}
+            </td>
+            <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_article', article_id=a.get('id')) }}">Öppna</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

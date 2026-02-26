@@ -70,6 +70,8 @@ from summarizer.helpers import (
     interleave_by_source_oldest_first,
     load_prompts,
     set_job,
+    lookback_label_from_articles,
+    lookback_label_from_range,
 )
 
 logger = logging.getLogger(__name__)
@@ -263,8 +265,15 @@ async def super_meta_from_topic_sections_with_stats(
         if super_budget_cfg > 0
         else max(512, max_ctx - max_out - margin)
     )
+    lookback_raw = str((config.get("ingest") or {}).get("lookback") or "").strip()
 
-    lookback = str((config.get("ingest") or {}).get("lookback") or "").strip()
+    # derive overall date span from sections
+    fts = [int(s.get("from") or 0) for s in (sections or []) if int(s.get("from") or 0) > 0]
+    tts = [int(s.get("to") or 0) for s in (sections or []) if int(s.get("to") or 0) > 0]
+    if fts and tts:
+        lookback = lookback_label_from_range(lookback_raw, min(fts), max(tts))
+    else:
+        lookback = lookback_raw
 
     # Build input text from sections (topic + summary)
     parts: List[str] = []
@@ -604,7 +613,8 @@ async def summarize_batches_then_meta_with_stats(
 
     meta_attempts = 8
     last_err: Optional[Exception] = None
-    lookback = str((config.get("ingest") or {}).get("lookback") or "").strip()
+    lookback_raw = str((config.get("ingest") or {}).get("lookback") or "").strip()
+    lookback = lookback_label_from_articles(lookback_raw, articles)
     for attempt in range(1, meta_attempts + 1):
         meta_user = _budgeted_meta_user(
             prompts=prompts,

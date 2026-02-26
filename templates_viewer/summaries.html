@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row">
+  <div class="col-12">
+    <h4>Summaries</h4>
+    <p><a href="{{ url_for('index') }}">Till senaste</a></p>
+    <div class="list-group">
+      {% for s in summaries %}
+        {% set sid = (s.get('id') or '') %}
+        <a class="list-group-item list-group-item-action" href="{{ url_for('view_summary', summary_id=sid) }}">
+          {{ sid }} — {{ s.get('created') or '' }}
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

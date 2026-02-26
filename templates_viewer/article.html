@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row">
+  <div class="col-12">
+    <div class="d-flex justify-content-between align-items-start">
+      <div>
+        <h4 class="mb-1">{{ a.get('title') }}</h4>
+        <div class="text-muted small">
+          Källa: {{ a.get('source') or '' }} |
+          Publicerad: {{ format_ts(a.get('published_ts') or a.get('fetched_at') or 0) if format_ts else '' }}
+        </div>
+        {% if a.get('url') %}
+          <div class="small"><a href="{{ a.get('url') }}" target="_blank">{{ a.get('url') }}</a></div>
+        {% endif %}
+      </div>
+      <div>
+        <a href="{{ url_for('list_articles') }}" class="btn btn-sm btn-outline-secondary">Tillbaka</a>
+      </div>
+    </div>
+    <hr>
+    <pre style="white-space: pre-wrap;">{{ a.get('text') or '' }}</pre>
+  </div>
+</div>
+{% endblock %}

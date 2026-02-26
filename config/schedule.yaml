@@ -1,0 +1,19 @@
+daily_hybrid_news_cyber_tech_se:
+  frequency: "daily"
+  time: "08:00"
+  categories: 
+    - "Nyheter"
+    - "Cybersecurity"
+    - "Dataskydd"
+    - "Teknik"
+  promptpackage: "daily_hybrid_news_cyber_tech_se"
+weekly_hybrid_news_cyber_tech_se:
+  frequency: "weekly"
+  day: "sun"
+  time: "08:00"
+  categories: 
+    - "Nyheter"
+    - "Cybersecurity"
+    - "Dataskydd"
+    - "Teknik"
+  promptpackage: "weekly_hybrid_news_cyber_tech_se"
