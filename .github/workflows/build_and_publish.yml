@@ -131,7 +131,6 @@ jobs:
           $name = "${env:APP_NAME}$suffix"
           pyinstaller --noconfirm --clean --onefile `
             --name $name `
-            --add-data "templates;templates" `
             --add-data "config;config" `
             --add-data "config.yaml.dist;config.yaml.dist" `
             $env:ENTRY_SCRIPT
