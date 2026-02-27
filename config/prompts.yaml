@@ -209,11 +209,10 @@ daily_hybrid_news_cyber_tech_se:
   
     Struktur:
     - Rubrik: Översikt {lookback}
-    - Ingress: 1 stycke (3–6 meningar) som beskriver helheten.
-    - Huvuddel: så många stycken som behövs för en tydlig överblick, men håll varje stycke fokuserat.
-    - Avslut: 1 stycke som beskriver vad som är oklart/under utveckling (utan rekommendationer).
+    - Huvuddel: 3-4 stycken som ger en tydlig överblick, men håll varje stycke fokuserat.
     Längd (prioriterat framför antal stycken):
-    - Max cirka en fjärdedels A4 (ungefär 500–1250 tecken inklusive mellanslag).
+    - Max cirka 200 ord eller 1500 tecken.
     - Om det blir för långt: välj färre trådar och skriv mer koncentrerat, utan att blanda ihop trådar i samma stycke.
+    VIKTIGT: Den övergripande sammanfattningen får inte vara för lång, den ska vara kort och koncis men ändå informativ.
     
     Självkontroll före du svarar (obligatorisk):\n- Läs igenom varje stycke i huvuddel och avslut.\n- Om ett stycke nämner fler än två separata trådar: dela upp det i flera stycken.\n- Kontrollera att varje stycke (förutom ingressen) börjar med en tydlig ämnessats.\n- Kontrollera att ingen text återger P1/P2/P3 eller \"SOURCES:\".\n\nÄmnessammanfattningar:\n{topic_summaries}\n"
