@@ -7,8 +7,16 @@
     <div class="list-group">
       {% for s in summaries %}
         {% set sid = (s.get('id') or '') %}
+        {% set stitle = (s.get('title') or '') %}
+        {% set created = s.get('created') or 0 %}
+        {% set topics_label = (s.get('_viewer_topics_label') or '') %}
         <a class="list-group-item list-group-item-action" href="{{ url_for('view_summary', summary_id=sid) }}">
-          {{ sid }} — {{ s.get('created') or '' }}
+          {{ stitle if stitle else sid }}
+          —
+          {{ format_ts(created) if format_ts else created }}
+          {% if topics_label %}
+            · {{ topics_label }}
+          {% endif %}
         </a>
       {% endfor %}
     </div>

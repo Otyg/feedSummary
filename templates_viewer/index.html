@@ -13,15 +13,20 @@
           {% for s in summaries %}
             {% set sid = (s.get('id') or '') %}
             {% set created = s.get('created') or 0 %}
+            {% set stitle = (s.get('title') or '') %}
+            {% set topics_label = (s.get('_viewer_topics_label') or '') %}
             <a
               class="list-group-item list-group-item-action {% if default_selected==sid %}active{% endif %}"
               href="{{ url_for('view_summary', summary_id=sid) }}"
             >
               <div class="small">
                 {{ format_ts(created) if format_ts else created }}
+                {% if topics_label %}
+                  · {{ topics_label }}
+                {% endif %}
               </div>
               <div class="text-truncate">
-                {{ sid }}
+                {{ stitle if stitle else sid }}
               </div>
             </a>
           {% endfor %}
@@ -37,18 +42,7 @@
 
   <div class="col-12 col-lg-9">
     <div class="content border rounded p-3 summary-html">
-      {% if summary %}
-        <div class="d-flex justify-content-between align-items-start">
-          <div>
-            <h4 class="mb-1">{{ summary.get('id') }}</h4>
-            <div class="text-muted small">
-              Skapad: {{ format_ts(summary.get('created') or 0) if format_ts else (summary.get('created') or 0) }}
-            </div>
-          </div>
-        </div>
-        <hr>
-      {% endif %}
-
+      {# summary-blocket används inte längre eftersom webapp_viewer.py injicerar egen header i html #}
       {{ html|safe }}
     </div>
   </div>

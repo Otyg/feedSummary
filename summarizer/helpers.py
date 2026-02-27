@@ -328,9 +328,11 @@ def load_prompts(
 
     Viktigt:
     - Vi returnerar alltid basnycklarna.
-    - Vi tar även med valfria super-meta-nycklar om de finns i paketet:
+    - Vi tar även med valfria nycklar om de finns i paketet:
         super_meta_system
         super_meta_user_template
+        title_system
+        title_user_template
     """
 
     p_cfg = config.get("prompts") or {}
@@ -344,6 +346,8 @@ def load_prompts(
     optional_keys = (
         "super_meta_system",
         "super_meta_user_template",
+        "title_system",
+        "title_user_template",
     )
 
     # Backward compat: prompts directly embedded in config.yaml
@@ -389,7 +393,7 @@ def load_prompts(
     for k in base_keys:
         out[k] = str(blob.get(k, ""))
 
-    # NEW: include optional super-meta keys if present
+    # include optional keys if present
     for k in optional_keys:
         if k in blob:
             out[k] = str(blob.get(k, ""))
@@ -454,55 +458,50 @@ def load_feeds_into_config(
         config["feeds"] = []
         raise e
 
-
-def _fmt_ymd(ts: int) -> str:
-    if not ts:
-        return ""
-    return datetime.datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
-
-
-def lookback_label_from_range(lookback: str, from_ts: int, to_ts: int) -> str:
+def lookback_label_from_range(lookback_raw: str, from_ts: int, to_ts: int) -> str:
     """
-    Turn "1d"/"1w"/etc into a human label based on actual article time span.
+    Builds a human-readable label for the time window.
 
-    Rules:
-      - if no timestamps => fallback to lookback string
-      - if single-day span => "YYYY-MM-DD"
-      - else => "YYYY-MM-DD – YYYY-MM-DD"
-      - special case: 1d/24h => use to-date (today's date in practice)
+    If lookback_raw is set (e.g. "24h", "1w") it is included.
+    If from_ts/to_ts are present, we add the date span.
     """
-    lb = (lookback or "").strip().lower()
-    if not from_ts or not to_ts:
-        return lookback or ""
+    lb = (lookback_raw or "").strip()
 
-    d_from = _fmt_ymd(from_ts)
-    d_to = _fmt_ymd(to_ts)
+    span = ""
+    if from_ts and to_ts:
+        a = datetime.datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d")
+        b = datetime.datetime.fromtimestamp(int(to_ts)).strftime("%Y-%m-%d")
+        span = a if a == b else f"{a}–{b}"
 
-    # 1d -> "dagens datum" (use end date)
-    if lb in ("1d", "24h", "1day"):
-        return d_to
-
-    # general: if same day, show single date
-    if d_from == d_to:
-        return d_to
-
-    return f"{d_from} – {d_to}"
+    if lb and span:
+        return f"{lb} ({span})"
+    if lb:
+        return lb
+    if span:
+        return span
+    return ""
 
 
-def lookback_label_from_articles(lookback: str, articles: List[dict]) -> str:
+def lookback_label_from_articles(lookback_raw: str, articles: List[dict]) -> str:
     """
-    Compute from/to from articles published_ts (fallback fetched_at if needed)
-    and return a friendly label.
+    Derives a label from article timestamps when available.
+
+    - Uses published_ts (fallback fetched_at) to compute min/max.
+    - If lookback_raw is set, returns "lookback_raw (YYYY-MM-DD–YYYY-MM-DD)".
+    - If not, returns just the date span.
     """
-    pts: List[int] = []
-    for a in articles or []:
+    if not articles:
+        return (lookback_raw or "").strip()
+
+    ts_list: List[int] = []
+    for a in articles:
         ts = a.get("published_ts")
-        if not isinstance(ts, int) or ts <= 0:
+        if not (isinstance(ts, int) and ts > 0):
             ts = a.get("fetched_at")
         if isinstance(ts, int) and ts > 0:
-            pts.append(ts)
+            ts_list.append(ts)
 
-    if not pts:
-        return lookback or ""
+    if not ts_list:
+        return (lookback_raw or "").strip()
 
-    return lookback_label_from_range(lookback, min(pts), max(pts))
+    return lookback_label_from_range(lookback_raw, min(ts_list), max(ts_list))

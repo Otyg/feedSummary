@@ -430,6 +430,76 @@ def _load_ordered_articles_from_job_checkpoint(
     return article_ids, ordered
 
 
+def _default_summary_title(*, lookback: str, from_ts: int, to_ts: int) -> str:
+    lb = (lookback or "").strip()
+    if from_ts and to_ts:
+        a = datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d")
+        b = datetime.fromtimestamp(int(to_ts)).strftime("%Y-%m-%d")
+        span = a if a == b else f"{a}–{b}"
+        return f"Nyhetssammanfattning {span}" + (f" ({lb})" if lb else "")
+    return "Nyhetssammanfattning" + (f" ({lb})" if lb else "")
+
+
+async def _generate_summary_title(
+    *,
+    config: Dict[str, Any],
+    llm,
+    summary_text: str,
+    from_ts: int,
+    to_ts: int,
+    selection: Dict[str, Any],
+) -> str:
+    """
+    Uses prompt keys (if present in selected prompt package):
+      - title_system
+      - title_user_template  (expects at least {summary}; may also use {lookback}, {from_date}, {to_date})
+    Falls back to a deterministic title if prompts missing or LLM fails.
+    """
+    lookback = str((selection or {}).get("lookback") or "").strip()
+    fallback = _default_summary_title(lookback=lookback, from_ts=from_ts, to_ts=to_ts)
+
+    prompts = load_prompts(config)
+    sys_p = str(prompts.get("title_system") or "").strip()
+    user_t = str(prompts.get("title_user_template") or "").strip()
+    if not sys_p or not user_t:
+        return fallback
+
+    from_date = datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d") if from_ts else ""
+    to_date = datetime.fromtimestamp(int(to_ts)).strftime("%Y-%m-%d") if to_ts else ""
+
+    try:
+        user = user_t.format(
+            summary=(summary_text or "").strip(),
+            lookback=lookback,
+            from_date=from_date,
+            to_date=to_date,
+        )
+    except Exception:
+        # template formatting mismatch -> fallback
+        return fallback
+
+    try:
+        out = await llm.chat(
+            [{"role": "system", "content": sys_p}, {"role": "user", "content": user}],
+            temperature=0.2,
+        )
+        title = str(out or "").strip()
+    except Exception:
+        return fallback
+
+    if not title:
+        return fallback
+
+    # normalize: take first line, strip quotes, cap length
+    title = title.splitlines()[0].strip().strip('"').strip("'").strip()
+    if not title:
+        return fallback
+
+    if len(title) > 120:
+        title = title[:120].rstrip() + "…"
+    return title
+
+
 async def _summarize_and_persist_like_refresh(
     *,
     config: Dict[str, Any],
@@ -480,8 +550,18 @@ async def _summarize_and_persist_like_refresh(
         if appendix:
             meta_text = (meta_text or "").rstrip() + "\n\n" + appendix
 
+        title = await _generate_summary_title(
+            config=config,
+            llm=llm,
+            summary_text=meta_text or "",
+            from_ts=from_ts,
+            to_ts=to_ts,
+            selection=selection,
+        )
+
         summary_doc: Dict[str, Any] = {
             "id": _summary_doc_id(created_ts, job_id),
+            "title": title,
             "created": created_ts,
             "kind": "summary",
             "llm": {
@@ -617,8 +697,18 @@ async def _summarize_and_persist_like_refresh(
     if appendix:
         final_summary = final_summary.rstrip() + "\n\n" + appendix
 
+    title = await _generate_summary_title(
+        config=config,
+        llm=llm,
+        summary_text=final_summary or "",
+        from_ts=overall_from,
+        to_ts=overall_to,
+        selection=selection,
+    )
+
     summary_doc = {
         "id": _summary_doc_id(created_ts, job_id),
+        "title": title,
         "created": created_ts,
         "kind": "summary",
         "llm": {

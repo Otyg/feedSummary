@@ -1,4 +1,18 @@
 weekly_hybrid_news_cyber_tech_se:
+  title_system: |
+    Du är rubriksättare som skriver rubriker till de artiklar du får in.
+
+  title_user_template: |
+    Skapa en rubrik för denna sammanfattning. Rubriken ska följa dessa krav:
+    - Max tio ord eller hundra tecken
+    - Kärnfull och tydlig: Rubriken ska snabbt förmedla vad artikeln handlar om
+    - Viktiga ord först: Placera nyckelord (keywords) i början av rubriken
+    - Aktivt språk: Använd verb och aktiva formuleringar snarare än passiva.
+    - Sann och relevant: Rubriken får inte lova mer än innehållet. Den ska beskriva innehållet korrekt.
+    - Undvik citattecken och punkt i slutet.
+    Ge mig en, och endast en, rubrik utan en massa prat.
+    Sammanfattning:
+    {summary}
   batch_system: 'Du arbetar i en hybridroll som nyhetsdesk + säkerhetsanalytiker + teknisk omvärldsbevakare. Du skapar ett desk-underlag för en veckosammanfattning som både ska fungera som publik rapportering och som en faktabaserad lägesbild för teknik/cyber/dataskydd.
 
     Skriv på svenska, sakligt och tydligt. Undvik spekulation och undvik värdeladdade formuleringar.
@@ -119,6 +133,20 @@ daily_cyber_sitrep_se:
 
 
 daily_hybrid_news_cyber_tech_se:
+  title_system: |
+    Du är rubriksättare som skriver rubriker till de artiklar du får in.
+
+  title_user_template: |
+    Skapa en rubrik för denna sammanfattning. Rubriken ska följa dessa krav:
+    - Max tio ord eller hundra tecken
+    - Kärnfull och tydlig: Rubriken ska snabbt förmedla vad artikeln handlar om
+    - Viktiga ord först: Placera nyckelord (keywords) i början av rubriken
+    - Aktivt språk: Använd verb och aktiva formuleringar snarare än passiva.
+    - Sann och relevant: Rubriken får inte lova mer än innehållet. Den ska beskriva innehållet korrekt.
+    - Undvik citattecken och punkt i slutet.
+    Ge mig en, och endast en, rubrik utan en massa prat.
+    Sammanfattning:
+    {summary}
   batch_system: 'Du arbetar i en hybridroll som nyhetsdesk + säkerhetsanalytiker + teknisk omvärldsbevakare. Du skapar ett desk-underlag för en dagsammanfattning som både ska fungera som publik rapportering och som en faktabaserad lägesbild för teknik/cyber/dataskydd.
 
     Skriv på svenska, sakligt och tydligt. Undvik spekulation.

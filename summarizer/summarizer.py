@@ -187,6 +187,75 @@ def _load_ordered_articles_from_checkpoint(
     return article_ids, ordered
 
 
+def _default_summary_title(*, lookback: str, from_ts: int, to_ts: int) -> str:
+    lb = (lookback or "").strip()
+    if from_ts and to_ts:
+        a = datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d")
+        b = datetime.fromtimestamp(int(to_ts)).strftime("%Y-%m-%d")
+        span = a if a == b else f"{a}–{b}"
+        return f"Nyhetssammanfattning {span}" + (f" ({lb})" if lb else "")
+    return "Nyhetssammanfattning" + (f" ({lb})" if lb else "")
+
+
+async def _generate_summary_title(
+    *,
+    config: Dict[str, Any],
+    llm: LLMClient,
+    summary_text: str,
+    from_ts: int,
+    to_ts: int,
+) -> str:
+    """
+    Uses prompt keys (if present in selected prompt package):
+      - title_system
+      - title_user_template  (expects at least {summary}; may also use {lookback}, {from_date}, {to_date})
+    Falls back to a deterministic title if prompts missing or LLM fails.
+    """
+    prompts = load_prompts(config)
+    sys_p = str(prompts.get("title_system") or "").strip()
+    user_t = str(prompts.get("title_user_template") or "").strip()
+
+    lookback_raw = str((config.get("ingest") or {}).get("lookback") or "").strip()
+    lookback = lookback_label_from_range(lookback_raw, from_ts, to_ts) if (from_ts and to_ts) else lookback_raw
+
+    fallback = _default_summary_title(lookback=lookback, from_ts=from_ts, to_ts=to_ts)
+    if not sys_p or not user_t:
+        return fallback
+
+    from_date = datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d") if from_ts else ""
+    to_date = datetime.fromtimestamp(int(to_ts)).strftime("%Y-%m-%d") if to_ts else ""
+
+    try:
+        user = user_t.format(
+            summary=(summary_text or "").strip(),
+            lookback=lookback,
+            from_date=from_date,
+            to_date=to_date,
+        )
+    except Exception:
+        return fallback
+
+    try:
+        out = await llm.chat(
+            [{"role": "system", "content": sys_p}, {"role": "user", "content": user}],
+            temperature=0.2,
+        )
+        title = str(out or "").strip()
+    except Exception:
+        return fallback
+
+    if not title:
+        return fallback
+
+    title = title.splitlines()[0].strip().strip('"').strip("'").strip()
+    if not title:
+        return fallback
+
+    if len(title) > 120:
+        title = title[:120].rstrip() + "…"
+    return title
+
+
 # ----------------------------
 # NEW: Super-meta (overview) from topic sections
 # ----------------------------
@@ -268,7 +337,11 @@ async def super_meta_from_topic_sections_with_stats(
     lookback_raw = str((config.get("ingest") or {}).get("lookback") or "").strip()
 
     # derive overall date span from sections
-    fts = [int(s.get("from") or 0) for s in (sections or []) if int(s.get("from") or 0) > 0]
+    fts = [
+        int(s.get("from") or 0)
+        for s in (sections or [])
+        if int(s.get("from") or 0) > 0
+    ]
     tts = [int(s.get("to") or 0) for s in (sections or []) if int(s.get("to") or 0) > 0]
     if fts and tts:
         lookback = lookback_label_from_range(lookback_raw, min(fts), max(tts))
@@ -840,8 +913,17 @@ async def run_resume_and_persist_summary(
 
     temperature = 0.2
 
+    title = await _generate_summary_title(
+        config=config,
+        llm=llm,
+        summary_text=meta_text or "",
+        from_ts=from_ts,
+        to_ts=to_ts,
+    )
+
     summary_doc: Dict[str, Any] = {
         "id": _summary_doc_id(created_ts, job_id),
+        "title": title,
         "created": created_ts,
         "kind": "summary",
         "llm": _extract_llm_doc(config, llm, temperature=temperature),

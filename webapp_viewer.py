@@ -29,10 +29,12 @@ APP_STORE = None
 
 SCHEDULER = None
 
+
 @app.errorhandler(Exception)
 def handle_all_errors(e):
     tb = traceback.format_exc()
     return Response(tb, status=500, mimetype="text/plain")
+
 
 def _resolve_path_from_cwd(p: str) -> str:
     pp = Path(os.path.expandvars(os.path.expanduser(p)))
@@ -253,7 +255,9 @@ class PipelineScheduler(threading.Thread):
             self.next_runs.update(next_runs)
             self.last_reload_at = time.time()
 
-        logger.info("Scheduler loaded %d entries from %s", len(entries), self.schedule_path)
+        logger.info(
+            "Scheduler loaded %d entries from %s", len(entries), self.schedule_path
+        )
 
     def _run_job(self, entry: ScheduleEntry) -> None:
         cfg_path = APP_CONFIG_PATH
@@ -407,7 +411,9 @@ def start_scheduler(
 
     SCHEDULER = PipelineScheduler(schedule_path=schedule_path, poll_seconds=poll_seconds)
     SCHEDULER.start()
-    logger.info("Scheduler started: path=%s poll_seconds=%s", schedule_path, poll_seconds)
+    logger.info(
+        "Scheduler started: path=%s poll_seconds=%s", schedule_path, poll_seconds
+    )
 
 
 def _get_latest_summary(store) -> Optional[Dict[str, Any]]:
@@ -462,6 +468,103 @@ def _md_to_html(text: str) -> str:
     return md.markdown(text or "", extensions=["extra"])
 
 
+def _escape_html(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _topics_from_doc(d: Dict[str, Any]) -> List[str]:
+    """
+    'Kategorier' i viewer = selection.topics (om det finns).
+    """
+    sel = d.get("selection")
+    if not isinstance(sel, dict):
+        return []
+    t = sel.get("topics")
+    if isinstance(t, list):
+        out = [str(x).strip() for x in t if str(x).strip()]
+        return out
+    if isinstance(t, str) and t.strip():
+        return [t.strip()]
+    return []
+
+
+def _topics_label(d: Dict[str, Any]) -> str:
+    topics = _topics_from_doc(d)
+    if not topics:
+        return ""
+    return "Kategorier: " + ", ".join(topics)
+
+
+def _enrich_docs_for_view(store, docs: List[Dict[str, Any]], *, limit: int = 200) -> List[Dict[str, Any]]:
+    """
+    list_summary_docs() kan ge "tunna" objekt beroende på store.
+    Här försöker vi komplettera med title/selection via get_summary_doc()
+    för de första N, och lägger till _viewer_topics_label.
+    """
+    out: List[Dict[str, Any]] = []
+    for i, d in enumerate(docs):
+        if not isinstance(d, dict):
+            continue
+        dd = dict(d)
+        sid = str(dd.get("id") or "").strip()
+
+        need = False
+        if i < limit and sid:
+            # om title/selection saknas i listobjektet, försök hämta full doc
+            if not str(dd.get("title") or "").strip():
+                need = True
+            sel = dd.get("selection")
+            if not isinstance(sel, dict) or not _topics_from_doc(dd):
+                # urvalet kan vara tunt här, försök hämta
+                need = True
+
+        if need:
+            try:
+                full = store.get_summary_doc(sid)
+                if isinstance(full, dict):
+                    # Merge in missing keys (full wins)
+                    dd.update(full)
+            except Exception:
+                pass
+
+        dd["_viewer_topics_label"] = _topics_label(dd)
+        out.append(dd)
+
+    return out
+
+
+def _render_summary_header_html(*, title: str, created_ts: int, doc_id: str, topics_label: str) -> str:
+    """
+    Render a small header block (Bootstrap-ish) that will be prepended to the summary HTML.
+    Includes created + categories (if any).
+    """
+    created_str = format_ts(created_ts) if created_ts else str(created_ts)
+    safe_title = (title or "").strip() or (doc_id or "").strip() or "Sammanfattning"
+    safe_title = _escape_html(safe_title)
+
+    extra_line = ""
+    if topics_label:
+        extra_line = f"<div class='text-muted small'>{_escape_html(topics_label)}</div>"
+
+    return (
+        f"<div class='d-flex justify-content-between align-items-start'>"
+        f"  <div>"
+        f"    <h4 class='mb-1'>{safe_title}</h4>"
+        f"    <div class='text-muted small'>Skapad: {created_str}</div>"
+        f"    {extra_line}"
+        f"  </div>"
+        f"</div>"
+        f"<hr>"
+    )
+
+
 @app.route("/")
 def index():
     store = APP_STORE
@@ -489,8 +592,11 @@ def list_summaries():
         abort(500)
 
     docs = store.list_summary_docs() or []
+    docs = [d for d in docs if isinstance(d, dict)]
     docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
-    return render_template("summaries.html", summaries=docs)
+    docs = _enrich_docs_for_view(store, docs, limit=300)
+
+    return render_template("summaries.html", summaries=docs, format_ts=format_ts)
 
 
 @app.route("/summary/<summary_id>")
@@ -502,6 +608,7 @@ def view_summary(summary_id: str):
     docs = store.list_summary_docs() or []
     docs = [d for d in docs if isinstance(d, dict)]
     docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+    docs = _enrich_docs_for_view(store, docs, limit=300)
 
     sid = str(summary_id).strip()
 
@@ -519,17 +626,13 @@ def view_summary(summary_id: str):
                 sdoc = d
                 break
 
-    if not sdoc:
+    if not sdoc or not isinstance(sdoc, dict):
         abort(404)
 
     # Always produce non-empty body
-    summary_text = ""
-    if isinstance(sdoc, dict):
-        summary_text = str(sdoc.get("summary") or "").strip()
-
+    summary_text = str(sdoc.get("summary") or "").strip()
     if not summary_text:
-        # fallback diagnostic to avoid "blank page"
-        keys = ", ".join(sorted(list(sdoc.keys()))) if isinstance(sdoc, dict) else ""
+        keys = ", ".join(sorted(list(sdoc.keys())))
         summary_text = (
             "*(Ingen summary-text hittades i dokumentet.)*\n\n"
             f"- requested id: `{sid}`\n"
@@ -538,11 +641,22 @@ def view_summary(summary_id: str):
             f"- keys: `{keys}`\n"
         )
 
-    html = _md_to_html(summary_text)
+    doc_id = str(sdoc.get("id") or "").strip()
+    created_ts = int(sdoc.get("created") or 0)
 
+    display_title = str(sdoc.get("title") or "").strip() or doc_id or "Sammanfattning"
+    topics_label = _topics_label(sdoc)
+
+    body_html = _md_to_html(summary_text)
+    header_html = _render_summary_header_html(
+        title=display_title, created_ts=created_ts, doc_id=doc_id, topics_label=topics_label
+    )
+    html = header_html + body_html
+
+    # Pass summary=None so templates_viewer/index.html does NOT render its own <h4>{{ summary.get('id') }}</h4>
     return render_template(
         "index.html",
-        summary=sdoc,
+        summary=None,
         html=html,
         summaries=docs,
         default_selected=sid,
@@ -566,7 +680,6 @@ def list_articles():
     try:
         raw = store.list_articles(limit=limit) or []
     except Exception as e:
-        # show a readable error instead of empty page
         return render_template(
             "articles.html",
             articles=[],
@@ -574,13 +687,11 @@ def list_articles():
             error=f"Kunde inte läsa artiklar: {e}",
         ), 500
 
-    # sanitize: keep only dicts, ensure id exists
     articles: List[Dict[str, Any]] = []
     for a in raw:
         if not isinstance(a, dict):
             continue
         if not a.get("id"):
-            # skip invalid
             continue
         articles.append(a)
 
@@ -600,8 +711,10 @@ def list_articles():
         error=None,
     )
 
+
 from flask import Response
 from markupsafe import escape
+
 
 @app.route("/article/<article_id>")
 def view_article(article_id: str):
@@ -612,7 +725,6 @@ def view_article(article_id: str):
     try:
         a = store.get_article(str(article_id))
     except Exception as e:
-        # Visa alltid något i UI istället för "tomt"
         return (
             f"get_article({article_id!r}) raised: {e}\n",
             500,
@@ -626,7 +738,6 @@ def view_article(article_id: str):
             {"Content-Type": "text/plain; charset=utf-8"},
         )
 
-    # Gör template-säkert + debug om text saknas
     if a.get("title") is None:
         a["title"] = ""
     if a.get("source") is None:
@@ -636,7 +747,6 @@ def view_article(article_id: str):
     if a.get("text") is None:
         a["text"] = ""
 
-    # Om text är tom: bygg fallback-text som visar vad som faktiskt finns i objektet
     if not str(a.get("text") or "").strip():
         keys = ", ".join(sorted(a.keys()))
         fallback = (
@@ -652,13 +762,13 @@ def view_article(article_id: str):
     try:
         return render_template("article.html", a=a, format_ts=format_ts)
     except Exception as e:
-        # Om templaten kraschar: returnera ren text så du ser felet direkt
         keys = ", ".join(sorted(a.keys()))
         return (
             f"render_template(article.html) failed: {e}\n\nkeys: {keys}\n",
             500,
             {"Content-Type": "text/plain; charset=utf-8"},
         )
+
 
 @app.route("/status")
 def status():

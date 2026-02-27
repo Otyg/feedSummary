@@ -1,10 +1,7 @@
 daily_hybrid_news_tech_se:
   frequency: "daily"
-  time: "08:00"
+  time: "01:18"
   categories: 
-    - "Nyheter"
-    - "Cybersecurity"
-    - "Dataskydd"
     - "Teknik"
   promptpackage: "daily_hybrid_news_cyber_tech_se"
 daily_hybrid_cyber:
