@@ -35,6 +35,11 @@ scheduler:
   enabled: true
   path: "config/schedule.yaml"
   poll_seconds: 20
+worker:
+  log_file: "logs/feedsum_worker.log"
+  log_level: "INFO"
+  log_max_bytes: 10485760
+  log_backup_count: 5
 llm:
   provider: ollama_cloud
   host: https://ollama.com

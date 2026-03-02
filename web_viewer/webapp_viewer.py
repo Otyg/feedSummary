@@ -334,8 +334,64 @@ def view_article(article_id: str):
 
 @app.route("/status")
 def status():
-    sp = (APP_CFG.get("store") or {}).get("path")
-    return {"config": APP_CONFIG_PATH, "store_path": sp, "viewer": "ok"}
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    # Basinfo (som du redan har)
+    store_path = None
+    try:
+        store_path = (APP_CFG.get("store") or {}).get("path")
+    except Exception:
+        store_path = None
+
+    out = {
+        "viewer": "ok",
+        "config": APP_CONFIG_PATH,
+        "store_path": store_path,
+    }
+
+    # Job-status via befintlig persistence-funktionalitet
+    jobs = []
+    try:
+        # finns i persistence: list_jobs(limit=...)
+        raw_jobs = store.list_jobs(limit=50) or []
+        for j in raw_jobs:
+            if not isinstance(j, dict):
+                continue
+            jobs.append(
+                {
+                    "id": j.get("id"),
+                    "status": j.get("status"),
+                    "message": j.get("message"),
+                    "created_at": j.get("created_at"),
+                    "started_at": j.get("started_at"),
+                    "finished_at": j.get("finished_at"),
+                    "summary_id": j.get("summary_id"),
+                }
+            )
+    except Exception as e:
+        out["jobs_error"] = str(e)
+        jobs = []
+
+    # Hjälp-aggregat för snabb överblick
+    counts = {"queued": 0, "running": 0, "done": 0, "failed": 0, "other": 0}
+    running = []
+    for j in jobs:
+        st = str(j.get("status") or "").strip().lower()
+        if st in counts:
+            counts[st] += 1
+        else:
+            counts["other"] += 1
+        if st == "running":
+            running.append(j)
+
+    out["jobs"] = {
+        "counts": counts,
+        "running": running,
+        "latest": jobs,  # redan limit=50
+    }
+    return out
 
 
 # ---- WSGI init (gunicorn/waitress): initialize from env/cwd ----

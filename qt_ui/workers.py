@@ -39,7 +39,10 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QThread, Signal
 
 from feedsummary_core.summarizer.main import run_pipeline, run_resume_job
-from feedsummary_core.summarizer.prompt_replay import PromptSet, rerun_summary_from_existing
+from feedsummary_core.summarizer.prompt_replay import (
+    PromptSet,
+    rerun_summary_from_existing,
+)
 
 from uicommon.bootstrap_ui import resolve_config_path
 from qt_ui.interactive_llm import InteractiveLLMClient, LLMFailureContext
