@@ -43,6 +43,7 @@ from feedsummary_core.summarizer.prompt_replay import PromptSet, rerun_summary_f
 
 from uicommon.bootstrap_ui import resolve_config_path
 from qt_ui.interactive_llm import InteractiveLLMClient, LLMFailureContext
+from feedsummary_core.llm_client import create_llm_client
 
 RUNTIME = resolve_config_path()
 CONFIG_PATH = str(RUNTIME.config_path)
@@ -108,9 +109,6 @@ class PipelineWorker(QThread):
     def run(self) -> None:
         try:
             self.status.emit("Kör pipeline…")
-
-            # Build LLM (normal) then wrap for interactive retry/skip
-            from llmClient import create_llm_client
 
             base_llm = create_llm_client(self.cfg)
             llm_cfg = self.cfg.get("llm") or {}
