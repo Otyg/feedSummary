@@ -40,8 +40,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
-from persistence import NewsStore, create_store
-from summarizer.helpers import load_feeds_into_config
+from feedsummary_core.persistence import NewsStore, create_store
+from feedsummary_core.summarizer.helpers import load_feeds_into_config
 
 
 # ----------------------------

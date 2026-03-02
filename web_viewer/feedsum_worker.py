@@ -43,8 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-
-from summarizer.main import run_pipeline
+from feedsummary_core.summarizer.main import run_pipeline
 from uicommon import load_config
 
 log = logging.getLogger(__name__)

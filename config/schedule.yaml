@@ -1,6 +1,6 @@
 daily_hybrid_news_tech_se:
   frequency: "daily"
-  time: "07:00"
+  time: "12:17"
   categories:
     - "Nyheter" 
     - "Teknik"
