@@ -216,13 +216,19 @@ async def _generate_summary_title(
     user_t = str(prompts.get("title_user_template") or "").strip()
 
     lookback_raw = str((config.get("ingest") or {}).get("lookback") or "").strip()
-    lookback = lookback_label_from_range(lookback_raw, from_ts, to_ts) if (from_ts and to_ts) else lookback_raw
+    lookback = (
+        lookback_label_from_range(lookback_raw, from_ts, to_ts)
+        if (from_ts and to_ts)
+        else lookback_raw
+    )
 
     fallback = _default_summary_title(lookback=lookback, from_ts=from_ts, to_ts=to_ts)
     if not sys_p or not user_t:
         return fallback
 
-    from_date = datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d") if from_ts else ""
+    from_date = (
+        datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d") if from_ts else ""
+    )
     to_date = datetime.fromtimestamp(int(to_ts)).strftime("%Y-%m-%d") if to_ts else ""
 
     try:
@@ -338,9 +344,7 @@ async def super_meta_from_topic_sections_with_stats(
 
     # derive overall date span from sections
     fts = [
-        int(s.get("from") or 0)
-        for s in (sections or [])
-        if int(s.get("from") or 0) > 0
+        int(s.get("from") or 0) for s in (sections or []) if int(s.get("from") or 0) > 0
     ]
     tts = [int(s.get("to") or 0) for s in (sections or []) if int(s.get("to") or 0) > 0]
     if fts and tts:

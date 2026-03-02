@@ -23,6 +23,18 @@ batching:
   meta_batch_clip_chars: 1500
   meta_sources_clip_chars: 100
   retry_user_clip_chars: 9000
+cleanup:
+  enabled: true
+  run_every_minutes: 60
+  articles_days: 180
+  daily_summaries_days: 7
+  weekly_summaries_days: 30
+  temp_summaries_days: 30
+  jobs_days: 90
+scheduler:
+  enabled: true
+  path: "config/schedule.yaml"
+  poll_seconds: 20
 llm:
   provider: ollama_cloud
   host: https://ollama.com

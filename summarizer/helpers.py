@@ -458,6 +458,7 @@ def load_feeds_into_config(
         config["feeds"] = []
         raise e
 
+
 def lookback_label_from_range(lookback_raw: str, from_ts: int, to_ts: int) -> str:
     """
     Builds a human-readable label for the time window.

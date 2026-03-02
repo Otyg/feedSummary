@@ -464,7 +464,9 @@ async def _generate_summary_title(
     if not sys_p or not user_t:
         return fallback
 
-    from_date = datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d") if from_ts else ""
+    from_date = (
+        datetime.fromtimestamp(int(from_ts)).strftime("%Y-%m-%d") if from_ts else ""
+    )
     to_date = datetime.fromtimestamp(int(to_ts)).strftime("%Y-%m-%d") if to_ts else ""
 
     try:
