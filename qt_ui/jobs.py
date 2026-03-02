@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from uicommon import format_ts
-from summarizer.helpers import _checkpoint_key, _checkpoint_path, _meta_ckpt_path
+from feedsummary_core.summarizer.helpers import _checkpoint_key, _checkpoint_path, _meta_ckpt_path
 
 
 @dataclass(frozen=True)

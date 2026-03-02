@@ -85,7 +85,7 @@ from uicommon import (
 )
 from uicommon.bootstrap_ui import resolve_config_path
 
-from summarizer.prompt_replay import (
+from feedsummary_core.summarizer.prompt_replay import (
     PromptSet,
     get_promptset_for_summary,
     list_prompt_packages,
@@ -93,7 +93,7 @@ from summarizer.prompt_replay import (
     save_prompt_package,
 )
 
-from llmClient import create_llm_client  # NEW: for resume
+from feedsummary_core.llm_client import create_llm_client
 
 RUNTIME = resolve_config_path()
 CONFIG_PATH = str(RUNTIME.config_path)
