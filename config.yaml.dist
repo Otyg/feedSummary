@@ -35,6 +35,7 @@ scheduler:
   enabled: true
   path: "config/schedule.yaml"
   poll_seconds: 20
+  timezone: "Europe/Stockholm"
 worker:
   log_file: "logs/feedsum_worker.log"
   log_level: "INFO"

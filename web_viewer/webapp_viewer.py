@@ -56,10 +56,12 @@ APP_CONFIG_PATH: str = ""
 APP_CFG: Dict[str, Any] = {}
 APP_STORE = None
 
+
 @lru_cache(maxsize=8)
 def _load_static_md(filename: str) -> str:
     p = BASE_DIR / "static" / filename
     return p.read_text(encoding="utf-8")
+
 
 def _resolve_path_from_cwd(p: str) -> str:
     pp = Path(os.path.expandvars(os.path.expanduser(p)))
@@ -397,6 +399,7 @@ def status():
     }
     return out
 
+
 @app.route("/license")
 def view_license():
     store = APP_STORE
@@ -437,6 +440,7 @@ def view_source():
         default_selected="__source__",
         format_ts=format_ts,
     )
+
 
 # ---- WSGI init (gunicorn/waitress): initialize from env/cwd ----
 def _wsgi_init_once() -> None:
