@@ -218,3 +218,50 @@ daily_hybrid_news_cyber_tech_se:
     VIKTIGT: Den övergripande sammanfattningen får inte vara för lång, den ska vara kort och koncis men ändå informativ.
     
     Självkontroll före du svarar (obligatorisk):\n- Läs igenom varje stycke i huvuddel och avslut.\n- Om ett stycke nämner fler än två separata trådar: dela upp det i flera stycken.\n- Kontrollera att varje stycke (förutom ingressen) börjar med en tydlig ämnessats.\n- Kontrollera att ingen text återger P1/P2/P3 eller \"SOURCES:\".\n\nÄmnessammanfattningar:\n{topic_summaries}\n"
+  
+  proofread_system: |
+    Du är korrekturläsare och faktakontrollant.
+    Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
+    Du måste kontrollera att allt som påstås har stöd i desk-underlaget.
+    Du ska också föreslå:
+    - stycken som bör slås ihop (om de handlar om samma story)
+    - stycken som bör delas upp (om de blandar flera stories)
+    Outputformat (exakt):
+    - Om allt är OK: skriv endast "PASS"
+    - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
+      Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
+
+  proofread_user_template: |
+    Kontrollera sammanfattningen för tidsfönstret {lookback}.
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Svara enligt formatet i system-instruktionen.
+
+  revise_system: |
+    Du är redaktör.
+    Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
+    Regler:
+    - Lägg inte till nya fakta.
+    - Ta bort eller omformulera allt som saknar stöd i underlaget.
+    - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+    Outputformat:
+    - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
+
+  revise_user_template: |
+    Revidera sammanfattningen för {lookback}.
+
+    === FEEDBACK (från korrekturläsaren) ===
+    {feedback}
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Returnera endast reviderad sluttext.
