@@ -63,11 +63,14 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
 log = logging.getLogger(__name__)
+
+
 class _StreamToLogger:
     """
     File-like object that redirects writes to a logger.
     Captures prints and libraries writing to stdout/stderr.
     """
+
     def __init__(self, logger: logging.Logger, level: int):
         self.logger = logger
         self.level = level
@@ -152,7 +155,12 @@ def _setup_file_logging(
         root.removeHandler(h)
 
     fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-    fh = RotatingFileHandler(str(lp), maxBytes=int(max_bytes), backupCount=int(backup_count), encoding="utf-8")
+    fh = RotatingFileHandler(
+        str(lp),
+        maxBytes=int(max_bytes),
+        backupCount=int(backup_count),
+        encoding="utf-8",
+    )
     fh.setLevel(level)
     fh.setFormatter(fmt)
     root.addHandler(fh)
@@ -167,7 +175,11 @@ def _setup_file_logging(
     logging.getLogger(__name__).propagate = True
     logging.getLogger(__name__).setLevel(level)
 
-    logging.getLogger(__name__).info("Logging initialized: file=%s level=%s", str(lp), logging.getLevelName(level))
+    logging.getLogger(__name__).info(
+        "Logging initialized: file=%s level=%s", str(lp), logging.getLevelName(level)
+    )
+
+
 WEEKDAY = {
     "mon": 0,
     "monday": 0,
@@ -427,16 +439,24 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _run_one(
-    config_path: str, cfg: Dict[str, Any], job_name: str, entry: Dict[str, Any]
+    config_path: str, cfg: Dict[str, Any], store, job_name: str, entry: Dict[str, Any]
 ) -> None:
     overrides = _entry_to_overrides(entry)
-    log.info("Running job '%s' overrides=%s", job_name, overrides)
-    summary_id = await run_pipeline(
-        config_path,
-        job_id=None,
-        overrides=overrides,
-        config_dict=cfg,
-    )
+    job_id = None
+    try:
+        job_id = store.create_job()
+        log.info(
+            "Running job '%s' (id: %s) overrides=%s", job_name, str(job_id), overrides
+        )
+        summary_id = await run_pipeline(
+            config_path,
+            job_id=job_id,
+            overrides=overrides,
+            config_dict=cfg,
+        )
+    except Exception as e:
+        log.exception("Job '%s' failed", job_name)
+        raise e
     log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
 
 
@@ -493,8 +513,16 @@ def main() -> int:
     parser.add_argument(
         "--cleanup-once", action="store_true", help="Run cleanup once and exit"
     )
-    parser.add_argument("--log-file", default=None, help="Write logs to this file (overrides config.yaml worker.log_file)")
-    parser.add_argument("--log-level", default=None, help="Log level DEBUG/INFO/WARNING/ERROR (overrides config.yaml worker.log_level)")
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="Write logs to this file (overrides config.yaml worker.log_file)",
+    )
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        help="Log level DEBUG/INFO/WARNING/ERROR (overrides config.yaml worker.log_level)",
+    )
     args = parser.parse_args()
 
     config_path = _resolve_config_path(args.config)
@@ -633,7 +661,7 @@ def main() -> int:
                     continue
 
                 try:
-                    asyncio.run(_run_one(config_path, cfg, jn, entry))
+                    asyncio.run(_run_one(config_path, cfg, store, jn, entry))
                 except Exception as e:
                     log.exception("Job '%s' FAILED: %s", jn, e)
 
