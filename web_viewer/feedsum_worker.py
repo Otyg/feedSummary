@@ -36,12 +36,14 @@ import datetime as dt
 import logging
 import os
 import time
+import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from summarizer.main import run_pipeline
+from feedsummary_core.summarizer.main import run_pipeline
 from uicommon import load_config
 
 from feedsummary_core.persistence import create_store
@@ -60,8 +62,112 @@ try:
 except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
-log = logging.getLogger("feedsum.worker")
+log = logging.getLogger(__name__)
+class _StreamToLogger:
+    """
+    File-like object that redirects writes to a logger.
+    Captures prints and libraries writing to stdout/stderr.
+    """
+    def __init__(self, logger: logging.Logger, level: int):
+        self.logger = logger
+        self.level = level
+        self._buf = ""
 
+    def write(self, message: str) -> int:
+        if not message:
+            return 0
+        self._buf += message
+        # Flush on newline so we get sane log lines
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            line = line.rstrip()
+            if line:
+                self.logger.log(self.level, line)
+        return len(message)
+
+    def flush(self) -> None:
+        line = (self._buf or "").strip()
+        if line:
+            self.logger.log(self.level, line)
+        self._buf = ""
+
+
+def _get_worker_log_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    config.yaml:
+      worker:
+        log_file: "./logs/feedsum_worker.log"
+        log_level: "INFO"
+        log_max_bytes: 10485760
+        log_backup_count: 5
+    """
+    out = {
+        "log_file": "./logs/feedsum_worker.log",
+        "log_level": "INFO",
+        "log_max_bytes": 10 * 1024 * 1024,
+        "log_backup_count": 5,
+    }
+    w = cfg.get("worker")
+    if isinstance(w, dict):
+        if w.get("log_file"):
+            out["log_file"] = str(w.get("log_file"))
+        if w.get("log_level"):
+            out["log_level"] = str(w.get("log_level"))
+        if w.get("log_max_bytes") is not None:
+            try:
+                out["log_max_bytes"] = int(w.get("log_max_bytes"))
+            except Exception:
+                pass
+        if w.get("log_backup_count") is not None:
+            try:
+                out["log_backup_count"] = int(w.get("log_backup_count"))
+            except Exception:
+                pass
+    return out
+
+
+def _setup_file_logging(
+    *,
+    log_file: str,
+    log_level: str = "INFO",
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
+) -> None:
+    """
+    Configure root logger to write to rotating file.
+    Redirect stdout/stderr into logging so prints also go to file.
+    """
+    lp = Path(os.path.expandvars(os.path.expanduser(log_file)))
+    if not lp.is_absolute():
+        lp = (Path.cwd() / lp).resolve()
+    lp.parent.mkdir(parents=True, exist_ok=True)
+
+    level = getattr(logging, str(log_level).upper().strip(), logging.INFO)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Remove any existing handlers to avoid duplicates
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    fh = RotatingFileHandler(str(lp), maxBytes=int(max_bytes), backupCount=int(backup_count), encoding="utf-8")
+    fh.setLevel(level)
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+    # Capture warnings as logs
+    logging.captureWarnings(True)
+
+    # Redirect stdout/stderr into logging
+    sys.stdout = _StreamToLogger(logging.getLogger("stdout"), logging.INFO)  # type: ignore
+    sys.stderr = _StreamToLogger(logging.getLogger("stderr"), logging.ERROR)  # type: ignore
+
+    logging.getLogger(__name__).propagate = True
+    logging.getLogger(__name__).setLevel(level)
+
+    logging.getLogger(__name__).info("Logging initialized: file=%s level=%s", str(lp), logging.getLevelName(level))
 WEEKDAY = {
     "mon": 0,
     "monday": 0,
@@ -387,12 +493,26 @@ def main() -> int:
     parser.add_argument(
         "--cleanup-once", action="store_true", help="Run cleanup once and exit"
     )
+    parser.add_argument("--log-file", default=None, help="Write logs to this file (overrides config.yaml worker.log_file)")
+    parser.add_argument("--log-level", default=None, help="Log level DEBUG/INFO/WARNING/ERROR (overrides config.yaml worker.log_level)")
     args = parser.parse_args()
 
     config_path = _resolve_config_path(args.config)
     cfg_raw = load_config(config_path)
     cfg = _abspath_cfg_paths(cfg_raw, config_path)
+    # Setup file logging + capture stdout/stderr early
+    wlog = _get_worker_log_cfg(cfg)
+    if args.log_file:
+        wlog["log_file"] = args.log_file
+    if args.log_level:
+        wlog["log_level"] = args.log_level
 
+    _setup_file_logging(
+        log_file=str(wlog["log_file"]),
+        log_level=str(wlog["log_level"]),
+        max_bytes=int(wlog["log_max_bytes"]),
+        backup_count=int(wlog["log_backup_count"]),
+    )
     enabled, schedule_path, poll_seconds, tz_name = _scheduler_settings(
         cfg, config_path, args.schedule_path, args.poll
     )
