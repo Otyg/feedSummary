@@ -36,7 +36,17 @@
       {% endif %}
 
       <hr>
-      <a class="btn btn-sm btn-outline-primary w-100" href="{{ url_for('list_articles') }}">Artiklar</a>
+        <a class="btn btn-sm btn-outline-primary w-100 mb-2" href="{{ url_for('list_articles') }}">Artiklar</a>
+        <div class="list-group">
+          <a
+            class="list-group-item list-group-item-action {% if default_selected=='__license__' %}active{% endif %}"
+            href="{{ url_for('view_license') }}"
+          >Licens</a>
+          <a
+            class="list-group-item list-group-item-action {% if default_selected=='__source__' %}active{% endif %}"
+            href="{{ url_for('view_source') }}"
+          >Source</a>
+        </div>
     </div>
   </div>
 

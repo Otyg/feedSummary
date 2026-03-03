@@ -35,7 +35,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
+from functools import lru_cache
 import markdown as md
 from flask import Flask, abort, redirect, render_template, request, url_for
 
@@ -56,6 +56,10 @@ APP_CONFIG_PATH: str = ""
 APP_CFG: Dict[str, Any] = {}
 APP_STORE = None
 
+@lru_cache(maxsize=8)
+def _load_static_md(filename: str) -> str:
+    p = BASE_DIR / "static" / filename
+    return p.read_text(encoding="utf-8")
 
 def _resolve_path_from_cwd(p: str) -> str:
     pp = Path(os.path.expandvars(os.path.expanduser(p)))
@@ -393,6 +397,46 @@ def status():
     }
     return out
 
+@app.route("/license")
+def view_license():
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    docs = store.list_summary_docs() or []
+    docs = [d for d in docs if isinstance(d, dict)]
+    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+
+    html = _md_to_html(_load_static_md("license.md"))
+    return render_template(
+        "index.html",
+        summary={},
+        html=html,
+        summaries=docs,
+        default_selected="__license__",
+        format_ts=format_ts,
+    )
+
+
+@app.route("/source")
+def view_source():
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    docs = store.list_summary_docs() or []
+    docs = [d for d in docs if isinstance(d, dict)]
+    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+
+    html = _md_to_html(_load_static_md("source.md"))
+    return render_template(
+        "index.html",
+        summary={},
+        html=html,
+        summaries=docs,
+        default_selected="__source__",
+        format_ts=format_ts,
+    )
 
 # ---- WSGI init (gunicorn/waitress): initialize from env/cwd ----
 def _wsgi_init_once() -> None:
