@@ -607,7 +607,11 @@ def _is_due(entry: Dict[str, Any], now: dt.datetime) -> bool:
 def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
     freq = str(entry.get("frequency") or "").strip().lower()
-    if freq == "daily":
+    if freq == "quarterday":
+        overrides["lookback"] = "6h"
+    elif freq == "halfday":
+        overrides["lookback"] = "12h"
+    elif freq == "daily":
         overrides["lookback"] = "1d"
     elif freq == "weekly":
         overrides["lookback"] = "1w"
