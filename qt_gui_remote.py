@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from typing import Any, Dict, List, Optional
-
+from typing import List, Optional
+from datetime import datetime
 import markdown as md
 import requests
 from PySide6.QtCore import Qt, QSettings
@@ -217,12 +217,10 @@ class MainWindow(QMainWindow):
             doc = self.api.get_summary(sid)
 
             title = str(doc.get("title") or "").strip()
-            created = int(doc.get("created") or 0)
+            created = datetime.fromtimestamp(int(doc.get("created") or 0)).strftime("%Y-%m-%d %H:%M")
             md_text = str(doc.get("summary") or "")
 
             body_html = md.markdown(md_text, extensions=["extra"])
-
-            # Enkel metadata-rad (unix-ts som tal). Vill du formatta snyggt kan vi lägga in datetime-format.
             meta_html = f"<div style='color:#666; font-size: 0.9em;'>Created: {created}</div>"
 
             if title:
