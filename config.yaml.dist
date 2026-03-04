@@ -41,6 +41,10 @@ worker:
   log_level: "INFO"
   log_max_bytes: 10485760
   log_backup_count: 5
+worker_api:
+  enabled: false
+  host: "127.0.0.1"
+  port: 8799
 llm:
   provider: ollama_cloud
   host: https://ollama.com

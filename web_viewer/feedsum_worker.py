@@ -33,10 +33,14 @@
 import argparse
 import asyncio
 import datetime as dt
+import json
 import logging
 import os
 import time
 import sys
+import threading
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -351,13 +355,11 @@ def _next_boundary(now: dt.datetime, boundary_hours: List[int]) -> dt.datetime:
     Given fixed hour boundaries (e.g. [0,6,12,18]) return next boundary strictly after 'now'.
     Works with tz-aware or naive datetimes.
     """
-    # Normalize to minute=0 boundary
     base = now.replace(minute=0, second=0, microsecond=0)
     for h in boundary_hours:
         cand = base.replace(hour=h)
         if cand > now:
             return cand
-    # Next day at first boundary
     next_day = base + dt.timedelta(days=1)
     return next_day.replace(hour=boundary_hours[0])
 
@@ -443,7 +445,7 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 async def _run_one(
     config_path: str, cfg: Dict[str, Any], store, job_name: str, entry: Dict[str, Any]
-) -> None:
+) -> str:
     overrides = _entry_to_overrides(entry)
     job_id = None
     try:
@@ -460,7 +462,9 @@ async def _run_one(
     except Exception as e:
         log.exception("Job '%s' failed", job_name)
         raise e
+
     log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
+    return str(summary_id)
 
 
 # ----------------------------
@@ -494,6 +498,146 @@ def _cleanup_policy(cfg: Dict[str, Any]) -> "CleanupPolicy":
 
 
 # ----------------------------
+# Worker control-plane (async trigger + status)
+# ----------------------------
+def _worker_api_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    config.yaml:
+      worker_api:
+        enabled: true
+        host: "127.0.0.1"
+        port: 8799
+    """
+    d = cfg.get("worker_api")
+    if not isinstance(d, dict):
+        d = {}
+    return {
+        "enabled": bool(d.get("enabled", True)),
+        "host": str(d.get("host") or "127.0.0.1"),
+        "port": int(d.get("port") or 8799),
+    }
+
+
+TRIGGERS: Dict[str, Dict[str, Any]] = {}
+TRIGGERS_LOCK = threading.Lock()
+
+
+def _trigger_create(name: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
+    tid = f"tr_{uuid.uuid4().hex}"
+    now = int(time.time())
+    obj = {
+        "id": tid,
+        "name": name,
+        "created_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "status": "queued",  # queued|running|done|failed
+        "overrides": overrides,
+        "summary_id": None,
+        "error": None,
+    }
+    with TRIGGERS_LOCK:
+        TRIGGERS[tid] = obj
+    return obj
+
+
+def _trigger_update(tid: str, **fields: Any) -> None:
+    with TRIGGERS_LOCK:
+        if tid in TRIGGERS:
+            TRIGGERS[tid].update(fields)
+
+
+def _trigger_get(tid: str) -> Optional[Dict[str, Any]]:
+    with TRIGGERS_LOCK:
+        v = TRIGGERS.get(tid)
+        return dict(v) if isinstance(v, dict) else None
+
+
+class _WorkerControlHandler(BaseHTTPRequestHandler):
+    """
+    Local-only control plane for triggering schedule entries on-demand.
+
+    Endpoints:
+      GET  /health
+      POST /trigger           JSON: {"name":"<schedule_name>"}
+      GET  /trigger/<id>      status
+    """
+
+    def _send_json(self, code: int, payload: Dict[str, Any]) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):  # noqa: N802
+        if self.path == "/health":
+            self._send_json(200, {"ok": True})
+            return
+
+        if self.path.startswith("/trigger/"):
+            tid = self.path.split("/trigger/", 1)[1].strip()
+            item = _trigger_get(tid)
+            if not item:
+                self._send_json(404, {"error": "not_found", "trigger_id": tid})
+                return
+            self._send_json(200, {"item": item})
+            return
+
+        self._send_json(404, {"error": "not_found"})
+
+    def do_POST(self):  # noqa: N802
+        if self.path != "/trigger":
+            self._send_json(404, {"error": "not_found"})
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            body = json.loads(raw.decode("utf-8") or "{}")
+        except Exception as e:
+            self._send_json(400, {"error": "bad_json", "detail": str(e)})
+            return
+
+        name = str(body.get("name") or "").strip()
+        if not name:
+            self._send_json(400, {"error": "missing_name"})
+            return
+
+        try:
+            res = self.server.trigger_async(name)  # type: ignore[attr-defined]
+            self._send_json(202, res)
+        except KeyError:
+            self._send_json(404, {"error": "schedule_not_found", "name": name})
+        except Exception as e:
+            self._send_json(500, {"error": "trigger_failed", "detail": str(e)})
+
+    # quiet default logging
+    def log_message(self, format, *args):  # noqa: A003
+        return
+
+
+def _start_worker_control_server(cfg: Dict[str, Any], *, trigger_async) -> Optional[ThreadingHTTPServer]:
+    s = _worker_api_settings(cfg)
+    if not s["enabled"]:
+        log.info("worker_api disabled")
+        return None
+
+    host = s["host"]
+    port = s["port"]
+
+    httpd = ThreadingHTTPServer((host, port), _WorkerControlHandler)
+    httpd.trigger_async = trigger_async  # type: ignore[attr-defined]
+
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+
+    log.info("worker_api listening on http://%s:%s", host, port)
+    return httpd
+
+
+# ----------------------------
 # Main
 # ----------------------------
 def main() -> int:
@@ -502,35 +646,20 @@ def main() -> int:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-    parser = argparse.ArgumentParser(
-        description="FeedSummary worker (scheduler + cleanup)"
-    )
+    parser = argparse.ArgumentParser(description="FeedSummary worker (scheduler + cleanup)")
     parser.add_argument("--config", default=None, help="Path to config.yaml")
-    parser.add_argument(
-        "--schedule-path", default=None, help="Override schedule.yaml path"
-    )
+    parser.add_argument("--schedule-path", default=None, help="Override schedule.yaml path")
     parser.add_argument("--poll", type=int, default=None, help="Override poll seconds")
-    parser.add_argument(
-        "--once", action="store_true", help="Run due jobs once and exit"
-    )
-    parser.add_argument(
-        "--cleanup-once", action="store_true", help="Run cleanup once and exit"
-    )
-    parser.add_argument(
-        "--log-file",
-        default=None,
-        help="Write logs to this file (overrides config.yaml worker.log_file)",
-    )
-    parser.add_argument(
-        "--log-level",
-        default=None,
-        help="Log level DEBUG/INFO/WARNING/ERROR (overrides config.yaml worker.log_level)",
-    )
+    parser.add_argument("--once", action="store_true", help="Run due jobs once and exit")
+    parser.add_argument("--cleanup-once", action="store_true", help="Run cleanup once and exit")
+    parser.add_argument("--log-file", default=None, help="Write logs to this file")
+    parser.add_argument("--log-level", default=None, help="Log level DEBUG/INFO/WARNING/ERROR")
     args = parser.parse_args()
 
     config_path = _resolve_config_path(args.config)
     cfg_raw = load_config(config_path)
     cfg = _abspath_cfg_paths(cfg_raw, config_path)
+
     # Setup file logging + capture stdout/stderr early
     wlog = _get_worker_log_cfg(cfg)
     if args.log_file:
@@ -544,17 +673,16 @@ def main() -> int:
         max_bytes=int(wlog["log_max_bytes"]),
         backup_count=int(wlog["log_backup_count"]),
     )
+
     enabled, schedule_path, poll_seconds, tz_name = _scheduler_settings(
         cfg, config_path, args.schedule_path, args.poll
     )
     tz = _get_tz(tz_name)
     grace = _grace_window_seconds(poll_seconds)
 
-    # Create store once; run_cleanup lives here.
     store_cfg = cfg.get("store") or {}
     store = create_store(store_cfg)
 
-    # Cleanup policy
     pol = _cleanup_policy(cfg)
 
     if args.cleanup_once:
@@ -566,9 +694,7 @@ def main() -> int:
         return 0
 
     if not enabled:
-        log.info(
-            "Scheduler disabled. Set scheduler.enabled in config.yaml or FEEDSUMMARY_SCHEDULE=1."
-        )
+        log.info("Scheduler disabled. Set scheduler.enabled in config.yaml or FEEDSUMMARY_SCHEDULE=1.")
         if not getattr(pol, "enabled", True):
             return 0
         log.info("Scheduler disabled but cleanup enabled; running cleanup loop only.")
@@ -585,9 +711,8 @@ def main() -> int:
 
     # next run schedule (robust)
     next_runs: Dict[str, dt.datetime] = {}
-    last_run_stamp: Dict[str, str] = {}  # de-dupe per minute
+    last_run_stamp: Dict[str, str] = {}
 
-    # cleanup scheduling
     last_cleanup_ts: float = 0.0
 
     # initial plan
@@ -600,10 +725,45 @@ def main() -> int:
                 if nr:
                     next_runs[str(name)] = nr
         if next_runs:
-            log.info(
-                "Initial next runs: %s",
-                {k: v.isoformat() for k, v in next_runs.items()},
-            )
+            log.info("Initial next runs: %s", {k: v.isoformat() for k, v in next_runs.items()})
+
+    # ---- async trigger: single authoritative run logic (worker) ----
+    def trigger_async(name: str) -> Dict[str, Any]:
+        schedule = _read_schedule_yaml(schedule_path)
+        if not isinstance(schedule, dict) or name not in schedule or not isinstance(schedule[name], dict):
+            raise KeyError(name)
+
+        entry = schedule[name]
+        overrides = _entry_to_overrides(entry)
+        trig = _trigger_create(name, overrides)
+        tid = trig["id"]
+
+        def _runner():
+            _trigger_update(tid, status="running", started_at=int(time.time()))
+            try:
+                # run immediately (ignores time/day constraints)
+                summary_id = asyncio.run(_run_one(config_path, cfg, store, str(name), entry))
+                _trigger_update(
+                    tid,
+                    status="done",
+                    finished_at=int(time.time()),
+                    summary_id=summary_id,
+                )
+            except Exception as e:
+                _trigger_update(
+                    tid,
+                    status="failed",
+                    finished_at=int(time.time()),
+                    error=str(e),
+                )
+
+        threading.Thread(target=_runner, daemon=True).start()
+
+        base = _worker_api_settings(cfg)
+        status_url = f"http://{base['host']}:{base['port']}/trigger/{tid}"
+        return {"accepted": True, "trigger_id": tid, "name": name, "status_url": status_url}
+
+    _control = _start_worker_control_server(cfg, trigger_async=trigger_async)
 
     while True:
         now = _now(tz)
@@ -623,7 +783,6 @@ def main() -> int:
         if enabled:
             schedule = _read_schedule_yaml(schedule_path)
 
-            # Ensure next_runs exists for all jobs (handles schedule.yaml edits)
             for name, entry in schedule.items():
                 if not isinstance(entry, dict):
                     continue
@@ -633,7 +792,6 @@ def main() -> int:
                     if nr:
                         next_runs[jn] = nr
 
-            # Run due jobs
             for name, entry in schedule.items():
                 if not isinstance(entry, dict):
                     continue
@@ -652,12 +810,7 @@ def main() -> int:
 
                 late_by = (now - nr).total_seconds()
                 if late_by > grace:
-                    log.warning(
-                        "Job '%s' late by %.1fs (grace=%ss) - running anyway",
-                        jn,
-                        late_by,
-                        grace,
-                    )
+                    log.warning("Job '%s' late by %.1fs (grace=%ss) - running anyway", jn, late_by, grace)
 
                 stamp = now.strftime("%Y%m%d%H%M")
                 if last_run_stamp.get(jn) == stamp:
@@ -670,7 +823,6 @@ def main() -> int:
 
                 last_run_stamp[jn] = stamp
 
-                # schedule next run after execution
                 nn = _next_run_dt(entry, now + dt.timedelta(seconds=1))
                 if nn:
                     next_runs[jn] = nn

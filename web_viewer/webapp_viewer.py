@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 from functools import lru_cache
 import markdown as md
 from flask import Flask, abort, redirect, render_template, request, url_for, jsonify
+import requests
 import yaml
 
 from uicommon import format_ts, get_store, load_config
@@ -270,8 +271,37 @@ def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
     out["feeds_path"] = feeds_path
     out["prompts_path"] = prompts_path
     return out
+def _worker_api_base(cfg: Dict[str, Any]) -> str:
+    d = cfg.get("worker_api")
+    if not isinstance(d, dict):
+        d = {}
+    host = str(d.get("host") or "127.0.0.1")
+    port = int(d.get("port") or 8799)
+    return f"http://{host}:{port}"
+
+@app.route("/api/v1/schedule/trigger", methods=["POST"])
+def api_schedule_trigger():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "missing_name"}), 400
+
+    base = _worker_api_base(APP_CFG)
+    try:
+        r = requests.post(f"{base}/trigger", json={"name": name}, timeout=5)
+        return (r.content, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
+    except Exception as e:
+        return jsonify({"error": "worker_unreachable", "detail": str(e), "worker": base}), 502
 
 
+@app.route("/api/v1/schedule/trigger/<trigger_id>", methods=["GET"])
+def api_schedule_trigger_status(trigger_id: str):
+    base = _worker_api_base(APP_CFG)
+    try:
+        r = requests.get(f"{base}/trigger/{trigger_id}", timeout=5)
+        return (r.content, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
+    except Exception as e:
+        return jsonify({"error": "worker_unreachable", "detail": str(e), "worker": base}), 502
 @app.route("/api/v1/summaries")
 def api_summaries():
     """
