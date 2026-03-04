@@ -1,13 +1,35 @@
+daily_lunch_brief:
+  frequency: "daily"
+  lookback: "6h"
+  time: "12:00"
+  promptpackage: "daily_news_public_se"
+  categories:
+    - "Nyheter"
+    - "Cybersecurity"
+daily_evening_brief:
+  frequency: "daily"
+  lookback: "12h"
+  time: "18:00"
+  promptpackage: "daily_news_public_se"
+  categories:
+    - "Nyheter"
+    - "Cybersecurity"
+daily_science_brief:
+  frequency: "daily"
+  time: "01:00"
+  promptpackage: "science_brief"
+  categories:
+    - "Science"
 daily_hybrid_news_tech_se:
   frequency: "daily"
-  time: "12:17"
+  time: "06:00"
   categories:
     - "Nyheter" 
     - "Teknik"
   promptpackage: "daily_hybrid_news_cyber_tech_se"
 daily_hybrid_cyber:
   frequency: "daily"
-  time: "06:00"
+  time: "07:00"
   categories: 
     - "Cybersecurity"
     - "Dataskydd"
@@ -24,7 +46,7 @@ weekly_hybrid_news_tech_se:
 weekly_hybrid_cyber:
   frequency: "weekly"
   day: "sun"
-  time: "23:59"
+  time: "21:00"
   categories: 
     - "Cybersecurity"
     - "Dataskydd"

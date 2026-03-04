@@ -72,9 +72,68 @@ weekly_hybrid_news_cyber_tech_se:
     Ämnessammanfattningar:
     {topic_summaries}
     "
+  proofread_system: |
+    Du är korrekturläsare och faktakontrollant.
+    Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
+    Du måste kontrollera att allt som påstås har stöd i desk-underlaget.
+    Du ska också föreslå:
+    - stycken som bör slås ihop (om de handlar om samma story)
+    - stycken som bör delas upp (om de blandar flera stories)
+    Outputformat (exakt):
+    - Om allt är OK: skriv endast "PASS"
+    - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
+      Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
 
+  proofread_user_template: |
+    Kontrollera sammanfattningen för tidsfönstret {lookback}.
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Svara enligt formatet i system-instruktionen.
+
+  revise_system: |
+    Du är redaktör.
+    Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
+    Regler:
+    - Lägg inte till nya fakta.
+    - Ta bort eller omformulera allt som saknar stöd i underlaget.
+    - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+    Outputformat:
+    - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
+
+  revise_user_template: |
+    Revidera sammanfattningen för {lookback}.
+
+    === FEEDBACK (från korrekturläsaren) ===
+    {feedback}
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Returnera endast reviderad sluttext.
 
 weekly_news_public_se:
+  title_system: |
+    Du är rubriksättare som skriver rubriker till de artiklar du får in.
+
+  title_user_template: |
+    Skapa en rubrik för denna sammanfattning. Rubriken ska följa dessa krav:
+    - Max tio ord eller hundra tecken
+    - Kärnfull och tydlig: Rubriken ska snabbt förmedla vad artikeln handlar om
+    - Viktiga ord först: Placera nyckelord (keywords) i början av rubriken
+    - Aktivt språk: Använd verb och aktiva formuleringar snarare än passiva.
+    - Sann och relevant: Rubriken får inte lova mer än innehållet. Den ska beskriva innehållet korrekt.
+    - Undvik citattecken och punkt i slutet.
+    Ge mig en, och endast en, rubrik utan en massa prat.
+    Sammanfattning:
+    {summary}
   batch_system: 'Du är reporter på en nyhetsredaktion. Du sammanfattar artiklar för redaktionens desk, med särskilt fokus på att skapa underlag för en veckosammanfattning.
 
     Skriv på svenska, sakligt och tydligt. Undvik spekulation och värdeladdade ord.
@@ -93,9 +152,68 @@ weekly_news_public_se:
 
     '
   meta_user_template: "Skapa en publik veckosammanfattning som kan läsas högt eller publiceras.\n\nFORMAT: Endast löpande text.\n- Inga punktlistor.\n- Inga numrerade listor.\n- Inga interna markörer (P1/P2/P3) och inga \"(Geo: ...)\" i sluttexten.\n- Kopiera inte \"SOURCES:\"-raderna i brödtexten.\n\nStruktur (allt i prosa, med styckeindelning):\n- Rubrik: Veckosammanfattning {lookback}\n- Ingress: ett stycke (3–6 meningar) som beskriver veckans huvuddrag.\n- Huvuddel: 8–12 stycken där varje stycke behandlar en händelse eller en utveckling. Prioritera viktigast först och slå ihop återkommande rapportering till en sammanhängande veckoberättelse.\n- Minst 3 av styckena ska tydligt beskriva utveckling över tid (\"under veckan\" / \"senare under veckan\"), men utan spekulation.\n- Avslut: ett stycke som börjar med \"Källor:\" och där du nämner källor i löpande text separerade med semikolon. Bygg en deduplicerad källlista från SOURCES-raderna.\n\nLängd:\n- Sikta på ungefär 1500–2500 ord om underlaget räcker, annars så långt det finns substans.\n\nDesk-underlag:\n{batch_summaries}\n"
+  proofread_system: |
+    Du är korrekturläsare och faktakontrollant.
+    Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
+    Du måste kontrollera att allt som påstås har stöd i desk-underlaget.
+    Du ska också föreslå:
+    - stycken som bör slås ihop (om de handlar om samma story)
+    - stycken som bör delas upp (om de blandar flera stories)
+    Outputformat (exakt):
+    - Om allt är OK: skriv endast "PASS"
+    - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
+      Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
 
+  proofread_user_template: |
+    Kontrollera sammanfattningen för tidsfönstret {lookback}.
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Svara enligt formatet i system-instruktionen.
+
+  revise_system: |
+    Du är redaktör.
+    Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
+    Regler:
+    - Lägg inte till nya fakta.
+    - Ta bort eller omformulera allt som saknar stöd i underlaget.
+    - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+    Outputformat:
+    - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
+
+  revise_user_template: |
+    Revidera sammanfattningen för {lookback}.
+
+    === FEEDBACK (från korrekturläsaren) ===
+    {feedback}
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Returnera endast reviderad sluttext.
 
 weekly_cyber_sitrep_se:
+  title_system: |
+    Du är rubriksättare som skriver rubriker till de artiklar du får in.
+
+  title_user_template: |
+    Skapa en rubrik för denna sammanfattning. Rubriken ska följa dessa krav:
+    - Max tio ord eller hundra tecken
+    - Kärnfull och tydlig: Rubriken ska snabbt förmedla vad artikeln handlar om
+    - Viktiga ord först: Placera nyckelord (keywords) i början av rubriken
+    - Aktivt språk: Använd verb och aktiva formuleringar snarare än passiva.
+    - Sann och relevant: Rubriken får inte lova mer än innehållet. Den ska beskriva innehållet korrekt.
+    - Undvik citattecken och punkt i slutet.
+    Ge mig en, och endast en, rubrik utan en massa prat.
+    Sammanfattning:
+    {summary}
   batch_system: 'Du arbetar på en Säkerhetsavdelning med ansvar för omvärldsbevakning inom cybersäkerhet, dataskydd och threat intelligence.
 
     Du skriver faktabaserade sammanfattningar av inkommande artiklar som underlag till en intern veckolägesbild.
@@ -116,9 +234,68 @@ weekly_cyber_sitrep_se:
 
     '
   meta_user_template: "Skapa en faktabaserad veckolägesbild (sitrep) för tidsfönstret {lookback}.\n\nFORMAT: Endast löpande text.\n- Inga punktlistor.\n- Inga numrerade listor.\n- Inga interna markörer (P1/P2/P3) i sluttexten.\n- Kopiera inte \"SOURCES:\"-raderna i brödtexten.\n\nKärnregel för styckeindelning (mycket viktigt):\n- Förutom ingressen ska VARJE stycke handla om EN incident/sårbarhet/kampanj/aktör eller regulatorisk utveckling, eller MAX TVÅ mycket nära relaterade aspekter av samma sak.\n- Om ett stycke börjar blanda flera separata händelser: dela upp det.\n\nKrav på första meningen i varje stycke (förutom ingressen):\n- Börja varje stycke med en kort ämnessats som klassar typen av sak, t.ex.:\n  “En cyberincident …”, “En sårbarhet …”, “En kampanj/aktör …”, “Ett regulatoriskt beslut …”.\n- Första meningen ska inte lista flera olika händelser.\n\nInnehållskrav:\n- Endast fakta som framgår av underlaget.\n- Inga rekommendationer, inga råd, inga \"bör\", inga förslag på åtgärder.\n- Om information är osäker: beskriv osäkerheten sakligt (vem som säger vad, vad som saknas, vad som är obekräftat).\n- Slå ihop dubletter och upprepad rapportering, men blanda inte olika händelser i samma stycke.\n\nStruktur (allt i prosa, med styckeindelning):\n- Rubrik: Veckolägesbild cyber & dataskydd {lookback}\n- Sammanfattande läge: 1–2 stycken som beskriver huvuddragen i veckan.\n- Händelsebild: så många stycken som behövs (typiskt 8–14) där varje stycke behandlar en tydligt avgränsad incident, sårbarhet, kampanj/aktör eller regulatorisk utveckling. Prioritera största påverkan/utbredning först.\n- Minst 3 stycken ska tydligt beskriva utveckling över tid under veckan (utan spekulation).\n- Osäkerheter: 1–2 stycken som sammanfattar viktiga oklarheter och var uppgifter går isär.\n- Sist: ett stycke som börjar med \"Källor:\" och listar källor i löpande text separerade med semikolon. Deduplicera källorna från alla SOURCES-rader.\n\nLängd:\n- Sikta på ungefär 1400–2400 ord om underlaget räcker, annars så långt det finns substans.\n\nSjälvkontroll före du svarar (obligatorisk):\n- Läs igenom varje stycke (förutom ingressen).\n- Om ett stycke nämner fler än två separata händelser/trådar: dela upp det.\n- Kontrollera att varje stycke (förutom ingressen) börjar med en tydlig ämnessats.\n- Kontrollera att inga rekommendationer/åtgärder smugit sig in.\n\nDesk-underlag:\n{batch_summaries}\n"
+  proofread_system: |
+    Du är korrekturläsare och faktakontrollant.
+    Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
+    Du måste kontrollera att allt som påstås har stöd i desk-underlaget.
+    Du ska också föreslå:
+    - stycken som bör slås ihop (om de handlar om samma story)
+    - stycken som bör delas upp (om de blandar flera stories)
+    Outputformat (exakt):
+    - Om allt är OK: skriv endast "PASS"
+    - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
+      Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
 
+  proofread_user_template: |
+    Kontrollera sammanfattningen för tidsfönstret {lookback}.
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Svara enligt formatet i system-instruktionen.
+
+  revise_system: |
+    Du är redaktör.
+    Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
+    Regler:
+    - Lägg inte till nya fakta.
+    - Ta bort eller omformulera allt som saknar stöd i underlaget.
+    - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+    Outputformat:
+    - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
+
+  revise_user_template: |
+    Revidera sammanfattningen för {lookback}.
+
+    === FEEDBACK (från korrekturläsaren) ===
+    {feedback}
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Returnera endast reviderad sluttext.
 
 daily_news_public_se:
+  title_system: |
+    Du är rubriksättare som skriver rubriker till de artiklar du får in.
+
+  title_user_template: |
+    Skapa en rubrik för denna sammanfattning. Rubriken ska följa dessa krav:
+    - Max tio ord eller hundra tecken
+    - Kärnfull och tydlig: Rubriken ska snabbt förmedla vad artikeln handlar om
+    - Viktiga ord först: Placera nyckelord (keywords) i början av rubriken
+    - Aktivt språk: Använd verb och aktiva formuleringar snarare än passiva.
+    - Sann och relevant: Rubriken får inte lova mer än innehållet. Den ska beskriva innehållet korrekt.
+    - Undvik citattecken och punkt i slutet.
+    Ge mig en, och endast en, rubrik utan en massa prat.
+    Sammanfattning:
+    {summary}
   batch_system: 'Du är reporter på en nyhetsredaktion. Du sammanfattar artiklar för redaktionens desk, med särskilt fokus på att skapa underlag för en dagsaktuell sammanfattning.
 
     Skriv på svenska, sakligt och tydligt. Undvik spekulation och värdeladdade ord.
@@ -137,9 +314,68 @@ daily_news_public_se:
 
     '
   meta_user_template: "Skapa en publik dagsammanfattning som kan läsas högt eller publiceras.\n\nFORMAT: Endast löpande text.\n- Inga punktlistor.\n- Inga numrerade listor.\n- Inga interna markörer (P1/P2/P3) och inga \"(Geo: ...)\" i sluttexten.\n- Kopiera inte \"SOURCES:\"-raderna i brödtexten.\n\nStruktur (allt i prosa, med styckeindelning):\n- Rubrik: Nyhetssammanfattning {lookback}\n- Ingress: ett stycke (2–5 meningar) som beskriver dagens huvuddrag.\n- Huvuddel: 5–9 stycken där varje stycke behandlar en händelse eller uppdatering.\n- Avslut: ett stycke som börjar med \"Källor:\" och där du nämner källor i löpande text separerade med semikolon. Bygg en deduplicerad källlista från SOURCES-raderna.\n\nLängd:\n- Sikta på ungefär 900–1500 ord om underlaget räcker, annars så långt det finns substans.\n\nDesk-underlag:\n{batch_summaries}\n"
+  proofread_system: |
+    Du är korrekturläsare och faktakontrollant.
+    Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
+    Du måste kontrollera att allt som påstås har stöd i desk-underlaget.
+    Du ska också föreslå:
+    - stycken som bör slås ihop (om de handlar om samma story)
+    - stycken som bör delas upp (om de blandar flera stories)
+    Outputformat (exakt):
+    - Om allt är OK: skriv endast "PASS"
+    - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
+      Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
 
+  proofread_user_template: |
+    Kontrollera sammanfattningen för tidsfönstret {lookback}.
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Svara enligt formatet i system-instruktionen.
+
+  revise_system: |
+    Du är redaktör.
+    Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
+    Regler:
+    - Lägg inte till nya fakta.
+    - Ta bort eller omformulera allt som saknar stöd i underlaget.
+    - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+    Outputformat:
+    - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
+
+  revise_user_template: |
+    Revidera sammanfattningen för {lookback}.
+
+    === FEEDBACK (från korrekturläsaren) ===
+    {feedback}
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Returnera endast reviderad sluttext.
 
 daily_cyber_sitrep_se:
+  title_system: |
+    Du är rubriksättare som skriver rubriker till de artiklar du får in.
+
+  title_user_template: |
+    Skapa en rubrik för denna sammanfattning. Rubriken ska följa dessa krav:
+    - Max tio ord eller hundra tecken
+    - Kärnfull och tydlig: Rubriken ska snabbt förmedla vad artikeln handlar om
+    - Viktiga ord först: Placera nyckelord (keywords) i början av rubriken
+    - Aktivt språk: Använd verb och aktiva formuleringar snarare än passiva.
+    - Sann och relevant: Rubriken får inte lova mer än innehållet. Den ska beskriva innehållet korrekt.
+    - Undvik citattecken och punkt i slutet.
+    Ge mig en, och endast en, rubrik utan en massa prat.
+    Sammanfattning:
+    {summary}
   batch_system: 'Du arbetar på en Säkerhetsavdelning med ansvar för omvärldsbevakning inom cybersäkerhet, dataskydd och threat intelligence.
 
     Du skriver faktabaserade sammanfattningar av inkommande artiklar som underlag till en intern dagsaktuell lägesbild.
@@ -160,7 +396,52 @@ daily_cyber_sitrep_se:
 
     '
   meta_user_template: "Skapa en faktabaserad dagslägesbild (sitrep) för tidsfönstret {lookback}.\n\nFORMAT: Endast löpande text.\n- Inga punktlistor.\n- Inga numrerade listor.\n- Inga interna markörer (P1/P2/P3) i sluttexten.\n- Kopiera inte \"SOURCES:\"-raderna i brödtexten.\n\nKärnregel för styckeindelning (mycket viktigt):\n- Förutom ingressen ska VARJE stycke handla om EN incident/sårbarhet/kampanj/regulatorisk uppdatering, eller MAX TVÅ mycket nära relaterade aspekter av samma sak.\n- Om ett stycke börjar blanda flera separata händelser: dela upp det.\n\nKrav på första meningen i varje stycke (förutom ingressen):\n- Börja varje stycke med en kort ämnessats som klassar typen av sak, t.ex.:\n  “En cyberincident …”, “En sårbarhet …”, “En kampanj/aktör …”, “Ett regulatoriskt beslut …”.\n- Första meningen ska inte lista flera olika händelser.\n\nInnehållskrav:\n- Endast fakta som framgår av underlaget.\n- Inga rekommendationer, inga råd, inga \"bör\", inga förslag på åtgärder.\n- Om information är osäker: beskriv osäkerheten sakligt.\n- Slå ihop dubletter och upprepad rapportering, men blanda inte olika händelser i samma stycke.\n\nStruktur (allt i prosa, med styckeindelning):\n- Rubrik: Dagslägesbild cyber & dataskydd {lookback}\n- Sammanfattande läge: 1–2 stycken som beskriver huvuddragen.\n- Händelsebild: så många stycken som behövs (typiskt 5–10) där varje stycke behandlar en tydligt avgränsad incident, sårbarhet, kampanj/aktör eller regulatorisk uppdatering.\n- Osäkerheter: 1 stycke.\n- Sist: ett stycke som börjar med \"Källor:\" och listar källor i löpande text separerade med semikolon. Deduplicera källorna från alla SOURCES-rader.\n\nLängd:\n- Sikta på ungefär 900–1600 ord om underlaget räcker, annars så långt det finns substans.\n\nSjälvkontroll före du svarar (obligatorisk):\n- Läs igenom varje stycke (förutom ingressen).\n- Om ett stycke nämner fler än två separata händelser/trådar: dela upp det.\n- Kontrollera att varje stycke (förutom ingressen) börjar med en tydlig ämnessats.\n- Kontrollera att inga rekommendationer/åtgärder smugit sig in.\n\nDesk-underlag:\n{batch_summaries}\n"
+  proofread_system: |
+    Du är korrekturläsare och faktakontrollant.
+    Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
+    Du måste kontrollera att allt som påstås har stöd i desk-underlaget.
+    Du ska också föreslå:
+    - stycken som bör slås ihop (om de handlar om samma story)
+    - stycken som bör delas upp (om de blandar flera stories)
+    Outputformat (exakt):
+    - Om allt är OK: skriv endast "PASS"
+    - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
+      Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
 
+  proofread_user_template: |
+    Kontrollera sammanfattningen för tidsfönstret {lookback}.
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Svara enligt formatet i system-instruktionen.
+
+  revise_system: |
+    Du är redaktör.
+    Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
+    Regler:
+    - Lägg inte till nya fakta.
+    - Ta bort eller omformulera allt som saknar stöd i underlaget.
+    - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+    Outputformat:
+    - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
+
+  revise_user_template: |
+    Revidera sammanfattningen för {lookback}.
+
+    === FEEDBACK (från korrekturläsaren) ===
+    {feedback}
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Returnera endast reviderad sluttext.
 
 daily_hybrid_news_cyber_tech_se:
   title_system: |
@@ -220,6 +501,96 @@ daily_hybrid_news_cyber_tech_se:
     Självkontroll före du svarar (obligatorisk):\n- Läs igenom varje stycke i huvuddel och avslut.\n- Om ett stycke nämner fler än två separata trådar: dela upp det i flera stycken.\n- Kontrollera att varje stycke (förutom ingressen) börjar med en tydlig ämnessats.\n- Kontrollera att ingen text återger P1/P2/P3 eller \"SOURCES:\".\n\nÄmnessammanfattningar:\n{topic_summaries}\n"
   
   proofread_system: |
+    Du är korrekturläsare och faktakontrollant.
+    Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
+    Du måste kontrollera att allt som påstås har stöd i desk-underlaget.
+    Du ska också föreslå:
+    - stycken som bör slås ihop (om de handlar om samma story)
+    - stycken som bör delas upp (om de blandar flera stories)
+    Outputformat (exakt):
+    - Om allt är OK: skriv endast "PASS"
+    - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
+      Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
+
+  proofread_user_template: |
+    Kontrollera sammanfattningen för tidsfönstret {lookback}.
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Svara enligt formatet i system-instruktionen.
+
+  revise_system: |
+    Du är redaktör.
+    Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
+    Regler:
+    - Lägg inte till nya fakta.
+    - Ta bort eller omformulera allt som saknar stöd i underlaget.
+    - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+    Outputformat:
+    - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
+
+  revise_user_template: |
+    Revidera sammanfattningen för {lookback}.
+
+    === FEEDBACK (från korrekturläsaren) ===
+    {feedback}
+
+    === DRAFT SUMMARY ===
+    {draft_summary}
+
+    === DESK-UNDERLAG (källmaterial) ===
+    {desk_underlag}
+
+    Returnera endast reviderad sluttext.
+research_papers_public_se:
+  batch_system: 'Du är vetenskapsredaktör. Du får en bunt publicerade forskningsartiklar (papers) och ska skapa ett desk-underlag som kan användas för en sammanhängande forskningssammanfattning.
+
+    Skriv på svenska, sakligt och tydligt. Undvik hype, spekulation och värdeomdömen.
+    Du får inte ge rekommendationer eller ”bör”-råd. Beskriv bara vad som står och vad resultaten betyder, inklusive begränsningar.
+
+    Viktigt: Förväxla inte preprint med peer review. Om underlaget inte säger att något är peer-reviewed: anta inte det.
+    '
+
+  batch_user_template: "Du får ett antal forskningsartiklar (papers) som publicerats eller uppdaterats under {lookback}. Skapa desk-underlag som en redaktör kan använda för en sammanhängande sammanfattning av forskningsläget.\n\nFORMAT:\n- Endast löpande text, inga punktlistor, inga numrerade listor.\n- Varje paper ska bli ett eget stycke (”paper card”).\n- Varje paper card ska avslutas med en egen rad som börjar exakt med \"SOURCES: \". Den raden ska innehålla en eller flera källor separerade med \"|\".\n- Du får använda \"P1/P2/P3\" som intern prioritering i början av paper card, men det får ALDRIG återges i sluttexten.\n\nKärnregel (mycket viktig):\n- Varje paper card behandlar exakt EN artikel. Blanda inte två olika papers i samma stycke.\n\nStruktur per paper card (i prosa, 4–10 meningar):\n- Första meningen (ämnessats): \"P?: En studie om <ämne> …\" och nämn kort vilket problem den adresserar.\n- Ange: (a) domän/område, (b) metod i stora drag, (c) dataset/experimentupplägg om det framgår, (d) huvudresultat, (e) vad som är nytt jämfört med typisk tidigare ansats (endast om underlaget stödjer), (f) begränsningar/antaganden som författarna själva nämner.\n- Om relevanta siffror finns (t.ex. förbättring i % eller metric): ta med dem, men utan att överdriva.\n- Om det är en preprint, workshop, conference, journal, eller peer-reviewed: skriv det endast om källan säger det.\n- Om du är osäker på något: skriv osäkerheten som osäkerhet i källorna, inte som ett påstående.\n\nAvslut per paper card:\n- SOURCES: <källa1>|<källa2>|...\n\nEfter alla paper cards:\n- Skriv ett sista stycke \"Osäkerheter och avgränsningar\" (3–7 meningar): vad som inte framgår (t.ex. peer review-status, datasetstorlek), risk för överföring till verkliga miljöer, och eventuella metodbegränsningar. Ingen SOURCES-rad här.\n\nPapers:\n{articles_corpus}\n"
+
+  title_system: 'Du är rubriksättare på en vetenskapsredaktion. Du får ett underlag som beskriver flera forskningsartiklar och ska skapa en kort, korrekt titel på svenska.
+
+    Titeln ska:
+    - vara saklig och fri från hype
+    - fånga den gemensamma nämnaren eller den mest centrala tråden
+    - inte påstå peer review om det inte uttryckligen står
+    - inte innehålla citattecken eller kolon om det inte behövs
+    '
+
+  title_user_template: "Skapa en titel (max 10–14 ord) för en sammanfattning av forskningsartiklar publicerade/uppdaterade under {lookback}.\n\nUnderlag:\n{batch_summaries}\n"
+
+  meta_system: 'Du är vetenskapsredaktör och skriver en sammanhängande forskningssammanfattning på svenska baserat på desk-underlaget.
+
+    Du ska ENDAST använda information från desk-underlaget. Inga spekulationer, inga rekommendationer.
+    Viktigt:
+    - Interna markörer (P1/P2/P3) får ALDRIG synas.
+    - SOURCES-rader ska inte kopieras in i brödtexten, men kan användas för en deduplicerad källparagraf i slutet.
+    - Skriv tydligt vad som är resultat, vad som är metod, och vad som är begränsningar.
+    - Om peer review-status inte framgår: skriv inte att något är peer-reviewed.
+    '
+
+  meta_user_template: "Skriv en sammanhängande forskningssammanfattning för tidsfönstret {lookback}.\n\nFORMAT:\n- Endast löpande text. Inga punktlistor.\n- Använd styckeindelning.\n\nKärnregler för stycken (mycket viktigt):\n- Förutom ingressen ska varje stycke behandla EN tydlig tråd eller ETT paper (max två mycket nära relaterade papers om de tydligt bygger på samma idé).\n- Börja varje stycke (förutom ingressen) med en kort ämnessats som klassar tråden, t.ex.:\n  “Flera studier om <område> …”, “En studie om <ämne> …”, “Metodfrågor kring <X> …”, “Resultat för <Y> …”.\n- Om ett stycke börjar blanda flera fristående ämnen: dela upp det.\n\nStruktur:\n- Rubrik: {title}\n- Ingress: 1 stycke (3–6 meningar) som beskriver huvuddragen och vad som dominerar i materialet.\n- Huvuddel: så många stycken som behövs. Prioritera viktigast/tydligast resultat först.\n  - För varje paper du beskriver: inkludera kort metod, huvudsakligt fynd, och viktigaste begränsning.\n  - Om flera papers rör samma område: gruppera dem i ett temastycke och håll en röd tråd.\n- Avslut: 1 stycke som beskriver övergripande begränsningar (t.ex. generaliserbarhet, dataurval, avsaknad av peer review-status där det saknas).\n- Sist: ett stycke som börjar med \"Källor:\" och listar källor i löpande text separerade med semikolon. Deduplicera alla källor från SOURCES-raderna.\n\nLängd:\n- Sikta på ca 1–2 A4 beroende på material, men prioritera tydlighet framför längd.\n- Om underlaget är stort: skriv mer koncentrerat och välj färre detaljer, men behåll metod+resultat+begränsning per paper.\n\nSjälvkontroll före du svarar (obligatorisk):\n- Kontrollera att inga P1/P2/P3 syns.\n- Kontrollera att du inte påstår peer review om det inte framgår.\n- Kontrollera att varje stycke (förutom ingressen) har en tydlig ämnessats och inte blandar flera ämnen.\n\nDesk-underlag:\n{batch_summaries}\n"
+
+  super_meta_system: 'Du är vetenskapsredaktör och ska skriva en mycket kort översikt (executive overview) på svenska baserat på ämnes-/paper-sammanfattningar.
+
+    Inga spekulationer. Inga rekommendationer.
+    Mycket viktigt:
+    - Inga P1/P2/P3 och inga SOURCES-rader i texten.
+    - Säg inte att något är peer-reviewed om det inte uttryckligen framgår.
+    - Fokusera på 2–4 huvudtrådar och vad som är mest nytt/centralt.
+    '
+
+  super_meta_user_template: "Skriv en kort översikt av forskningsläget för tidsfönstret {lookback} baserat på underlaget.\n\nFORMAT:\n- Endast löpande text. Inga punktlistor.\n- Ingress + 2–4 korta stycken.\n\nKrav:\n- Rubrik: Översikt – forskning {lookback}\n- Ingress: 1 stycke (2–4 meningar) som sammanfattar helheten.\n- Därefter 2–4 stycken där varje stycke behandlar EN huvudtråd och börjar med en ämnessats, t.ex.:\n  “Inom <område> …”, “Flera resultat rörde <X> …”, “Metodmässigt …”.\n- Avslut: 1 kort mening om centrala begränsningar/osäkerheter (t.ex. generaliserbarhet, oklara detaljer, peer review-status om det saknas).\n\nLängd:\n- Max cirka en halv A4 (ungefär 2 500–3 500 tecken inklusive mellanslag).\n\nUnderlag:\n{topic_summaries}\n"
+    proofread_system: |
     Du är korrekturläsare och faktakontrollant.
     Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
     Du måste kontrollera att allt som påstås har stöd i desk-underlaget.

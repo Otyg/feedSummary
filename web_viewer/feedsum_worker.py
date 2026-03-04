@@ -414,16 +414,19 @@ def _next_run_dt(entry: Dict[str, Any], now: dt.datetime) -> Optional[dt.datetim
 def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
 
-    freq = str(entry.get("frequency") or "").strip().lower()
-    # sensible lookback defaults for these schedules
-    if freq == "daily":
-        overrides["lookback"] = "1d"
-    elif freq == "weekly":
-        overrides["lookback"] = "1w"
-    elif freq == "quarterday":
-        overrides["lookback"] = "6h"
-    elif freq == "halfday":
-        overrides["lookback"] = "12h"
+    lb = str(entry.get("lookback") or "").strip()
+    if lb:
+        overrides["lookback"] = lb
+    else:
+        freq = str(entry.get("frequency") or "").strip().lower()
+        if freq == "daily":
+            overrides["lookback"] = "1d"
+        elif freq == "weekly":
+            overrides["lookback"] = "1w"
+        elif freq == "quarterday":
+            overrides["lookback"] = "6h"
+        elif freq == "halfday":
+            overrides["lookback"] = "12h"
 
     cats = entry.get("categories") or []
     if isinstance(cats, list):
