@@ -30,6 +30,7 @@ LOG = logging.getLogger("feedsum.qt_remote")
 
 
 class ApiClient:
+    BASEPATH = "/api/v1"
     def __init__(self, base_url: str, timeout: int = 20):
         self.timeout = timeout
         self.s = requests.Session()
@@ -48,30 +49,30 @@ class ApiClient:
 
     # ---- API endpoints ----
     def ui_options(self) -> dict:
-        return self.get_json("/api/ui_options")
+        return self.get_json(f"{self.BASEPATH}/ui_options")
 
     def list_summaries(self, limit: int = 300) -> List[dict]:
-        j = self.get_json("/api/summaries", params={"limit": limit})
+        j = self.get_json(f"{self.BASEPATH}/summaries", params={"limit": limit})
         return j.get("items") or []
 
     def latest_summary(self) -> Optional[dict]:
-        j = self.get_json("/api/summaries/latest")
+        j = self.get_json(f"{self.BASEPATH}/summaries/latest")
         return j.get("item")
 
     def get_summary(self, sid: str) -> dict:
-        j = self.get_json(f"/api/summary/{sid}")
+        j = self.get_json(ff"{self.BASEPATH}/summary/{sid}")
         return j["item"]
 
     def list_articles(self, limit: int = 500) -> List[dict]:
-        j = self.get_json("/api/articles", params={"limit": limit})
+        j = self.get_json(f"{self.BASEPATH}/articles", params={"limit": limit})
         return j.get("items") or []
 
     def get_article(self, aid: str) -> dict:
-        j = self.get_json(f"/api/article/{aid}")
+        j = self.get_json(f"{self.BASEPATH}/article/{aid}")
         return j["item"]
 
     def get_prompt(self, name: str) -> dict:
-        return self.get_json(f"/api/prompt/{name}")
+        return self.get_json(f"{self.BASEPATH}/prompt/{name}")
 
 
 class MainWindow(QMainWindow):
@@ -343,7 +344,7 @@ class MainWindow(QMainWindow):
 
         self.prompts_view = QTextBrowser()
         self.prompts_view.setHtml(
-            "<p>Read-only. Klicka på ett paket för att se dess YAML-innehåll via <code>/api/prompt/&lt;name&gt;</code>.</p>"
+            "<p>Read-only. Klicka på ett paket för att se dess YAML-innehåll via <code>/api/v1/prompt/&lt;name&gt;</code>.</p>"
         )
         split.addWidget(self.prompts_view)
         split.setStretchFactor(1, 1)
