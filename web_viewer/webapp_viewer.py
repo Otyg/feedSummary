@@ -186,6 +186,7 @@ def _get_latest_summary(store) -> Optional[Dict[str, Any]]:
 
     return docs[0]
 
+
 def _summary_list_item(d: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": d.get("id"),
@@ -207,6 +208,7 @@ def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
         "fetched_at": int(a.get("fetched_at") or 0),
         "preview": preview,
     }
+
 
 def _load_yaml_file(path: str) -> dict:
     p = Path(path)
@@ -234,7 +236,9 @@ def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
         feeds_path = str(cfg["feeds_path"])
     else:
         # fallback: same dir as config.yaml
-        feeds_path = str((Path(APP_CONFIG_PATH).resolve().parent / "config" / "feeds.yaml").resolve())
+        feeds_path = str(
+            (Path(APP_CONFIG_PATH).resolve().parent / "config" / "feeds.yaml").resolve()
+        )
 
     feeds = _load_yaml_file(feeds_path)
     sources: List[str] = []
@@ -259,11 +263,17 @@ def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(cfg.get("prompts"), dict) and cfg["prompts"].get("path"):
         prompts_path = str(cfg["prompts"]["path"])
     else:
-        prompts_path = str((Path(APP_CONFIG_PATH).resolve().parent / "config" / "prompts.yaml").resolve())
+        prompts_path = str(
+            (
+                Path(APP_CONFIG_PATH).resolve().parent / "config" / "prompts.yaml"
+            ).resolve()
+        )
 
     prompts = _load_yaml_file(prompts_path)
     if isinstance(prompts, dict):
-        out["prompt_packages"] = sorted([k for k in prompts.keys() if isinstance(k, str)])
+        out["prompt_packages"] = sorted(
+            [k for k in prompts.keys() if isinstance(k, str)]
+        )
 
     out["sources"] = sorted(list(dict.fromkeys(sources)))
     out["topics"] = sorted(list(dict.fromkeys(topics)))
@@ -271,6 +281,8 @@ def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
     out["feeds_path"] = feeds_path
     out["prompts_path"] = prompts_path
     return out
+
+
 def _worker_api_base(cfg: Dict[str, Any]) -> str:
     d = cfg.get("worker_api")
     if not isinstance(d, dict):
@@ -278,6 +290,7 @@ def _worker_api_base(cfg: Dict[str, Any]) -> str:
     host = str(d.get("host") or "127.0.0.1")
     port = int(d.get("port") or 8799)
     return f"http://{host}:{port}"
+
 
 @app.route("/api/v1/schedule/trigger", methods=["POST"])
 def api_schedule_trigger():
@@ -289,9 +302,15 @@ def api_schedule_trigger():
     base = _worker_api_base(APP_CFG)
     try:
         r = requests.post(f"{base}/trigger", json={"name": name}, timeout=5)
-        return (r.content, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
+        return (
+            r.content,
+            r.status_code,
+            {"Content-Type": r.headers.get("Content-Type", "application/json")},
+        )
     except Exception as e:
-        return jsonify({"error": "worker_unreachable", "detail": str(e), "worker": base}), 502
+        return jsonify(
+            {"error": "worker_unreachable", "detail": str(e), "worker": base}
+        ), 502
 
 
 @app.route("/api/v1/schedule/trigger/<trigger_id>", methods=["GET"])
@@ -299,9 +318,17 @@ def api_schedule_trigger_status(trigger_id: str):
     base = _worker_api_base(APP_CFG)
     try:
         r = requests.get(f"{base}/trigger/{trigger_id}", timeout=5)
-        return (r.content, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
+        return (
+            r.content,
+            r.status_code,
+            {"Content-Type": r.headers.get("Content-Type", "application/json")},
+        )
     except Exception as e:
-        return jsonify({"error": "worker_unreachable", "detail": str(e), "worker": base}), 502
+        return jsonify(
+            {"error": "worker_unreachable", "detail": str(e), "worker": base}
+        ), 502
+
+
 @app.route("/api/v1/summaries")
 def api_summaries():
     """
@@ -421,6 +448,7 @@ def api_page_source():
 def api_page_license():
     return jsonify({"markdown": _load_static_md("license.md")})
 
+
 @app.route("/api/v1/prompt/<name>")
 def api_prompt_package(name: str):
     """
@@ -436,15 +464,23 @@ def api_prompt_package(name: str):
     if isinstance(APP_CFG.get("prompts"), dict) and APP_CFG["prompts"].get("path"):
         prompts_path = str(APP_CFG["prompts"]["path"])
     else:
-        prompts_path = str((Path(APP_CONFIG_PATH).resolve().parent / "config" / "prompts.yaml").resolve())
+        prompts_path = str(
+            (
+                Path(APP_CONFIG_PATH).resolve().parent / "config" / "prompts.yaml"
+            ).resolve()
+        )
 
     p = Path(prompts_path)
     if not p.exists():
-        return jsonify({"error": "prompts_yaml_not_found", "prompts_path": prompts_path}), 404
+        return jsonify(
+            {"error": "prompts_yaml_not_found", "prompts_path": prompts_path}
+        ), 404
 
     prompts = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     if not isinstance(prompts, dict) or pkg not in prompts:
-        return jsonify({"error": "prompt_not_found", "name": pkg, "prompts_path": prompts_path}), 404
+        return jsonify(
+            {"error": "prompt_not_found", "name": pkg, "prompts_path": prompts_path}
+        ), 404
 
     # Dump only that package as YAML (nice for display/copy)
     one = {pkg: prompts[pkg]}
@@ -459,6 +495,7 @@ def api_prompt_package(name: str):
         }
     )
 
+
 @app.route("/api/v1/ui_options")
 def api_ui_options():
     """
@@ -472,6 +509,7 @@ def api_ui_options():
       }
     """
     return jsonify(_collect_ui_options(APP_CFG))
+
 
 @app.route("/")
 def index():
@@ -628,64 +666,36 @@ def view_article(article_id: str):
 
 @app.route("/status")
 def status():
-    store = APP_STORE
-    if store is None:
-        abort(500)
-
-    # Basinfo (som du redan har)
-    store_path = None
-    try:
-        store_path = (APP_CFG.get("store") or {}).get("path")
-    except Exception:
-        store_path = None
-
-    out = {
-        "viewer": "ok",
+    viewer_info = {
+        "ok": True,
         "config": APP_CONFIG_PATH,
-        "store_path": store_path,
+        "store_path": (
+            (APP_CFG.get("store") or {}).get("path")
+            if isinstance(APP_CFG, dict)
+            else None
+        ),
     }
 
-    # Job-status via befintlig persistence-funktionalitet
-    jobs = []
+    base = _worker_api_base(APP_CFG)
     try:
-        # finns i persistence: list_jobs(limit=...)
-        raw_jobs = store.list_jobs(limit=50) or []
-        for j in raw_jobs:
-            if not isinstance(j, dict):
-                continue
-            jobs.append(
-                {
-                    "id": j.get("id"),
-                    "status": j.get("status"),
-                    "message": j.get("message"),
-                    "created_at": j.get("created_at"),
-                    "started_at": j.get("started_at"),
-                    "finished_at": j.get("finished_at"),
-                    "summary_id": j.get("summary_id"),
-                }
-            )
+        r = requests.get(f"{base}/status", timeout=3)
+        r.raise_for_status()
+        worker_payload = r.json()
+        return jsonify({"worker": worker_payload, "viewer": viewer_info}), 200
     except Exception as e:
-        out["jobs_error"] = str(e)
-        jobs = []
-
-    # Hjälp-aggregat för snabb överblick
-    counts = {"queued": 0, "running": 0, "done": 0, "failed": 0, "other": 0}
-    running = []
-    for j in jobs:
-        st = str(j.get("status") or "").strip().lower()
-        if st in counts:
-            counts[st] += 1
-        else:
-            counts["other"] += 1
-        if st == "running":
-            running.append(j)
-
-    out["jobs"] = {
-        "counts": counts,
-        "running": running,
-        "latest": jobs,  # redan limit=50
-    }
-    return out
+        # Mirror intent: status depends on worker; if worker is down, service is unavailable
+        return (
+            jsonify(
+                {
+                    "worker": None,
+                    "viewer": viewer_info,
+                    "error": "worker_unavailable",
+                    "worker_url": base,
+                    "detail": str(e),
+                }
+            ),
+            503,
+        )
 
 
 @app.route("/license")

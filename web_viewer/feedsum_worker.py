@@ -52,7 +52,7 @@ from uicommon import load_config
 
 from feedsummary_core.persistence import create_store
 
-# CleanupPolicy lives in persistence; path may vary by version.
+
 try:
     from feedsummary_core.persistence import CleanupPolicy  # type: ignore
 except Exception:  # pragma: no cover
@@ -450,21 +450,35 @@ async def _run_one(
     job_id = None
     try:
         job_id = store.create_job()
+
+        # mark running job id for /status endpoint
+        with RUNNING_JOB_LOCK:
+            global RUNNING_JOB_ID
+            RUNNING_JOB_ID = int(job_id)
+
         log.info(
             "Running job '%s' (id: %s) overrides=%s", job_name, str(job_id), overrides
         )
+
         summary_id = await run_pipeline(
             config_path,
             job_id=job_id,
             overrides=overrides,
             config_dict=cfg,
         )
-    except Exception as e:
-        log.exception("Job '%s' failed", job_name)
-        raise e
 
-    log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
-    return str(summary_id)
+        log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
+        return str(summary_id)
+
+    except Exception:
+        log.exception("Job '%s' failed", job_name)
+        raise
+
+    finally:
+        # clear running job id when pipeline finishes (success or error)
+        with RUNNING_JOB_LOCK:
+            global RUNNING_JOB_ID
+            RUNNING_JOB_ID = None
 
 
 # ----------------------------
@@ -520,6 +534,8 @@ def _worker_api_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 TRIGGERS: Dict[str, Dict[str, Any]] = {}
 TRIGGERS_LOCK = threading.Lock()
+RUNNING_JOB_ID: Optional[int] = None
+RUNNING_JOB_LOCK = threading.Lock()
 
 
 def _trigger_create(name: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
@@ -575,7 +591,47 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_json(200, {"ok": True})
             return
+        if self.path == "/status":
+            # Running job id is written by _run_one
+            with RUNNING_JOB_LOCK:
+                rid = RUNNING_JOB_ID
 
+            if rid is None:
+                self._send_json(200, {"running_job_id": None, "job": None})
+                return
+
+            try:
+                # Use persistence-only functionality to fetch job
+                store = self.server.store  # type: ignore[attr-defined]
+
+                job = None
+                get_job = getattr(store, "get_job", None)
+                if callable(get_job):
+                    job = get_job(int(rid))
+                else:
+                    # fallback if persistence uses list_jobs
+                    list_jobs = getattr(store, "list_jobs", None)
+                    if callable(list_jobs):
+                        jobs = list_jobs(limit=200) or []
+                        for j in jobs:
+                            if isinstance(j, dict) and int(j.get("id") or -1) == int(
+                                rid
+                            ):
+                                job = j
+                                break
+
+                self._send_json(200, {"running_job_id": int(rid), "job": job})
+                return
+            except Exception as e:
+                self._send_json(
+                    500,
+                    {
+                        "error": "job_lookup_failed",
+                        "running_job_id": int(rid),
+                        "detail": str(e),
+                    },
+                )
+                return
         if self.path.startswith("/trigger/"):
             tid = self.path.split("/trigger/", 1)[1].strip()
             item = _trigger_get(tid)
@@ -618,7 +674,9 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
         return
 
 
-def _start_worker_control_server(cfg: Dict[str, Any], *, trigger_async) -> Optional[ThreadingHTTPServer]:
+def _start_worker_control_server(
+    cfg: Dict[str, Any], *, trigger_async, store
+) -> Optional[ThreadingHTTPServer]:
     s = _worker_api_settings(cfg)
     if not s["enabled"]:
         log.info("worker_api disabled")
@@ -629,6 +687,7 @@ def _start_worker_control_server(cfg: Dict[str, Any], *, trigger_async) -> Optio
 
     httpd = ThreadingHTTPServer((host, port), _WorkerControlHandler)
     httpd.trigger_async = trigger_async  # type: ignore[attr-defined]
+    httpd.store = store
 
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
@@ -646,14 +705,24 @@ def main() -> int:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="FeedSummary worker (scheduler + cleanup)")
+    parser = argparse.ArgumentParser(
+        description="FeedSummary worker (scheduler + cleanup)"
+    )
     parser.add_argument("--config", default=None, help="Path to config.yaml")
-    parser.add_argument("--schedule-path", default=None, help="Override schedule.yaml path")
+    parser.add_argument(
+        "--schedule-path", default=None, help="Override schedule.yaml path"
+    )
     parser.add_argument("--poll", type=int, default=None, help="Override poll seconds")
-    parser.add_argument("--once", action="store_true", help="Run due jobs once and exit")
-    parser.add_argument("--cleanup-once", action="store_true", help="Run cleanup once and exit")
+    parser.add_argument(
+        "--once", action="store_true", help="Run due jobs once and exit"
+    )
+    parser.add_argument(
+        "--cleanup-once", action="store_true", help="Run cleanup once and exit"
+    )
     parser.add_argument("--log-file", default=None, help="Write logs to this file")
-    parser.add_argument("--log-level", default=None, help="Log level DEBUG/INFO/WARNING/ERROR")
+    parser.add_argument(
+        "--log-level", default=None, help="Log level DEBUG/INFO/WARNING/ERROR"
+    )
     args = parser.parse_args()
 
     config_path = _resolve_config_path(args.config)
@@ -694,7 +763,9 @@ def main() -> int:
         return 0
 
     if not enabled:
-        log.info("Scheduler disabled. Set scheduler.enabled in config.yaml or FEEDSUMMARY_SCHEDULE=1.")
+        log.info(
+            "Scheduler disabled. Set scheduler.enabled in config.yaml or FEEDSUMMARY_SCHEDULE=1."
+        )
         if not getattr(pol, "enabled", True):
             return 0
         log.info("Scheduler disabled but cleanup enabled; running cleanup loop only.")
@@ -725,12 +796,19 @@ def main() -> int:
                 if nr:
                     next_runs[str(name)] = nr
         if next_runs:
-            log.info("Initial next runs: %s", {k: v.isoformat() for k, v in next_runs.items()})
+            log.info(
+                "Initial next runs: %s",
+                {k: v.isoformat() for k, v in next_runs.items()},
+            )
 
     # ---- async trigger: single authoritative run logic (worker) ----
     def trigger_async(name: str) -> Dict[str, Any]:
         schedule = _read_schedule_yaml(schedule_path)
-        if not isinstance(schedule, dict) or name not in schedule or not isinstance(schedule[name], dict):
+        if (
+            not isinstance(schedule, dict)
+            or name not in schedule
+            or not isinstance(schedule[name], dict)
+        ):
             raise KeyError(name)
 
         entry = schedule[name]
@@ -742,7 +820,9 @@ def main() -> int:
             _trigger_update(tid, status="running", started_at=int(time.time()))
             try:
                 # run immediately (ignores time/day constraints)
-                summary_id = asyncio.run(_run_one(config_path, cfg, store, str(name), entry))
+                summary_id = asyncio.run(
+                    _run_one(config_path, cfg, store, str(name), entry)
+                )
                 _trigger_update(
                     tid,
                     status="done",
@@ -761,9 +841,16 @@ def main() -> int:
 
         base = _worker_api_settings(cfg)
         status_url = f"http://{base['host']}:{base['port']}/trigger/{tid}"
-        return {"accepted": True, "trigger_id": tid, "name": name, "status_url": status_url}
+        return {
+            "accepted": True,
+            "trigger_id": tid,
+            "name": name,
+            "status_url": status_url,
+        }
 
-    _control = _start_worker_control_server(cfg, trigger_async=trigger_async)
+    _control = _start_worker_control_server(
+        cfg, trigger_async=trigger_async, store=store
+    )
 
     while True:
         now = _now(tz)
@@ -810,7 +897,12 @@ def main() -> int:
 
                 late_by = (now - nr).total_seconds()
                 if late_by > grace:
-                    log.warning("Job '%s' late by %.1fs (grace=%ss) - running anyway", jn, late_by, grace)
+                    log.warning(
+                        "Job '%s' late by %.1fs (grace=%ss) - running anyway",
+                        jn,
+                        late_by,
+                        grace,
+                    )
 
                 stamp = now.strftime("%Y%m%d%H%M")
                 if last_run_stamp.get(jn) == stamp:

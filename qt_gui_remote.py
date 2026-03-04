@@ -31,6 +31,7 @@ LOG = logging.getLogger(__name__)
 
 class ApiClient:
     BASEPATH = "/api/v1"
+
     def __init__(self, base_url: str, timeout: int = 20):
         self.timeout = timeout
         self.s = requests.Session()
@@ -83,7 +84,9 @@ class MainWindow(QMainWindow):
 
         self.settings = QSettings("Otyg", "FeedSummaryQtRemote")
 
-        base = initial_base_url or str(self.settings.value("base_url", "http://localhost:5000"))
+        base = initial_base_url or str(
+            self.settings.value("base_url", "http://localhost:5000")
+        )
         self.api = ApiClient(base)
 
         root = QWidget()
@@ -144,7 +147,9 @@ class MainWindow(QMainWindow):
             self._set_status("connected")
         except Exception as e:
             self._set_status("error")
-            QMessageBox.critical(self, "Connect failed", f"Kunde inte ansluta till {base}\n\n{e}")
+            QMessageBox.critical(
+                self, "Connect failed", f"Kunde inte ansluta till {base}\n\n{e}"
+            )
 
     def reload_all(self, select_latest: bool = False):
         self.reload_summaries(select_latest=select_latest)
@@ -175,7 +180,9 @@ class MainWindow(QMainWindow):
 
             self.sum_table.setRowCount(len(items))
             for r, it in enumerate(items):
-                created = datetime.fromtimestamp(int(it.get("created") or 0)).strftime("%Y-%m-%d %H:%M")
+                created = datetime.fromtimestamp(int(it.get("created") or 0)).strftime(
+                    "%Y-%m-%d %H:%M"
+                )
                 title = str(it.get("title") or "").strip()
                 sid = str(it.get("id") or "")
 
@@ -217,11 +224,15 @@ class MainWindow(QMainWindow):
             doc = self.api.get_summary(sid)
 
             title = str(doc.get("title") or "").strip()
-            created = datetime.fromtimestamp(int(doc.get("created") or 0)).strftime("%Y-%m-%d %H:%M")
+            created = datetime.fromtimestamp(int(doc.get("created") or 0)).strftime(
+                "%Y-%m-%d %H:%M"
+            )
             md_text = str(doc.get("summary") or "")
 
             body_html = md.markdown(md_text, extensions=["extra"])
-            meta_html = f"<div style='color:#666; font-size: 0.9em;'>Created: {created}</div>"
+            meta_html = (
+                f"<div style='color:#666; font-size: 0.9em;'>Created: {created}</div>"
+            )
 
             if title:
                 html = f"<h2>{title}</h2>{meta_html}<hr/>{body_html}"
@@ -275,7 +286,9 @@ class MainWindow(QMainWindow):
 
             source_filter = self.cmb_source.currentData()  # type: ignore
             if source_filter:
-                items = [a for a in items if str(a.get("source") or "") == str(source_filter)]
+                items = [
+                    a for a in items if str(a.get("source") or "") == str(source_filter)
+                ]
 
             self.art_table.setRowCount(len(items))
             for r, it in enumerate(items):
@@ -424,7 +437,9 @@ class MainWindow(QMainWindow):
             )
             self.prompts_view.setHtml(html)
         except Exception as e:
-            self.prompts_view.setHtml(f"<p>Kunde inte hämta prompt <code>{name}</code>: {e}</p>")
+            self.prompts_view.setHtml(
+                f"<p>Kunde inte hämta prompt <code>{name}</code>: {e}</p>"
+            )
         finally:
             self._set_status("idle")
 
@@ -442,10 +457,17 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
 
     ap = argparse.ArgumentParser(description="FeedSummary Qt Remote (read-only)")
-    ap.add_argument("--base-url", default="", help="Base URL (optional; can be set in UI), e.g. http://localhost:5000")
+    ap.add_argument(
+        "--base-url",
+        default="",
+        help="Base URL (optional; can be set in UI), e.g. http://localhost:5000",
+    )
     args = ap.parse_args()
 
     app = QApplication(sys.argv)
