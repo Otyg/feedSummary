@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-LOG = logging.getLogger("feedsum.qt_remote")
+LOG = logging.getLogger(__name__)
 
 
 class ApiClient:
@@ -60,7 +60,7 @@ class ApiClient:
         return j.get("item")
 
     def get_summary(self, sid: str) -> dict:
-        j = self.get_json(ff"{self.BASEPATH}/summary/{sid}")
+        j = self.get_json(f"{self.BASEPATH}/summary/{sid}")
         return j["item"]
 
     def list_articles(self, limit: int = 500) -> List[dict]:
