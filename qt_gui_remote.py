@@ -157,7 +157,7 @@ class MainWindow(QMainWindow):
 
         split = QSplitter()
         self.sum_table = QTableWidget(0, 3)
-        self.sum_table.setHorizontalHeaderLabels(["Skapad", "Artiklar", "ID"])
+        self.sum_table.setHorizontalHeaderLabels(["Titel", "Skapad", "Källantal"])
         self.sum_view = QTextBrowser()
         split.addWidget(self.sum_table)
         split.addWidget(self.sum_view)
@@ -175,12 +175,12 @@ class MainWindow(QMainWindow):
 
             self.sum_table.setRowCount(len(items))
             for r, it in enumerate(items):
-                created = int(it.get("created") or 0)
-                sources_count = int(it.get("sources_count") or 0)
+                created = datetime.fromtimestamp(int(it.get("created") or 0)).strftime("%Y-%m-%d %H:%M")
+                title = str(it.get("title") or "").strip()
                 sid = str(it.get("id") or "")
 
-                c0 = QTableWidgetItem(str(created))
-                c1 = QTableWidgetItem(str(sources_count))
+                c0 = QTableWidgetItem(str(title) or sid)
+                c1 = QTableWidgetItem(str(created))
                 c2 = QTableWidgetItem(sid)
                 c2.setData(Qt.UserRole, sid)  # type: ignore
 
