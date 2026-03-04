@@ -215,8 +215,21 @@ class MainWindow(QMainWindow):
         try:
             self._set_status("loading summary…")
             doc = self.api.get_summary(sid)
+
+            title = str(doc.get("title") or "").strip()
+            created = int(doc.get("created") or 0)
             md_text = str(doc.get("summary") or "")
-            html = md.markdown(md_text, extensions=["extra"])
+
+            body_html = md.markdown(md_text, extensions=["extra"])
+
+            # Enkel metadata-rad (unix-ts som tal). Vill du formatta snyggt kan vi lägga in datetime-format.
+            meta_html = f"<div style='color:#666; font-size: 0.9em;'>Created: {created}</div>"
+
+            if title:
+                html = f"<h2>{title}</h2>{meta_html}<hr/>{body_html}"
+            else:
+                html = f"<h2>{sid}</h2>{meta_html}<hr/>{body_html}"
+
             self.sum_view.setHtml(html)
         except Exception as e:
             self.sum_view.setHtml(f"<p>Kunde inte läsa summary {sid}: {e}</p>")
