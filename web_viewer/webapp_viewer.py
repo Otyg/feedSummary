@@ -37,7 +37,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from functools import lru_cache
 import markdown as md
-from flask import Flask, abort, redirect, render_template, request, url_for
+from flask import Flask, abort, redirect, render_template, request, url_for, jsonify
+import yaml
 
 from uicommon import format_ts, get_store, load_config
 
@@ -184,6 +185,263 @@ def _get_latest_summary(store) -> Optional[Dict[str, Any]]:
 
     return docs[0]
 
+def _summary_list_item(d: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": d.get("id"),
+        "created": int(d.get("created") or 0),
+        "sources_count": len(d.get("sources") or []),
+        "title": d.get("title") or "",
+    }
+
+
+def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
+    text = str(a.get("text") or "")
+    preview = (text[:400]).replace("\n", " ")
+    return {
+        "id": a.get("id"),
+        "title": a.get("title") or "",
+        "source": a.get("source") or "",
+        "url": a.get("url") or "",
+        "published_ts": int(a.get("published_ts") or 0),
+        "fetched_at": int(a.get("fetched_at") or 0),
+        "preview": preview,
+    }
+
+def _load_yaml_file(path: str) -> dict:
+    p = Path(path)
+    if not p.exists():
+        return {}
+    return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+
+
+def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Read-only UI options for clients.
+    - sources: feed/source names
+    - topics: unique topic tags across feeds (if configured)
+    - prompt_packages: keys in prompts.yaml
+    """
+    out = {"sources": [], "topics": [], "prompt_packages": []}
+
+    # ---- Feeds: sources + topics ----
+    feeds_path = None
+
+    # common patterns in your config variants
+    if isinstance(cfg.get("feeds"), dict) and cfg["feeds"].get("path"):
+        feeds_path = str(cfg["feeds"]["path"])
+    elif isinstance(cfg.get("feeds_path"), str) and cfg.get("feeds_path"):
+        feeds_path = str(cfg["feeds_path"])
+    else:
+        # fallback: same dir as config.yaml
+        feeds_path = str((Path(APP_CONFIG_PATH).resolve().parent / "config" / "feeds.yaml").resolve())
+
+    feeds = _load_yaml_file(feeds_path)
+    sources: List[str] = []
+    topics: List[str] = []
+
+    if isinstance(feeds, dict):
+        for name, f in feeds.items():
+            if isinstance(name, str) and name.strip():
+                sources.append(name.strip())
+            if isinstance(f, dict):
+                ts = f.get("topics") or f.get("topic") or []
+                if isinstance(ts, str) and ts.strip():
+                    topics.append(ts.strip())
+                elif isinstance(ts, list):
+                    for t in ts:
+                        t = str(t).strip()
+                        if t:
+                            topics.append(t)
+
+    # ---- Prompts: prompt packages ----
+    prompts_path = None
+    if isinstance(cfg.get("prompts"), dict) and cfg["prompts"].get("path"):
+        prompts_path = str(cfg["prompts"]["path"])
+    else:
+        prompts_path = str((Path(APP_CONFIG_PATH).resolve().parent / "config" / "prompts.yaml").resolve())
+
+    prompts = _load_yaml_file(prompts_path)
+    if isinstance(prompts, dict):
+        out["prompt_packages"] = sorted([k for k in prompts.keys() if isinstance(k, str)])
+
+    out["sources"] = sorted(list(dict.fromkeys(sources)))
+    out["topics"] = sorted(list(dict.fromkeys(topics)))
+
+    out["feeds_path"] = feeds_path
+    out["prompts_path"] = prompts_path
+    return out
+
+
+@app.route("/api/v1/summaries")
+def api_summaries():
+    """
+    List summaries (like sidebar/list). Newest first.
+    Query:
+      limit= (default 200)
+    """
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    try:
+        limit = int(request.args.get("limit", "200"))
+    except Exception:
+        limit = 200
+    limit = max(1, min(limit, 2000))
+
+    docs = store.list_summary_docs() or []
+    docs = [d for d in docs if isinstance(d, dict)]
+    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+    docs = docs[:limit]
+
+    return jsonify({"items": [_summary_list_item(d) for d in docs]})
+
+
+@app.route("/api/v1/summaries/latest")
+def api_summaries_latest():
+    """
+    Latest summary doc (the same as default page redirect target).
+    """
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    latest = _get_latest_summary(store)
+    if not isinstance(latest, dict):
+        return jsonify({"item": None}), 404
+
+    # fetch full doc if needed
+    sid = str(latest.get("id") or "").strip()
+    sdoc = store.get_summary_doc(sid) if sid else latest
+    if not isinstance(sdoc, dict):
+        return jsonify({"item": None}), 404
+
+    return jsonify({"item": sdoc})
+
+
+@app.route("/api/v1/summary/<summary_id>")
+def api_summary(summary_id: str):
+    """
+    Full summary doc for reading/rendering.
+    """
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    sid = str(summary_id).strip()
+    sdoc = store.get_summary_doc(sid)
+    if not isinstance(sdoc, dict):
+        abort(404)
+
+    return jsonify({"item": sdoc})
+
+
+@app.route("/api/v1/articles")
+def api_articles():
+    """
+    List articles (like /articles page).
+    Query:
+      limit= (default 300, max 5000)
+    """
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    try:
+        limit = int(request.args.get("limit", "300"))
+    except Exception:
+        limit = 300
+    limit = max(1, min(limit, 5000))
+
+    raw = store.list_articles(limit=limit) or []
+    articles = [a for a in raw if isinstance(a, dict) and a.get("id")]
+
+    def ts(a: Dict[str, Any]) -> int:
+        p = a.get("published_ts")
+        if isinstance(p, int) and p > 0:
+            return p
+        return int(a.get("fetched_at") or 0)
+
+    articles.sort(key=ts, reverse=True)
+    return jsonify({"items": [_article_list_item(a) for a in articles]})
+
+
+@app.route("/api/v1/article/<article_id>")
+def api_article(article_id: str):
+    """
+    Full article doc for reading.
+    """
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    a = store.get_article(str(article_id))
+    if not isinstance(a, dict):
+        abort(404)
+
+    return jsonify({"item": a})
+
+
+@app.route("/api/v1/pages/source")
+def api_page_source():
+    return jsonify({"markdown": _load_static_md("source.md")})
+
+
+@app.route("/api/v1/pages/license")
+def api_page_license():
+    return jsonify({"markdown": _load_static_md("license.md")})
+
+@app.route("/api/prompt/<name>")
+def api_prompt_package(name: str):
+    """
+    Return the YAML content for a single prompt package from prompts.yaml.
+    Read-only.
+    """
+    pkg = str(name or "").strip()
+    if not pkg:
+        abort(404)
+
+    # Reuse the same prompts path logic as /api/ui_options
+    prompts_path = None
+    if isinstance(APP_CFG.get("prompts"), dict) and APP_CFG["prompts"].get("path"):
+        prompts_path = str(APP_CFG["prompts"]["path"])
+    else:
+        prompts_path = str((Path(APP_CONFIG_PATH).resolve().parent / "config" / "prompts.yaml").resolve())
+
+    p = Path(prompts_path)
+    if not p.exists():
+        return jsonify({"error": "prompts_yaml_not_found", "prompts_path": prompts_path}), 404
+
+    prompts = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if not isinstance(prompts, dict) or pkg not in prompts:
+        return jsonify({"error": "prompt_not_found", "name": pkg, "prompts_path": prompts_path}), 404
+
+    # Dump only that package as YAML (nice for display/copy)
+    one = {pkg: prompts[pkg]}
+    yaml_text = yaml.safe_dump(one, sort_keys=False, allow_unicode=True)
+
+    return jsonify(
+        {
+            "name": pkg,
+            "prompts_path": prompts_path,
+            "yaml": yaml_text,
+            "item": prompts[pkg],  # also return as JSON if you want programmatic use
+        }
+    )
+
+@app.route("/api/v1/ui_options")
+def api_ui_options():
+    """
+    Read-only options used by clients (Qt remote):
+      {
+        sources: [...],
+        topics: [...],
+        prompt_packages: [...],
+        feeds_path: "...",
+        prompts_path: "..."
+      }
+    """
+    return jsonify(_collect_ui_options(APP_CFG))
 
 @app.route("/")
 def index():
