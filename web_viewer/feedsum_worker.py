@@ -68,6 +68,12 @@ except Exception:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
+TRIGGERS: Dict[str, Dict[str, Any]] = {}
+TRIGGERS_LOCK = threading.Lock()
+global RUNNING_JOB_ID
+global RUNNING_JOB_LOCK
+RUNNING_JOB_ID: Optional[int] = None
+RUNNING_JOB_LOCK = threading.Lock()
 
 class _StreamToLogger:
     """
@@ -477,7 +483,6 @@ async def _run_one(
     finally:
         # clear running job id when pipeline finishes (success or error)
         with RUNNING_JOB_LOCK:
-            global RUNNING_JOB_ID
             RUNNING_JOB_ID = None
 
 
@@ -532,10 +537,7 @@ def _worker_api_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-TRIGGERS: Dict[str, Dict[str, Any]] = {}
-TRIGGERS_LOCK = threading.Lock()
-RUNNING_JOB_ID: Optional[int] = None
-RUNNING_JOB_LOCK = threading.Lock()
+
 
 
 def _trigger_create(name: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
