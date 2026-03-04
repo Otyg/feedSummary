@@ -391,7 +391,7 @@ def api_page_source():
 def api_page_license():
     return jsonify({"markdown": _load_static_md("license.md")})
 
-@app.route("/api/prompt/<name>")
+@app.route("/api/v1/prompt/<name>")
 def api_prompt_package(name: str):
     """
     Return the YAML content for a single prompt package from prompts.yaml.
