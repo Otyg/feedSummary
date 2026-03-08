@@ -42,7 +42,7 @@ import yaml
 from feedsummary_core.persistence import NewsStore, create_store
 from feedsummary_core.summarizer.helpers import load_feeds_into_config
 
-VERSION = "3.4.0"
+__version__ = "3.4.0"
 # ----------------------------
 # Config + store
 # ----------------------------
