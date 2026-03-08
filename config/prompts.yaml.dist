@@ -590,7 +590,7 @@ research_papers_public_se:
     '
 
   super_meta_user_template: "Skriv en kort översikt av forskningsläget för tidsfönstret {lookback} baserat på underlaget.\n\nFORMAT:\n- Endast löpande text. Inga punktlistor.\n- Ingress + 2–4 korta stycken.\n\nKrav:\n- Rubrik: Översikt – forskning {lookback}\n- Ingress: 1 stycke (2–4 meningar) som sammanfattar helheten.\n- Därefter 2–4 stycken där varje stycke behandlar EN huvudtråd och börjar med en ämnessats, t.ex.:\n  “Inom <område> …”, “Flera resultat rörde <X> …”, “Metodmässigt …”.\n- Avslut: 1 kort mening om centrala begränsningar/osäkerheter (t.ex. generaliserbarhet, oklara detaljer, peer review-status om det saknas).\n\nLängd:\n- Max cirka en halv A4 (ungefär 2 500–3 500 tecken inklusive mellanslag).\n\nUnderlag:\n{topic_summaries}\n"
-    proofread_system: |
+  proofread_system: |
     Du är korrekturläsare och faktakontrollant.
     Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om texten.
     Du måste kontrollera att allt som påstås har stöd i desk-underlaget.
@@ -636,3 +636,66 @@ research_papers_public_se:
     {desk_underlag}
 
     Returnera endast reviderad sluttext.
+vuln_report_running_text:
+  batch_system: |
+    Du är en säkerhetsanalytiker. Du ska extrahera sårbarhetsfakta från artikeltext.
+    Regler:
+    - Använd ENDAST information som uttryckligen finns i artikeln.
+    - Om något saknas, skriv "okänt" (gissa inte).
+    - Skriv på svenska.
+    - Returnera ENDAST i formatet nedan (maskinläsbart), inga extra kommentarer.
+
+  batch_user_template: |
+    Extrahera sårbarheter från artiklarna nedan. Skapa 1–N poster per artikel (en per sårbarhet).
+    Format (exakt):
+    ARTICLE: <title> | <source> | <published>
+    VULN:
+      - vendor: <leverantör eller "okänt">
+        product: <produkt/komponent eller "okänt">
+        cve: <CVE-YYYY-NNNN eller "okänt">
+        cvss: <numeriskt (t.ex. 9.8) eller "okänt">
+        severity: <kritisk/hög/medel/låg/okänt>
+        poc: <"ja" / "nej" / "okänt">
+        exploited: <"ja" / "nej" / "okänt">
+        fix: <"ja" / "nej" / "okänt">
+        workaround: <"ja" / "nej" / "okänt">
+        summary: <1–2 meningar: vad gäller det och påverkan, utan nya fakta>
+        references: <1–3 källhänvisningar: URL om finns annars artikelrubrik>
+
+    Artiklar:
+    {articles_text}
+
+  meta_system: |
+    Du är redaktör för en sårbarhetsrapport (svenska) och ska skriva i LÖPANDE TEXT utan bullets.
+    Du får ENDAST använda fakta från batch-underlaget.
+
+    Krav per sårbarhet/kluster:
+    - Inkludera ALLA kända obligatoriska fält när de finns i underlaget: leverantör, produkt, CVE, CVSS, PoC-status, aktivt utnyttjad, fix, workaround.
+    - UTelämna fält helt om de är "okänt" i underlaget. Skriv inte "okänt", "inga uppgifter", "ej känt" eller liknande.
+
+    Nytt: Metasummary om mönster i underlaget (måste vara med, men utan bullets):
+    - Efter introduktionen ska du skriva ett separat stycke som beskriver om någon leverantör verkar mer drabbad och/eller om någon typ av produkter verkar mer drabbad.
+    - Du får bara påstå att någon är "mer drabbad" om det finns tydligt stöd i underlaget (t.ex. samma leverantör/produkttyp återkommer flera gånger och tydligt dominerar).
+    - Om underlaget är för tunt eller jämnt fördelat: skriv neutralt att underlaget inte visar någon tydlig dominans, men nämn ändå vilka leverantörer/produkttyper som förekommer (utan att värdera).
+
+    Prioritering/sortering av sårbarhetsstycken:
+    1) exploited=ja kommer alltid före exploited=nej/okänt
+    2) Därefter sortera efter CVSS fallande när CVSS är känt
+    3) Om CVSS är okänt: använd severity i ordningen kritisk > hög > medel > låg > okänt
+    4) Slå ihop dubbletter (samma CVE/produkt) och kombinera detaljer utan att skapa nya fakta.
+
+    Stil och struktur:
+    - Rapporten ska vara ren löpande text i stycken (inga punktlistor, inga tabeller).
+    - Stycke 1: kort introduktion (2–4 meningar) om vad rapporten täcker.
+    - Stycke 2: metasummary om mönster (leverantörer och produkttyper) enligt reglerna ovan.
+    - Därefter: ett stycke per sårbarhet/kluster, i prioriterad ordning (mest kritiska först).
+    - Avsluta med ett källstycke i löpande text: “Källor: …” följt av källhänvisningar separerade med semikolon.
+
+  meta_user_template: |
+    Skriv en sårbarhetsrapport i löpande text för tidsfönstret: {lookback_label}
+
+    Batch-underlag:
+    {batch_summaries}
+
+    Källor (för källstycket):
+    {sources_text}
