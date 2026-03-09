@@ -51,7 +51,8 @@ from feedsummary_core.summarizer.main import run_pipeline
 from uicommon import load_config
 
 from feedsummary_core.persistence import create_store
-
+from feedsummary_core.summarizer.main import run_resume_job
+from feedsummary_core.llm_client import create_llm_client
 
 try:
     from feedsummary_core.persistence import CleanupPolicy  # type: ignore
@@ -540,12 +541,14 @@ def _worker_api_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-def _trigger_create(name: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
-    tid = f"tr_{uuid.uuid4().hex}"
+def _trigger_create(kind: str, name: str, overrides: Dict[str, Any], job_id: Optional[int] = None) -> Dict[str, Any]:
+    tid = f"{kind}_{uuid.uuid4().hex}"  # e.g. tr_xxx or rs_xxx
     now = int(time.time())
     obj = {
         "id": tid,
+        "kind": kind,  # "tr" or "rs"
         "name": name,
+        "job_id": job_id,
         "created_at": now,
         "started_at": None,
         "finished_at": None,
@@ -557,7 +560,6 @@ def _trigger_create(name: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
     with TRIGGERS_LOCK:
         TRIGGERS[tid] = obj
     return obj
-
 
 def _trigger_update(tid: str, **fields: Any) -> None:
     with TRIGGERS_LOCK:
@@ -642,10 +644,39 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, {"item": item})
             return
-
+        if self.path.startswith("/resume/"):
+            rid = self.path.split("/resume/", 1)[1].strip()
+            item = _trigger_get(rid)
+            if not item:
+                self._send_json(404, {"error": "not_found", "resume_id": rid})
+                return
+            self._send_json(200, {"item": item})
+            return
         self._send_json(404, {"error": "not_found"})
 
     def do_POST(self):  # noqa: N802
+        if self.path == "/resume":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                body = json.loads(raw.decode("utf-8") or "{}")
+            except Exception as e:
+                self._send_json(400, {"error": "bad_json", "detail": str(e)})
+                return
+
+            jid = body.get("job_id")
+            try:
+                jid_i = int(jid)
+            except Exception:
+                self._send_json(400, {"error": "missing_or_invalid_job_id"})
+                return
+
+            try:
+                res = self.server.resume_async(jid_i)  # type: ignore[attr-defined]
+                self._send_json(202, res)
+            except Exception as e:
+                self._send_json(500, {"error": "resume_failed", "detail": str(e)})
+            return
         if self.path != "/trigger":
             self._send_json(404, {"error": "not_found"})
             return
@@ -676,9 +707,7 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
         return
 
 
-def _start_worker_control_server(
-    cfg: Dict[str, Any], *, trigger_async, store
-) -> Optional[ThreadingHTTPServer]:
+def _start_worker_control_server(cfg: Dict[str, Any], *, trigger_async, resume_async, store) -> Optional[ThreadingHTTPServer]:
     s = _worker_api_settings(cfg)
     if not s["enabled"]:
         log.info("worker_api disabled")
@@ -689,6 +718,7 @@ def _start_worker_control_server(
 
     httpd = ThreadingHTTPServer((host, port), _WorkerControlHandler)
     httpd.trigger_async = trigger_async  # type: ignore[attr-defined]
+    httpd.resume_async = resume_async  # type: ignore[attr-defined]
     httpd.store = store
 
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -849,10 +879,54 @@ def main() -> int:
             "name": name,
             "status_url": status_url,
         }
+    def resume_async(job_id: int) -> Dict[str, Any]:
+        jid = int(job_id)
+        # For resume we don't need schedule.yaml; it resumes an existing job
+        overrides: Dict[str, Any] = {}
+        trig = _trigger_create("rs", name=f"resume_job_{jid}", overrides=overrides, job_id=jid)
+        tid = trig["id"]
 
-    _control = _start_worker_control_server(
-        cfg, trigger_async=trigger_async, store=store
-    )
+        def _runner():
+            _trigger_update(tid, status="running", started_at=int(time.time()))
+            try:
+                # Mark currently running job id for worker /status (if you implemented it)
+                with RUNNING_JOB_LOCK:
+                    global RUNNING_JOB_ID
+                    RUNNING_JOB_ID = jid
+
+                llm = create_llm_client(cfg)
+                summary_id = asyncio.run(
+                    run_resume_job(
+                        config=cfg,
+                        store=store,
+                        llm=llm,
+                        job_id=jid,
+                    )
+                )
+                _trigger_update(
+                    tid,
+                    status="done",
+                    finished_at=int(time.time()),
+                    summary_id=str(summary_id),
+                )
+            except Exception as e:
+                _trigger_update(tid, status="failed", finished_at=int(time.time()), error=str(e))
+            finally:
+                with RUNNING_JOB_LOCK:
+                    global RUNNING_JOB_ID
+                    RUNNING_JOB_ID = None
+
+        threading.Thread(target=_runner, daemon=True).start()
+
+        base = _worker_api_settings(cfg)
+        status_url = f"http://{base['host']}:{base['port']}/resume/{tid}"
+        return {"accepted": True, "resume_id": tid, "job_id": jid, "status_url": status_url}
+    _control = _control = _start_worker_control_server(
+    cfg,
+    trigger_async=trigger_async,
+    resume_async=resume_async,
+    store=store,
+)
 
     while True:
         now = _now(tz)

@@ -291,7 +291,29 @@ def _worker_api_base(cfg: Dict[str, Any]) -> str:
     port = int(d.get("port") or 8799)
     return f"http://{host}:{port}"
 
+@app.route("/api/v1/job/resume", methods=["POST"])
+def api_job_resume():
+    body = request.get_json(silent=True) or {}
+    jid = body.get("job_id")
+    try:
+        jid_i = int(jid)
+    except Exception:
+        return jsonify({"error": "missing_or_invalid_job_id"}), 400
 
+    base = _worker_api_base(APP_CFG)
+    try:
+        r = requests.post(f"{base}/resume", json={"job_id": jid_i}, timeout=5)
+        return (r.content, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
+    except Exception as e:
+        return jsonify({"error": "worker_unreachable", "detail": str(e), "worker": base}), 503
+@app.route("/api/v1/job/resume/<resume_id>", methods=["GET"])
+def api_job_resume_status(resume_id: str):
+    base = _worker_api_base(APP_CFG)
+    try:
+        r = requests.get(f"{base}/resume/{resume_id}", timeout=5)
+        return (r.content, r.status_code, {"Content-Type": r.headers.get("Content-Type", "application/json")})
+    except Exception as e:
+        return jsonify({"error": "worker_unreachable", "detail": str(e), "worker": base}), 503
 @app.route("/api/v1/schedule/trigger", methods=["POST"])
 def api_schedule_trigger():
     body = request.get_json(silent=True) or {}
