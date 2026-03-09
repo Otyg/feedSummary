@@ -108,7 +108,7 @@ async def _build_batch_summaries_from_articles(
     while idx <= len(batches):
         batch = batches[idx - 1]
         set_job(f"[offline] Summerar batch {idx}/{len(batches)}...", job_id=None, store=store)
-
+        log.info(f"Building batch summary {idx}/{len(batches)} with {len(batch)} articles...")
         while True:
             try:
                 summary = await chat_guarded(
@@ -131,7 +131,7 @@ async def _build_batch_summaries_from_articles(
             except PromptTooLongStructural as e:
                 overflow = int(getattr(e, "overflow_tokens", 0) or 0)
                 action = _choose_trim_action(overflow, structural_threshold)
-
+                log.warning(f"Batch {idx}/{len(batches)} prompt too long by {overflow} tokens. Action: {action}")
                 # Single-article batch: trim text instead of moving
                 if len(batch) <= 1:
                     a0 = batch[0]
@@ -197,31 +197,31 @@ async def _run(args: argparse.Namespace) -> int:
     if args.latest:
         doc = store.get_latest_summary_doc()
         if not doc:
-            print("No summary_docs found in DB.", file=sys.stderr)
+            log.error("No summary_docs found in DB.", file=sys.stderr)
             return 2
     else:
         if not args.summary_id:
-            print("Need --summary-id or --latest", file=sys.stderr)
+            log.error("Need --summary-id or --latest", file=sys.stderr)
             return 2
         doc = store.get_summary_doc(args.summary_id)
         if not doc:
-            print(f"summary_doc not found: {args.summary_id}", file=sys.stderr)
+            log.error(f"summary_doc not found: {args.summary_id}", file=sys.stderr)
             return 2
 
     summary_id = str(doc.get("id") or args.summary_id or "latest")
     summary_text = str(doc.get("summary") or "").strip()
     if not summary_text:
-        print(f"summary_doc {summary_id} has empty 'summary'", file=sys.stderr)
+        log.error(f"summary_doc {summary_id} has empty 'summary'", file=sys.stderr)
         return 3
 
     sources: List[str] = [str(x) for x in (doc.get("sources") or []) if str(x).strip()]
     if not sources:
-        print(f"summary_doc {summary_id} has no 'sources' list", file=sys.stderr)
+        log.error(f"summary_doc {summary_id} has no 'sources' list", file=sys.stderr)
         return 3
 
     articles = store.get_articles_by_ids(sources)
     if not articles:
-        print("Could not load any articles for summary_doc sources.", file=sys.stderr)
+        log.error("Could not load any articles for summary_doc sources.", file=sys.stderr)
         return 4
 
     # Rebuild desk-underlag from those articles (batch step)
@@ -245,7 +245,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     lookback_label = _derive_lookback_label(cfg, doc)
 
-    # Run proofread + revise against the EXISTING summary text
+    log.info(f"Proofreading summary_doc {summary_id} with lookback label: {lookback_label}")
     revised, pr_stats = await _proofread_and_revise_meta_with_stats(
         config=cfg,
         llm=llm,
