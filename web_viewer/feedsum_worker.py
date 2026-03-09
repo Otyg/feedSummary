@@ -836,49 +836,34 @@ def main() -> int:
     # ---- async trigger: single authoritative run logic (worker) ----
     def trigger_async(name: str) -> Dict[str, Any]:
         schedule = _read_schedule_yaml(schedule_path)
-        if (
-            not isinstance(schedule, dict)
-            or name not in schedule
-            or not isinstance(schedule[name], dict)
-        ):
+        if not isinstance(schedule, dict) or name not in schedule or not isinstance(schedule[name], dict):
             raise KeyError(name)
 
         entry = schedule[name]
         overrides = _entry_to_overrides(entry)
-        trig = _trigger_create(name, overrides)
+
+        # NEW signature: (kind, name, overrides, job_id?)
+        trig = _trigger_create("tr", name=name, overrides=overrides, job_id=None)
         tid = trig["id"]
 
         def _runner():
             _trigger_update(tid, status="running", started_at=int(time.time()))
             try:
-                # run immediately (ignores time/day constraints)
-                summary_id = asyncio.run(
-                    _run_one(config_path, cfg, store, str(name), entry)
-                )
+                summary_id = asyncio.run(_run_one(config_path, cfg, store, str(name), entry))
                 _trigger_update(
                     tid,
                     status="done",
                     finished_at=int(time.time()),
-                    summary_id=summary_id,
+                    summary_id=str(summary_id),
                 )
             except Exception as e:
-                _trigger_update(
-                    tid,
-                    status="failed",
-                    finished_at=int(time.time()),
-                    error=str(e),
-                )
+                _trigger_update(tid, status="failed", finished_at=int(time.time()), error=str(e))
 
         threading.Thread(target=_runner, daemon=True).start()
 
         base = _worker_api_settings(cfg)
         status_url = f"http://{base['host']}:{base['port']}/trigger/{tid}"
-        return {
-            "accepted": True,
-            "trigger_id": tid,
-            "name": name,
-            "status_url": status_url,
-        }
+        return {"accepted": True, "trigger_id": tid, "name": name, "status_url": status_url}
     def resume_async(job_id: int) -> Dict[str, Any]:
         jid = int(job_id)
         # For resume we don't need schedule.yaml; it resumes an existing job
