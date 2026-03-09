@@ -555,7 +555,7 @@ research_papers_public_se:
     Viktigt: Förväxla inte preprint med peer review. Om underlaget inte säger att något är peer-reviewed: anta inte det.
     '
 
-  batch_user_template: "Du får ett antal forskningsartiklar (papers) som publicerats eller uppdaterats under {lookback}. Skapa desk-underlag som en redaktör kan använda för en sammanhängande sammanfattning av forskningsläget.\n\nFORMAT:\n- Endast löpande text, inga punktlistor, inga numrerade listor.\n- Varje paper ska bli ett eget stycke (”paper card”).\n- Varje paper card ska avslutas med en egen rad som börjar exakt med \"SOURCES: \". Den raden ska innehålla en eller flera källor separerade med \"|\".\n- Du får använda \"P1/P2/P3\" som intern prioritering i början av paper card, men det får ALDRIG återges i sluttexten.\n\nKärnregel (mycket viktig):\n- Varje paper card behandlar exakt EN artikel. Blanda inte två olika papers i samma stycke.\n\nStruktur per paper card (i prosa, 4–10 meningar):\n- Första meningen (ämnessats): \"P?: En studie om <ämne> …\" och nämn kort vilket problem den adresserar.\n- Ange: (a) domän/område, (b) metod i stora drag, (c) dataset/experimentupplägg om det framgår, (d) huvudresultat, (e) vad som är nytt jämfört med typisk tidigare ansats (endast om underlaget stödjer), (f) begränsningar/antaganden som författarna själva nämner.\n- Om relevanta siffror finns (t.ex. förbättring i % eller metric): ta med dem, men utan att överdriva.\n- Om det är en preprint, workshop, conference, journal, eller peer-reviewed: skriv det endast om källan säger det.\n- Om du är osäker på något: skriv osäkerheten som osäkerhet i källorna, inte som ett påstående.\n\nAvslut per paper card:\n- SOURCES: <källa1>|<källa2>|...\n\nEfter alla paper cards:\n- Skriv ett sista stycke \"Osäkerheter och avgränsningar\" (3–7 meningar): vad som inte framgår (t.ex. peer review-status, datasetstorlek), risk för överföring till verkliga miljöer, och eventuella metodbegränsningar. Ingen SOURCES-rad här.\n\nPapers:\n{articles_corpus}\n"
+  batch_user_template: "Du får ett antal forskningsartiklar (papers) som publicerats eller uppdaterats sedan förra körningen. Skapa desk-underlag som en redaktör kan använda för en sammanhängande sammanfattning av forskningsläget.\n\nFORMAT:\n- Endast löpande text, inga punktlistor, inga numrerade listor.\n- Varje paper ska bli ett eget stycke (”paper card”).\n- Varje paper card ska avslutas med en egen rad som börjar exakt med \"SOURCES: \". Den raden ska innehålla en eller flera källor separerade med \"|\".\n- Du får använda \"P1/P2/P3\" som intern prioritering i början av paper card, men det får ALDRIG återges i sluttexten.\n\nKärnregel (mycket viktig):\n- Varje paper card behandlar exakt EN artikel. Blanda inte två olika papers i samma stycke.\n\nStruktur per paper card (i prosa, 4–10 meningar):\n- Första meningen (ämnessats): \"P?: En studie om <ämne> …\" och nämn kort vilket problem den adresserar.\n- Ange: (a) domän/område, (b) metod i stora drag, (c) dataset/experimentupplägg om det framgår, (d) huvudresultat, (e) vad som är nytt jämfört med typisk tidigare ansats (endast om underlaget stödjer), (f) begränsningar/antaganden som författarna själva nämner.\n- Om relevanta siffror finns (t.ex. förbättring i % eller metric): ta med dem, men utan att överdriva.\n- Om det är en preprint, workshop, conference, journal, eller peer-reviewed: skriv det endast om källan säger det.\n- Om du är osäker på något: skriv osäkerheten som osäkerhet i källorna, inte som ett påstående.\n\nAvslut per paper card:\n- SOURCES: <källa1>|<källa2>|...\n\nEfter alla paper cards:\n- Skriv ett sista stycke \"Osäkerheter och avgränsningar\" (3–7 meningar): vad som inte framgår (t.ex. peer review-status, datasetstorlek), risk för överföring till verkliga miljöer, och eventuella metodbegränsningar. Ingen SOURCES-rad här.\n\nPapers:\n{articles_corpus}\n"
 
   title_system: 'Du är rubriksättare på en vetenskapsredaktion. Du får ett underlag som beskriver flera forskningsartiklar och ska skapa en kort, korrekt titel på svenska.
 
@@ -603,7 +603,7 @@ research_papers_public_se:
       Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
 
   proofread_user_template: |
-    Kontrollera sammanfattningen för tidsfönstret {lookback}.
+    Kontrollera sammanfattningen.
 
     === DRAFT SUMMARY ===
     {draft_summary}
@@ -624,7 +624,7 @@ research_papers_public_se:
     - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
 
   revise_user_template: |
-    Revidera sammanfattningen för {lookback}.
+    Revidera sammanfattningen.
 
     === FEEDBACK (från korrekturläsaren) ===
     {feedback}
