@@ -689,13 +689,9 @@ vuln_report_running_text:
     - Stycke 1: kort introduktion (2–4 meningar) om vad rapporten täcker.
     - Stycke 2: metasummary om mönster (leverantörer och produkttyper).
     - Därefter: ett stycke per sårbarhet/kluster, i prioriterad ordning (mest kritiska först).
-    - Avsluta med ett källstycke i löpande text: “Källor: …” följt av källhänvisningar separerade med semikolon.
 
   meta_user_template: |
     Skriv en sårbarhetsrapport i löpande text för tidsfönstret: {lookback}
 
     Batch-underlag:
     {batch_summaries}
-
-    Källor (för källstycket):
-    {sources_text}
