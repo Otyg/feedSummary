@@ -76,6 +76,7 @@ global RUNNING_JOB_LOCK
 RUNNING_JOB_ID: Optional[int] = None
 RUNNING_JOB_LOCK = threading.Lock()
 
+
 class _StreamToLogger:
     """
     File-like object that redirects writes to a logger.
@@ -460,7 +461,7 @@ async def _run_one(
 
         # mark running job id for /status endpoint
         with RUNNING_JOB_LOCK:
-            #global RUNNING_JOB_ID
+            # global RUNNING_JOB_ID
             RUNNING_JOB_ID = int(job_id)
 
         log.info(
@@ -538,10 +539,9 @@ def _worker_api_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-
-
-
-def _trigger_create(kind: str, name: str, overrides: Dict[str, Any], job_id: Optional[int] = None) -> Dict[str, Any]:
+def _trigger_create(
+    kind: str, name: str, overrides: Dict[str, Any], job_id: Optional[int] = None
+) -> Dict[str, Any]:
     tid = f"{kind}_{uuid.uuid4().hex}"  # e.g. tr_xxx or rs_xxx
     now = int(time.time())
     obj = {
@@ -560,6 +560,7 @@ def _trigger_create(kind: str, name: str, overrides: Dict[str, Any], job_id: Opt
     with TRIGGERS_LOCK:
         TRIGGERS[tid] = obj
     return obj
+
 
 def _trigger_update(tid: str, **fields: Any) -> None:
     with TRIGGERS_LOCK:
@@ -707,7 +708,9 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
         return
 
 
-def _start_worker_control_server(cfg: Dict[str, Any], *, trigger_async, resume_async, store) -> Optional[ThreadingHTTPServer]:
+def _start_worker_control_server(
+    cfg: Dict[str, Any], *, trigger_async, resume_async, store
+) -> Optional[ThreadingHTTPServer]:
     s = _worker_api_settings(cfg)
     if not s["enabled"]:
         log.info("worker_api disabled")
@@ -836,7 +839,11 @@ def main() -> int:
     # ---- async trigger: single authoritative run logic (worker) ----
     def trigger_async(name: str) -> Dict[str, Any]:
         schedule = _read_schedule_yaml(schedule_path)
-        if not isinstance(schedule, dict) or name not in schedule or not isinstance(schedule[name], dict):
+        if (
+            not isinstance(schedule, dict)
+            or name not in schedule
+            or not isinstance(schedule[name], dict)
+        ):
             raise KeyError(name)
 
         entry = schedule[name]
@@ -849,7 +856,9 @@ def main() -> int:
         def _runner():
             _trigger_update(tid, status="running", started_at=int(time.time()))
             try:
-                summary_id = asyncio.run(_run_one(config_path, cfg, store, str(name), entry))
+                summary_id = asyncio.run(
+                    _run_one(config_path, cfg, store, str(name), entry)
+                )
                 _trigger_update(
                     tid,
                     status="done",
@@ -857,18 +866,28 @@ def main() -> int:
                     summary_id=str(summary_id),
                 )
             except Exception as e:
-                _trigger_update(tid, status="failed", finished_at=int(time.time()), error=str(e))
+                _trigger_update(
+                    tid, status="failed", finished_at=int(time.time()), error=str(e)
+                )
 
         threading.Thread(target=_runner, daemon=True).start()
 
         base = _worker_api_settings(cfg)
         status_url = f"http://{base['host']}:{base['port']}/trigger/{tid}"
-        return {"accepted": True, "trigger_id": tid, "name": name, "status_url": status_url}
+        return {
+            "accepted": True,
+            "trigger_id": tid,
+            "name": name,
+            "status_url": status_url,
+        }
+
     def resume_async(job_id: int) -> Dict[str, Any]:
         jid = int(job_id)
         # For resume we don't need schedule.yaml; it resumes an existing job
         overrides: Dict[str, Any] = {}
-        trig = _trigger_create("rs", name=f"resume_job_{jid}", overrides=overrides, job_id=jid)
+        trig = _trigger_create(
+            "rs", name=f"resume_job_{jid}", overrides=overrides, job_id=jid
+        )
         tid = trig["id"]
 
         def _runner():
@@ -876,7 +895,7 @@ def main() -> int:
             try:
                 # Mark currently running job id for worker /status (if you implemented it)
                 with RUNNING_JOB_LOCK:
-                    #global RUNNING_JOB_ID
+                    # global RUNNING_JOB_ID
                     RUNNING_JOB_ID = jid
 
                 llm = create_llm_client(cfg)
@@ -895,7 +914,9 @@ def main() -> int:
                     summary_id=str(summary_id),
                 )
             except Exception as e:
-                _trigger_update(tid, status="failed", finished_at=int(time.time()), error=str(e))
+                _trigger_update(
+                    tid, status="failed", finished_at=int(time.time()), error=str(e)
+                )
             finally:
                 with RUNNING_JOB_LOCK:
                     RUNNING_JOB_ID = None
@@ -904,13 +925,19 @@ def main() -> int:
 
         base = _worker_api_settings(cfg)
         status_url = f"http://{base['host']}:{base['port']}/resume/{tid}"
-        return {"accepted": True, "resume_id": tid, "job_id": jid, "status_url": status_url}
+        return {
+            "accepted": True,
+            "resume_id": tid,
+            "job_id": jid,
+            "status_url": status_url,
+        }
+
     _control = _control = _start_worker_control_server(
-    cfg,
-    trigger_async=trigger_async,
-    resume_async=resume_async,
-    store=store,
-)
+        cfg,
+        trigger_async=trigger_async,
+        resume_async=resume_async,
+        store=store,
+    )
 
     while True:
         now = _now(tz)
