@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
+import logging
 import yaml
 
 from feedsummary_core.llm_client import create_llm_client, LLMClient
@@ -38,7 +38,9 @@ from feedsummary_core.summarizer.batching import (
 from feedsummary_core.summarizer.chat import chat_guarded
 from feedsummary_core.summarizer.summarizer import _proofread_and_revise_meta_with_stats
 
-
+from uicommon.bootstrap_ui import _setup_logging_if_needed
+log = logging.getLogger(__name__)
+_setup_logging_if_needed()
 def _load_yaml(path: str) -> Dict[str, Any]:
     p = Path(path)
     if not p.exists():
@@ -259,27 +261,27 @@ async def _run(args: argparse.Namespace) -> int:
 
     proof_out = (pr_stats.get("proofread_output") or pr_stats.get("proofread_last_feedback") or "").strip()
 
-    print("\n" + "=" * 90)
-    print(f"SUMMARY_DOC: {summary_id}")
-    print(f"SOURCES: {len(articles)} articles")
-    print(f"LOOKBACK LABEL: {lookback_label}")
-    print("=" * 90 + "\n")
+    log.info("\n" + "=" * 90)
+    log.info(f"SUMMARY_DOC: {summary_id}")
+    log.info(f"SOURCES: {len(articles)} articles")
+    log.info(f"LOOKBACK LABEL: {lookback_label}")
+    log.info("=" * 90 + "\n")
 
-    print("ORIGINAL SUMMARY (clip 2000):\n")
-    print(clip_text(summary_text, 2000))
-    print("\n" + "-" * 90 + "\n")
+    log.info("ORIGINAL SUMMARY (clip 2000):\n")
+    log.info(clip_text(summary_text, 2000))
+    log.info("\n" + "-" * 90 + "\n")
 
-    print("PROOFREAD OUTPUT:\n")
-    print(proof_out if proof_out else "(no proofread output)")
-    print("\n" + "-" * 90 + "\n")
+    log.info("PROOFREAD OUTPUT:\n")
+    log.info(proof_out if proof_out else "(no proofread output)")
+    log.info("\n" + "-" * 90 + "\n")
 
-    print("REVISED SUMMARY:\n")
-    print(revised.strip())
-    print("\n" + "=" * 90 + "\n")
+    log.info("REVISED SUMMARY:\n")
+    log.info(revised.strip())
+    log.info("\n" + "=" * 90 + "\n")
 
     if args.out:
         Path(args.out).write_text(revised.strip() + "\n", encoding="utf-8")
-        print(f"Wrote revised summary to: {args.out}")
+        log.info(f"Wrote revised summary to: {args.out}")
 
     return 0
 
