@@ -460,7 +460,7 @@ async def _run_one(
 
         # mark running job id for /status endpoint
         with RUNNING_JOB_LOCK:
-            global RUNNING_JOB_ID
+            #global RUNNING_JOB_ID
             RUNNING_JOB_ID = int(job_id)
 
         log.info(
@@ -891,7 +891,7 @@ def main() -> int:
             try:
                 # Mark currently running job id for worker /status (if you implemented it)
                 with RUNNING_JOB_LOCK:
-                    global RUNNING_JOB_ID
+                    #global RUNNING_JOB_ID
                     RUNNING_JOB_ID = jid
 
                 llm = create_llm_client(cfg)
@@ -913,7 +913,6 @@ def main() -> int:
                 _trigger_update(tid, status="failed", finished_at=int(time.time()), error=str(e))
             finally:
                 with RUNNING_JOB_LOCK:
-                    global RUNNING_JOB_ID
                     RUNNING_JOB_ID = None
 
         threading.Thread(target=_runner, daemon=True).start()
