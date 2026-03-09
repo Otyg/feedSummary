@@ -618,7 +618,8 @@ research_papers_public_se:
     Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
     Regler:
     - Lägg inte till nya fakta.
-    - Ta bort eller omformulera allt som saknar stöd i underlaget.
+    - Ta bort eller omformulera text utifrån feedback
+    - Ändra inget som inte nämns i feedbacken, om det inte är nödvändigt för att åtgärda en feedbackpunkt
     - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
     Outputformat:
     - Returnera endast den reviderade sluttexten (ingen meta, inga listor om det inte ingår i stilen).
