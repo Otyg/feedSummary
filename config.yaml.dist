@@ -23,6 +23,7 @@ batching:
   meta_batch_clip_chars: 1500
   meta_sources_clip_chars: 100
   retry_user_clip_chars: 9000
+  topic_max_workers: 4
 cleanup:
   enabled: true
   run_every_minutes: 60
