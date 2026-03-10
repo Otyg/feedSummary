@@ -448,7 +448,9 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
     pp = str(entry.get("promptpackage") or "").strip()
     if pp:
         overrides["prompt_package"] = pp
-
+    contents = entry.get("contents")
+    if isinstance(contents, list) and contents:
+        overrides["contents"] = contents
     return overrides
 
 
