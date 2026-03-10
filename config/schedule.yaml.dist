@@ -1,23 +1,7 @@
-daily_lunch_brief:
-  frequency: "daily"
-  lookback: "6h"
-  time: "12:00"
-  promptpackage: "daily_news_public_se"
-  categories:
-    - "Nyheter"
-    - "Cybersecurity"
-daily_evening_brief:
-  frequency: "daily"
-  lookback: "12h"
-  time: "18:00"
-  promptpackage: "daily_news_public_se"
-  categories:
-    - "Nyheter"
-    - "Cybersecurity"
 daily_science_brief:
   frequency: "daily"
   time: "01:00"
-  promptpackage: "science_brief"
+  promptpackage: "research_papers_public_se"
   categories:
     - "Science"
 daily_hybrid_news_tech_se:

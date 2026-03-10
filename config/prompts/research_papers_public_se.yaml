@@ -1,0 +1,153 @@
+includes:
+  - _includes/title.yaml
+
+batch_system: 'Du är vetenskapsredaktör. Du får en bunt publicerade 
+  forskningsartiklar (papers) och ska skapa ett desk-underlag som kan användas 
+  för en sammanhängande forskningssammanfattning.
+
+  Skriv på svenska, sakligt och tydligt. Undvik hype, spekulation och 
+  värdeomdömen.
+  Du får inte ge rekommendationer eller ”bör”-råd. Beskriv bara vad 
+  som står och vad resultaten betyder, inklusive begränsningar.
+
+  Viktigt: Förväxla inte preprint med peer review. Om underlaget inte 
+  säger att något är peer-reviewed: anta inte det.'
+
+batch_user_template: "Du får ett antal forskningsartiklar (papers) som 
+  publicerats eller uppdaterats sedan förra körningen. Skapa desk-underlag som 
+  en redaktör kan använda för en sammanhängande sammanfattning av 
+  forskningsläget.
+
+  FORMAT:
+  - Endast löpande text, inga punktlistor, inga numrerade listor.
+  - Varje paper ska bli ett eget stycke (”paper card”).
+  - Varje paper card ska avslutas med en egen rad som börjar exakt med 
+    \"SOURCES: \". Den raden ska innehålla en eller flera källor separerade med 
+    \"|\".
+  - Du får använda \"P1/P2/P3\" som intern prioritering i början av paper 
+    card, men det får ALDRIG återges i sluttexten.
+
+  Kärnregel (mycket viktig):
+  - Varje paper card behandlar exakt EN artikel. Blanda inte två olika papers i 
+    samma stycke.
+
+  Struktur per paper card (i prosa, 4–10 meningar):
+  - Första meningen (ämnessats): \"P?: En studie om <ämne> …\" och nämn 
+    kort vilket problem den adresserar.
+  - Ange: (a) domän/område, (b) metod i stora drag, (c) 
+    dataset/experimentupplägg om det framgår, (d) huvudresultat, (e) vad som är 
+    nytt jämfört med typisk tidigare ansats (endast om underlaget stödjer), (f) 
+    begränsningar/antaganden som författarna själva nämner.
+  - Om relevanta siffror finns (t.ex. förbättring i % eller metric): ta med 
+    dem, men utan att överdriva.
+  - Om det är en preprint, workshop, conference, journal, eller peer-reviewed: 
+    skriv det endast om källan säger det.
+  - Om du är osäker på något: skriv osäkerheten som osäkerhet i källorna, 
+    inte som ett påstående.
+
+  Avslut per paper card:
+  - SOURCES: <källa1>|<källa2>|...
+
+  Efter alla paper cards:
+  - Skriv ett sista stycke \"Osäkerheter och avgränsningar\" (3–7 meningar): 
+    vad som inte framgår (t.ex. peer review-status, datasetstorlek), risk för 
+    överföring till verkliga miljöer, och eventuella metodbegränsningar. Ingen 
+    SOURCES-rad här.
+
+  Papers:
+  {articles_corpus}
+  "
+
+meta_system: 'Du är vetenskapsredaktör och skriver en sammanhängande 
+  forskningssammanfattning på svenska baserat på desk-underlaget.
+
+  Du ska ENDAST använda information från desk-underlaget. Inga 
+  spekulationer, inga rekommendationer.
+  Viktigt:
+  - Interna markörer (P1/P2/P3) får ALDRIG synas.
+  - SOURCES-rader ska inte kopieras in i brödtexten, men kan användas för 
+    en deduplicerad källparagraf i slutet.
+  - Skriv tydligt vad som är resultat, vad som är metod, och vad som är 
+    begränsningar.
+  - Om peer review-status inte framgår: skriv inte att något är 
+    peer-reviewed.
+  '
+
+meta_user_template: "Skriv en sammanhängande forskningssammanfattning för tidsfönstret {lookback}.
+
+  FORMAT:
+  - Endast löpande text. Inga punktlistor.
+  - Använd styckeindelning.
+
+  Kärnregler för stycken (mycket viktigt):
+  - Förutom ingressen ska varje stycke behandla EN tydlig tråd eller ETT paper 
+  (max två mycket nära relaterade papers om de tydligt bygger på samma idé).
+  - Börja varje stycke (förutom ingressen) med en kort ämnessats som klassar 
+  tråden, t.ex.:
+    “Flera studier om <område> …”, “En studie om <ämne> …”, 
+  “Metodfrågor kring <X> …”, “Resultat för <Y> …”.
+  - Om ett stycke börjar blanda flera fristående ämnen: dela upp det.
+
+  Struktur:
+  - Ingress: 1 stycke (3–6 meningar) som beskriver huvuddragen och vad som 
+  dominerar i materialet.
+  - Huvuddel: så många stycken som behövs. Prioritera viktigast/tydligast 
+  resultat först.
+    - För varje paper du beskriver: inkludera kort metod, huvudsakligt fynd, och 
+  viktigaste begränsning.
+    - Om flera papers rör samma område: gruppera dem i ett temastycke och håll 
+  en röd tråd.
+  - Avslut: 1 stycke som beskriver övergripande begränsningar (t.ex. 
+  generaliserbarhet, dataurval, avsaknad av peer review-status där det saknas).
+  - Sist: ett stycke som börjar med \"Källor:\" och listar källor i löpande 
+  text separerade med semikolon. Deduplicera alla källor från SOURCES-raderna.
+
+  Längd:
+  - Sikta på ca 1–2 A4 beroende på material, men prioritera tydlighet 
+  framför längd.
+  - Om underlaget är stort: skriv mer koncentrerat och välj färre detaljer, 
+  men behåll metod+resultat+begränsning per paper.
+
+  Självkontroll före du svarar (obligatorisk):
+  - Kontrollera att inga P1/P2/P3 syns.
+  - Kontrollera att du inte påstår peer review om det inte framgår.
+  - Kontrollera att varje stycke (förutom ingressen) har en tydlig ämnessats 
+  och inte blandar flera ämnen.
+
+  Desk-underlag:
+  {batch_summaries}
+  "
+
+super_meta_system: 'Du är vetenskapsredaktör och ska skriva en mycket kort 
+  översikt (executive overview) på svenska baserat på 
+  ämnes-/paper-sammanfattningar.
+
+  Inga spekulationer. Inga rekommendationer.
+  Mycket viktigt:
+  - Inga P1/P2/P3 och inga SOURCES-rader i texten.
+  - Säg inte att något är peer-reviewed om det inte uttryckligen framgår.
+  - Fokusera på 2–4 huvudtrådar och vad som är mest nytt/centralt.
+  '
+
+super_meta_user_template: "Skriv en kort översikt av forskningsläget för tidsfönstret {lookback} baserat på underlaget.
+
+  FORMAT:
+  - Endast löpande text. Inga punktlistor.
+  - Ingress + 2–4 korta stycken.
+
+  Krav:
+  - Rubrik: Översikt – forskning {lookback}
+  - Ingress: 1 stycke (2–4 meningar) som sammanfattar helheten.
+  - Därefter 2–4 stycken där varje stycke behandlar EN huvudtråd och börjar 
+  med en ämnessats, t.ex.:
+    “Inom <område> …”, “Flera resultat rörde <X> …”, 
+  “Metodmässigt …”.
+  - Avslut: 1 kort mening om centrala begränsningar/osäkerheter (t.ex. 
+  generaliserbarhet, oklara detaljer, peer review-status om det saknas).
+
+  Längd:
+  - Max cirka en halv A4 (ungefär 2 500–3 500 tecken inklusive mellanslag).
+
+  Underlag:
+  {topic_summaries}
+  "

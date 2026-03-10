@@ -232,25 +232,26 @@ def _resolve_config_path(cli_path: Optional[str]) -> str:
 
 
 def _abspath_cfg_paths(cfg: Dict[str, Any], config_path: str) -> Dict[str, Any]:
-    """
-    Resolve store/scheduler paths relative to config.yaml directory
-    to avoid CWD-dependent bugs.
-    """
-    base = Path(config_path).resolve().parent
+    cfg2 = dict(cfg)
+    base_dir = os.path.dirname(os.path.abspath(config_path)) or "."
 
     def abs_if_rel(p: str) -> str:
-        pp = Path(os.path.expandvars(os.path.expanduser(p)))
-        if pp.is_absolute():
-            return str(pp)
-        return str((base / pp).resolve())
-
-    cfg2 = dict(cfg)
+        p2 = os.path.expanduser(os.path.expandvars(p))
+        if os.path.isabs(p2):
+            return p2
+        return os.path.join(base_dir, p2)
 
     st = cfg2.get("store")
     if isinstance(st, dict) and st.get("path"):
         st2 = dict(st)
         st2["path"] = abs_if_rel(str(st2["path"]))
         cfg2["store"] = st2
+
+    pr = cfg2.get("prompts")
+    if isinstance(pr, dict) and pr.get("path"):
+        pr2 = dict(pr)
+        pr2["path"] = abs_if_rel(str(pr2["path"]))
+        cfg2["prompts"] = pr2
 
     sch = cfg2.get("scheduler")
     if isinstance(sch, dict) and sch.get("path"):

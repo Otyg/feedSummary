@@ -35,14 +35,19 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
 from feedsummary_core.persistence import NewsStore, create_store
+from feedsummary_core.prompts.loader import (
+    DEFAULT_PROMPTS_PATH,
+    list_prompt_packages as list_prompt_packages_from_root,
+)
 from feedsummary_core.summarizer.helpers import load_feeds_into_config
 
-__version__ = "3.4.0"
+__version__ = "3.5.0"
 
 
 # ----------------------------
@@ -212,22 +217,18 @@ def sources_for_topics(cfg: Dict[str, Any], topics: List[str]) -> List[str]:
 
 
 # ----------------------------
-# prompts.yaml packages
+# prompt packages
 # ----------------------------
 def load_prompt_packages(cfg: Dict[str, Any], *, config_path: str) -> List[str]:
     p_cfg = cfg.get("prompts") or {}
     if not isinstance(p_cfg, dict):
         return []
-    raw_path = str(p_cfg.get("path") or "config/prompts.yaml")
+    raw_path = str(p_cfg.get("path") or DEFAULT_PROMPTS_PATH)
     path = resolve_path(config_path, raw_path)
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            all_pkgs = yaml.safe_load(f) or {}
-        if isinstance(all_pkgs, dict):
-            return sorted([str(k) for k in all_pkgs.keys()])
+        return list_prompt_packages_from_root(Path(path))
     except Exception:
         return []
-    return []
 
 
 def default_prompt_package(cfg: Dict[str, Any], packages: List[str]) -> str:
