@@ -47,7 +47,7 @@ from feedsummary_core.prompts.loader import (
 )
 from feedsummary_core.summarizer.helpers import load_feeds_into_config
 
-__version__ = "3.5.0"
+__version__ = "3.5.1"
 
 
 # ----------------------------
