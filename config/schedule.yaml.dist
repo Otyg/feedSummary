@@ -36,3 +36,16 @@ weekly_hybrid_cyber:
     - "Dataskydd"
     - "Sårbarheter"
   promptpackage: "weekly_hybrid_news_cyber_tech_se"
+daily_summaries:
+  frequency: "daily"
+  time: "06:00"
+  lookback: "1d"
+  contents:
+    - tag: "Nyheter"
+      promptpackage: "daily_news_multisource_se_eu_world"
+    - tag: "Teknik"
+      promptpackage: "daily_tech_multisource_se_eu_world"
+    - tag: "Cybersecurity"
+      promptpackage: "daily_cyber_multisource_se_eu_world"
+    - title: "daily_news_title"
+    - ingress: "daily_super_meta"
