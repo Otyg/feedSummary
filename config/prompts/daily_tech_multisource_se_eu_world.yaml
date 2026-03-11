@@ -1,6 +1,5 @@
 includes:
   - _includes/title.yaml
-  - _includes/super_meta_news.yaml
 
 batch_system: |
   Du arbetar i en hybridroll som teknikredaktör och omvärldsbevakare. Du skapar ett underlag för en 
