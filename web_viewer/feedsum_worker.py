@@ -47,11 +47,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from feedsummary_core.summarizer.main import run_pipeline
+from feedsummary_core.summarizer.main import (
+    run_pipeline,
+    run_resume_job,
+    compose_summary_docs,
+)
 from uicommon import load_config
 
 from feedsummary_core.persistence import create_store
-from feedsummary_core.summarizer.main import run_resume_job
 from feedsummary_core.llm_client import create_llm_client
 
 try:
@@ -92,7 +95,6 @@ class _StreamToLogger:
         if not message:
             return 0
         self._buf += message
-        # Flush on newline so we get sane log lines
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)
             line = line.rstrip()
@@ -108,14 +110,6 @@ class _StreamToLogger:
 
 
 def _get_worker_log_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    config.yaml:
-      worker:
-        log_file: "./logs/feedsum_worker.log"
-        log_level: "INFO"
-        log_max_bytes: 10485760
-        log_backup_count: 5
-    """
     out = {
         "log_file": "./logs/feedsum_worker.log",
         "log_level": "INFO",
@@ -148,10 +142,6 @@ def _setup_file_logging(
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 5,
 ) -> None:
-    """
-    Configure root logger to write to rotating file.
-    Redirect stdout/stderr into logging so prints also go to file.
-    """
     lp = Path(os.path.expandvars(os.path.expanduser(log_file)))
     if not lp.is_absolute():
         lp = (Path.cwd() / lp).resolve()
@@ -162,7 +152,6 @@ def _setup_file_logging(
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Remove any existing handlers to avoid duplicates
     for h in list(root.handlers):
         root.removeHandler(h)
 
@@ -177,10 +166,8 @@ def _setup_file_logging(
     fh.setFormatter(fmt)
     root.addHandler(fh)
 
-    # Capture warnings as logs
     logging.captureWarnings(True)
 
-    # Redirect stdout/stderr into logging
     sys.stdout = _StreamToLogger(logging.getLogger("stdout"), logging.INFO)  # type: ignore
     sys.stderr = _StreamToLogger(logging.getLogger("stderr"), logging.ERROR)  # type: ignore
 
@@ -212,9 +199,6 @@ WEEKDAY = {
 }
 
 
-# ----------------------------
-# Path helpers
-# ----------------------------
 def _resolve_config_path(cli_path: Optional[str]) -> str:
     if cli_path:
         return str(Path(cli_path).expanduser().resolve())
@@ -272,9 +256,6 @@ def _read_schedule_yaml(path: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-# ----------------------------
-# Scheduler settings + timezone
-# ----------------------------
 def _scheduler_settings(
     cfg: Dict[str, Any],
     cfg_path: str,
@@ -284,7 +265,7 @@ def _scheduler_settings(
     enabled = False
     schedule_path = "schedule.yaml"
     poll_seconds = 20
-    timezone = ""  # empty => local
+    timezone = ""
 
     sc = cfg.get("scheduler")
     if isinstance(sc, dict):
@@ -355,15 +336,10 @@ def _parse_hhmm(s: str) -> Tuple[int, int]:
 
 
 def _grace_window_seconds(poll_seconds: int) -> int:
-    # Generous grace to tolerate load/sleep/jitter
     return max(120, 3 * int(poll_seconds))
 
 
 def _next_boundary(now: dt.datetime, boundary_hours: List[int]) -> dt.datetime:
-    """
-    Given fixed hour boundaries (e.g. [0,6,12,18]) return next boundary strictly after 'now'.
-    Works with tz-aware or naive datetimes.
-    """
     base = now.replace(minute=0, second=0, microsecond=0)
     for h in boundary_hours:
         cand = base.replace(hour=h)
@@ -374,15 +350,10 @@ def _next_boundary(now: dt.datetime, boundary_hours: List[int]) -> dt.datetime:
 
 
 def _next_run_dt(entry: Dict[str, Any], now: dt.datetime) -> Optional[dt.datetime]:
-    """
-    Compute next run datetime for an entry based on frequency.
-    Supported:
-      - daily: uses entry.time HH:MM
-      - weekly: uses entry.day + entry.time
-      - quarterday: fixed times 00:00,06:00,12:00,18:00 (ignores entry.time)
-      - halfday: fixed times 00:00,12:00 (ignores entry.time)
-    """
     freq = str(entry.get("frequency") or "").strip().lower()
+
+    if freq == "triggered":
+        return None
 
     if freq == "quarterday":
         return _next_boundary(now, [0, 6, 12, 18])
@@ -419,9 +390,6 @@ def _next_run_dt(entry: Dict[str, Any], now: dt.datetime) -> Optional[dt.datetim
     return None
 
 
-# ----------------------------
-# Overrides mapping
-# ----------------------------
 def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
 
@@ -445,26 +413,77 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
         if topics:
             overrides["topics"] = topics
 
+    tags = entry.get("tags") or []
+    if isinstance(tags, list):
+        clean_tags = [str(x).strip() for x in tags if str(x).strip()]
+        if clean_tags:
+            overrides["tags"] = clean_tags
+
     pp = str(entry.get("promptpackage") or "").strip()
     if pp:
         overrides["prompt_package"] = pp
-    contents = entry.get("contents")
-    if isinstance(contents, list) and contents:
-        overrides["contents"] = contents
+
     return overrides
 
 
-async def _run_one(
-    config_path: str, cfg: Dict[str, Any], store, job_name: str, entry: Dict[str, Any]
+def _parse_contents_block(
+    entry: Dict[str, Any],
+) -> Tuple[List[Dict[str, str]], Optional[str], Optional[str]]:
+    contents = entry.get("contents") or []
+    if not isinstance(contents, list) or not contents:
+        return [], None, None
+
+    jobs: List[Dict[str, str]] = []
+    title_pkg: Optional[str] = None
+    ingress_pkg: Optional[str] = None
+
+    for i, item in enumerate(contents):
+        if not isinstance(item, dict):
+            raise ValueError(f"contents[{i}] måste vara ett objekt")
+
+        sched = str(item.get("schedule") or "").strip()
+        title = str(item.get("title") or "").strip()
+        ingress = str(item.get("ingress") or "").strip()
+
+        if sched:
+            jobs.append({"schedule": sched})
+            continue
+
+        if title:
+            if title_pkg is not None:
+                raise ValueError("Bara en title-post får finnas i contents")
+            title_pkg = title
+            continue
+
+        if ingress:
+            if ingress_pkg is not None:
+                raise ValueError("Bara en ingress-post får finnas i contents")
+            ingress_pkg = ingress
+            continue
+
+        raise ValueError(f"contents[{i}] måste innehålla schedule, title eller ingress")
+
+    if not jobs:
+        raise ValueError("contents måste innehålla minst ett schedule-jobb")
+
+    return jobs, title_pkg, ingress_pkg
+
+
+async def _run_regular_entry(
+    config_path: str,
+    cfg: Dict[str, Any],
+    store,
+    job_name: str,
+    entry: Dict[str, Any],
 ) -> str:
+    global RUNNING_JOB_ID
+
     overrides = _entry_to_overrides(entry)
     job_id = None
     try:
         job_id = store.create_job()
 
-        # mark running job id for /status endpoint
         with RUNNING_JOB_LOCK:
-            # global RUNNING_JOB_ID
             RUNNING_JOB_ID = int(job_id)
 
         log.info(
@@ -486,14 +505,145 @@ async def _run_one(
         raise
 
     finally:
-        # clear running job id when pipeline finishes (success or error)
         with RUNNING_JOB_LOCK:
             RUNNING_JOB_ID = None
 
 
-# ----------------------------
-# Cleanup policy: call persistence run_cleanup
-# ----------------------------
+async def _run_composed_entry(
+    config_path: str,
+    cfg: Dict[str, Any],
+    store,
+    schedule_path: str,
+    job_name: str,
+    entry: Dict[str, Any],
+) -> str:
+    global RUNNING_JOB_ID
+
+    jobs, title_pkg, ingress_pkg = _parse_contents_block(entry)
+    schedule = _read_schedule_yaml(schedule_path)
+
+    parent_job_id = store.create_job()
+
+    try:
+        with RUNNING_JOB_LOCK:
+            RUNNING_JOB_ID = int(parent_job_id)
+
+        store.update_job(
+            parent_job_id,
+            status="running",
+            started_at=int(time.time()),
+            message=f"Startar composed-jobb '{job_name}'...",
+        )
+
+        section_results: List[Dict[str, str]] = []
+
+        for idx, spec in enumerate(jobs, start=1):
+            child_name = str(spec["schedule"]).strip()
+            child_entry = schedule.get(child_name)
+            if not isinstance(child_entry, dict):
+                raise KeyError(f"Schedule '{child_name}' hittades inte")
+
+            freq = str(child_entry.get("frequency") or "").strip().lower()
+            if freq != "triggered":
+                raise ValueError(
+                    f"Schedule '{child_name}' måste ha frequency: triggered"
+                )
+
+            store.update_job(
+                parent_job_id,
+                message=f"Kör deljobb {idx}/{len(jobs)}: {child_name}...",
+            )
+
+            summary_id = await _run_regular_entry(
+                config_path=config_path,
+                cfg=cfg,
+                store=store,
+                job_name=f"{job_name}::{child_name}",
+                entry=child_entry,
+            )
+
+            child_pp = str(child_entry.get("promptpackage") or "").strip()
+
+            section_results.append(
+                {
+                    "schedule": child_name,
+                    "promptpackage": child_pp,
+                    "summary_id": str(summary_id),
+                }
+            )
+
+        store.update_job(
+            parent_job_id,
+            message="Sammanfogar delresultat...",
+        )
+
+        llm = create_llm_client(cfg)
+        final_summary_id = await compose_summary_docs(
+            config=cfg,
+            store=store,
+            llm=llm,
+            job_id=parent_job_id,
+            name=job_name,
+            sections=section_results,
+            ingress_package=ingress_pkg,
+            title_package=title_pkg,
+        )
+
+        store.update_job(
+            parent_job_id,
+            status="done",
+            finished_at=int(time.time()),
+            message=f"Klart: composed-jobb '{job_name}' färdigt.",
+            summary_id=str(final_summary_id),
+        )
+        return str(final_summary_id)
+
+    except Exception as e:
+        try:
+            store.update_job(
+                parent_job_id,
+                status="failed",
+                finished_at=int(time.time()),
+                message=f"Fel: {e}",
+            )
+        except Exception:
+            pass
+        log.exception("Composed job '%s' failed", job_name)
+        raise
+
+    finally:
+        with RUNNING_JOB_LOCK:
+            RUNNING_JOB_ID = None
+
+
+async def _run_one(
+    config_path: str,
+    cfg: Dict[str, Any],
+    store,
+    schedule_path: str,
+    job_name: str,
+    entry: Dict[str, Any],
+) -> str:
+    contents = entry.get("contents")
+    if isinstance(contents, list) and contents:
+        return await _run_composed_entry(
+            config_path=config_path,
+            cfg=cfg,
+            store=store,
+            schedule_path=schedule_path,
+            job_name=job_name,
+            entry=entry,
+        )
+
+    return await _run_regular_entry(
+        config_path=config_path,
+        cfg=cfg,
+        store=store,
+        job_name=job_name,
+        entry=entry,
+    )
+
+
 def _cleanup_policy(cfg: Dict[str, Any]) -> "CleanupPolicy":
     d = cfg.get("cleanup") if isinstance(cfg, dict) else None
     d = d if isinstance(d, dict) else {}
@@ -521,17 +671,7 @@ def _cleanup_policy(cfg: Dict[str, Any]) -> "CleanupPolicy":
         return pol
 
 
-# ----------------------------
-# Worker control-plane (async trigger + status)
-# ----------------------------
 def _worker_api_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    config.yaml:
-      worker_api:
-        enabled: true
-        host: "127.0.0.1"
-        port: 8799
-    """
     d = cfg.get("worker_api")
     if not isinstance(d, dict):
         d = {}
@@ -545,17 +685,17 @@ def _worker_api_settings(cfg: Dict[str, Any]) -> Dict[str, Any]:
 def _trigger_create(
     kind: str, name: str, overrides: Dict[str, Any], job_id: Optional[int] = None
 ) -> Dict[str, Any]:
-    tid = f"{kind}_{uuid.uuid4().hex}"  # e.g. tr_xxx or rs_xxx
+    tid = f"{kind}_{uuid.uuid4().hex}"
     now = int(time.time())
     obj = {
         "id": tid,
-        "kind": kind,  # "tr" or "rs"
+        "kind": kind,
         "name": name,
         "job_id": job_id,
         "created_at": now,
         "started_at": None,
         "finished_at": None,
-        "status": "queued",  # queued|running|done|failed
+        "status": "queued",
         "overrides": overrides,
         "summary_id": None,
         "error": None,
@@ -578,15 +718,6 @@ def _trigger_get(tid: str) -> Optional[Dict[str, Any]]:
 
 
 class _WorkerControlHandler(BaseHTTPRequestHandler):
-    """
-    Local-only control plane for triggering schedule entries on-demand.
-
-    Endpoints:
-      GET  /health
-      POST /trigger           JSON: {"name":"<schedule_name>"}
-      GET  /trigger/<id>      status
-    """
-
     def _send_json(self, code: int, payload: Dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -600,7 +731,6 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
             return
         if self.path == "/status":
-            # Running job id is written by _run_one
             with RUNNING_JOB_LOCK:
                 rid = RUNNING_JOB_ID
 
@@ -609,7 +739,6 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                # Use persistence-only functionality to fetch job
                 store = self.server.store  # type: ignore[attr-defined]
 
                 job = None
@@ -617,7 +746,6 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
                 if callable(get_job):
                     job = get_job(int(rid))
                 else:
-                    # fallback if persistence uses list_jobs
                     list_jobs = getattr(store, "list_jobs", None)
                     if callable(list_jobs):
                         jobs = list_jobs(limit=200) or []
@@ -681,6 +809,7 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(500, {"error": "resume_failed", "detail": str(e)})
             return
+
         if self.path != "/trigger":
             self._send_json(404, {"error": "not_found"})
             return
@@ -706,7 +835,6 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json(500, {"error": "trigger_failed", "detail": str(e)})
 
-    # quiet default logging
     def log_message(self, format, *args):  # noqa: A003
         return
 
@@ -734,9 +862,6 @@ def _start_worker_control_server(
     return httpd
 
 
-# ----------------------------
-# Main
-# ----------------------------
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -767,7 +892,6 @@ def main() -> int:
     cfg_raw = load_config(config_path)
     cfg = _abspath_cfg_paths(cfg_raw, config_path)
 
-    # Setup file logging + capture stdout/stderr early
     wlog = _get_worker_log_cfg(cfg)
     if args.log_file:
         wlog["log_file"] = args.log_file
@@ -818,28 +942,29 @@ def main() -> int:
         int(getattr(pol, "run_every_minutes", 60)),
     )
 
-    # next run schedule (robust)
     next_runs: Dict[str, dt.datetime] = {}
     last_run_stamp: Dict[str, str] = {}
 
     last_cleanup_ts: float = 0.0
 
-    # initial plan
     if enabled:
         sched0 = _read_schedule_yaml(schedule_path)
         now0 = _now(tz)
         for name, entry in sched0.items():
-            if isinstance(entry, dict):
-                nr = _next_run_dt(entry, now0)
-                if nr:
-                    next_runs[str(name)] = nr
+            if not isinstance(entry, dict):
+                continue
+            freq = str(entry.get("frequency") or "").strip().lower()
+            if freq == "triggered":
+                continue
+            nr = _next_run_dt(entry, now0)
+            if nr:
+                next_runs[str(name)] = nr
         if next_runs:
             log.info(
                 "Initial next runs: %s",
                 {k: v.isoformat() for k, v in next_runs.items()},
             )
 
-    # ---- async trigger: single authoritative run logic (worker) ----
     def trigger_async(name: str) -> Dict[str, Any]:
         schedule = _read_schedule_yaml(schedule_path)
         if (
@@ -852,7 +977,6 @@ def main() -> int:
         entry = schedule[name]
         overrides = _entry_to_overrides(entry)
 
-        # NEW signature: (kind, name, overrides, job_id?)
         trig = _trigger_create("tr", name=name, overrides=overrides, job_id=None)
         tid = trig["id"]
 
@@ -860,7 +984,7 @@ def main() -> int:
             _trigger_update(tid, status="running", started_at=int(time.time()))
             try:
                 summary_id = asyncio.run(
-                    _run_one(config_path, cfg, store, str(name), entry)
+                    _run_one(config_path, cfg, store, schedule_path, str(name), entry)
                 )
                 _trigger_update(
                     tid,
@@ -886,7 +1010,6 @@ def main() -> int:
 
     def resume_async(job_id: int) -> Dict[str, Any]:
         jid = int(job_id)
-        # For resume we don't need schedule.yaml; it resumes an existing job
         overrides: Dict[str, Any] = {}
         trig = _trigger_create(
             "rs", name=f"resume_job_{jid}", overrides=overrides, job_id=jid
@@ -894,11 +1017,10 @@ def main() -> int:
         tid = trig["id"]
 
         def _runner():
+            global RUNNING_JOB_ID
             _trigger_update(tid, status="running", started_at=int(time.time()))
             try:
-                # Mark currently running job id for worker /status (if you implemented it)
                 with RUNNING_JOB_LOCK:
-                    # global RUNNING_JOB_ID
                     RUNNING_JOB_ID = jid
 
                 llm = create_llm_client(cfg)
@@ -935,7 +1057,7 @@ def main() -> int:
             "status_url": status_url,
         }
 
-    _control = _control = _start_worker_control_server(
+    _control = _start_worker_control_server(
         cfg,
         trigger_async=trigger_async,
         resume_async=resume_async,
@@ -945,7 +1067,6 @@ def main() -> int:
     while True:
         now = _now(tz)
 
-        # ---- cleanup loop ----
         if getattr(pol, "enabled", True):
             every = max(1, int(getattr(pol, "run_every_minutes", 60))) * 60
             if (time.time() - last_cleanup_ts) >= every:
@@ -956,12 +1077,14 @@ def main() -> int:
                     log.exception("cleanup: run_cleanup failed: %s", e)
                 last_cleanup_ts = time.time()
 
-        # ---- scheduling loop ----
         if enabled:
             schedule = _read_schedule_yaml(schedule_path)
 
             for name, entry in schedule.items():
                 if not isinstance(entry, dict):
+                    continue
+                freq = str(entry.get("frequency") or "").strip().lower()
+                if freq == "triggered":
                     continue
                 jn = str(name)
                 if jn not in next_runs:
@@ -972,8 +1095,11 @@ def main() -> int:
             for name, entry in schedule.items():
                 if not isinstance(entry, dict):
                     continue
-                jn = str(name)
+                freq = str(entry.get("frequency") or "").strip().lower()
+                if freq == "triggered":
+                    continue
 
+                jn = str(name)
                 nr = next_runs.get(jn)
                 if not nr:
                     nr = _next_run_dt(entry, now)
@@ -999,7 +1125,9 @@ def main() -> int:
                     continue
 
                 try:
-                    asyncio.run(_run_one(config_path, cfg, store, jn, entry))
+                    asyncio.run(
+                        _run_one(config_path, cfg, store, schedule_path, jn, entry)
+                    )
                 except Exception as e:
                     log.exception("Job '%s' FAILED: %s", jn, e)
 
