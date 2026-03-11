@@ -41,11 +41,34 @@ daily_summaries:
   time: "06:00"
   lookback: "1d"
   contents:
-    - tag: "Nyheter"
-      promptpackage: "daily_news_multisource_se_eu_world"
-    - tag: "Teknik"
-      promptpackage: "daily_tech_multisource_se_eu_world"
-    - tag: "Cybersecurity"
-      promptpackage: "daily_cyber_multisource_se_eu_world"
+    - schedule: "Inrikes"
+    - schedule: "Utrikes"
+    - schedule: "Tech"
+    - schedule: "Cybersec"
     - title: "daily_news_title"
     - ingress: "daily_super_meta"
+Inrikes:
+  frequency: "triggered"
+  lookback: "1d"
+  categories:
+    - "Sverige"
+  promptpackage: "daily_news_multisource_se_eu_world"
+Utrikes:
+  frequency: "triggered"
+  lookback: "1d"
+  categories:
+    - "Utrikes"
+  promptpackage: "daily_news_multisource_se_eu_world"
+Tech:
+  frequency: "triggered"
+  lookback: "1d"
+  categories:
+    - "Teknik"
+  promptpackage: "daily_tech_multisource_se_eu_world"
+Cybersec:
+  frequency: "triggered"
+  lookback: "1d"
+  categories:
+    - "Cybersecurity"
+    - "Dataskydd"
+  promptpackage: "daily_cyber_multisource_se_eu_world"
