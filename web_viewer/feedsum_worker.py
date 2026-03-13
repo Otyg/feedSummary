@@ -80,6 +80,31 @@ RUNNING_JOB_ID: Optional[int] = None
 RUNNING_JOB_LOCK = threading.Lock()
 
 
+class _AsyncRunner:
+    """Runs all coroutines on one dedicated event loop thread."""
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+        self._ready.wait()
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        self._loop.run_forever()
+
+    def run(self, coro):
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result()
+
+    def close(self) -> None:
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5)
+        self._loop.close()
+
+
 class _StreamToLogger:
     """
     File-like object that redirects writes to a logger.
@@ -913,16 +938,20 @@ def main() -> int:
 
     store_cfg = cfg.get("store") or {}
     store = create_store(store_cfg)
+    async_runner = _AsyncRunner()
 
     pol = _cleanup_policy(cfg)
 
     if args.cleanup_once:
-        if not getattr(pol, "enabled", True):
-            log.info("cleanup disabled (cleanup.enabled=false).")
+        try:
+            if not getattr(pol, "enabled", True):
+                log.info("cleanup disabled (cleanup.enabled=false).")
+                return 0
+            store.run_cleanup(pol)  # type: ignore[attr-defined]
+            log.info("cleanup: run_cleanup executed (cleanup-once).")
             return 0
-        store.run_cleanup(pol)  # type: ignore[attr-defined]
-        log.info("cleanup: run_cleanup executed (cleanup-once).")
-        return 0
+        finally:
+            async_runner.close()
 
     if not enabled:
         log.info(
@@ -983,7 +1012,7 @@ def main() -> int:
         def _runner():
             _trigger_update(tid, status="running", started_at=int(time.time()))
             try:
-                summary_id = asyncio.run(
+                summary_id = async_runner.run(
                     _run_one(config_path, cfg, store, schedule_path, str(name), entry)
                 )
                 _trigger_update(
@@ -1024,7 +1053,7 @@ def main() -> int:
                     RUNNING_JOB_ID = jid
 
                 llm = create_llm_client(cfg)
-                summary_id = asyncio.run(
+                summary_id = async_runner.run(
                     run_resume_job(
                         config=cfg,
                         store=store,
@@ -1064,84 +1093,87 @@ def main() -> int:
         store=store,
     )
 
-    while True:
-        now = _now(tz)
+    try:
+        while True:
+            now = _now(tz)
 
-        if getattr(pol, "enabled", True):
-            every = max(1, int(getattr(pol, "run_every_minutes", 60))) * 60
-            if (time.time() - last_cleanup_ts) >= every:
-                try:
-                    store.run_cleanup(pol)  # type: ignore[attr-defined]
-                    log.info("cleanup: run_cleanup executed")
-                except Exception as e:
-                    log.exception("cleanup: run_cleanup failed: %s", e)
-                last_cleanup_ts = time.time()
+            if getattr(pol, "enabled", True):
+                every = max(1, int(getattr(pol, "run_every_minutes", 60))) * 60
+                if (time.time() - last_cleanup_ts) >= every:
+                    try:
+                        store.run_cleanup(pol)  # type: ignore[attr-defined]
+                        log.info("cleanup: run_cleanup executed")
+                    except Exception as e:
+                        log.exception("cleanup: run_cleanup failed: %s", e)
+                    last_cleanup_ts = time.time()
 
-        if enabled:
-            schedule = _read_schedule_yaml(schedule_path)
+            if enabled:
+                schedule = _read_schedule_yaml(schedule_path)
 
-            for name, entry in schedule.items():
-                if not isinstance(entry, dict):
-                    continue
-                freq = str(entry.get("frequency") or "").strip().lower()
-                if freq == "triggered":
-                    continue
-                jn = str(name)
-                if jn not in next_runs:
-                    nr = _next_run_dt(entry, now)
-                    if nr:
-                        next_runs[jn] = nr
+                for name, entry in schedule.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    freq = str(entry.get("frequency") or "").strip().lower()
+                    if freq == "triggered":
+                        continue
+                    jn = str(name)
+                    if jn not in next_runs:
+                        nr = _next_run_dt(entry, now)
+                        if nr:
+                            next_runs[jn] = nr
 
-            for name, entry in schedule.items():
-                if not isinstance(entry, dict):
-                    continue
-                freq = str(entry.get("frequency") or "").strip().lower()
-                if freq == "triggered":
-                    continue
-
-                jn = str(name)
-                nr = next_runs.get(jn)
-                if not nr:
-                    nr = _next_run_dt(entry, now)
-                    if nr:
-                        next_runs[jn] = nr
-                    else:
+                for name, entry in schedule.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    freq = str(entry.get("frequency") or "").strip().lower()
+                    if freq == "triggered":
                         continue
 
-                if now < nr:
-                    continue
+                    jn = str(name)
+                    nr = next_runs.get(jn)
+                    if not nr:
+                        nr = _next_run_dt(entry, now)
+                        if nr:
+                            next_runs[jn] = nr
+                        else:
+                            continue
 
-                late_by = (now - nr).total_seconds()
-                if late_by > grace:
-                    log.warning(
-                        "Job '%s' late by %.1fs (grace=%ss) - running anyway",
-                        jn,
-                        late_by,
-                        grace,
-                    )
+                    if now < nr:
+                        continue
 
-                stamp = now.strftime("%Y%m%d%H%M")
-                if last_run_stamp.get(jn) == stamp:
-                    continue
+                    late_by = (now - nr).total_seconds()
+                    if late_by > grace:
+                        log.warning(
+                            "Job '%s' late by %.1fs (grace=%ss) - running anyway",
+                            jn,
+                            late_by,
+                            grace,
+                        )
 
-                try:
-                    asyncio.run(
-                        _run_one(config_path, cfg, store, schedule_path, jn, entry)
-                    )
-                except Exception as e:
-                    log.exception("Job '%s' FAILED: %s", jn, e)
+                    stamp = now.strftime("%Y%m%d%H%M")
+                    if last_run_stamp.get(jn) == stamp:
+                        continue
 
-                last_run_stamp[jn] = stamp
+                    try:
+                        async_runner.run(
+                            _run_one(config_path, cfg, store, schedule_path, jn, entry)
+                        )
+                    except Exception as e:
+                        log.exception("Job '%s' FAILED: %s", jn, e)
 
-                nn = _next_run_dt(entry, now + dt.timedelta(seconds=1))
-                if nn:
-                    next_runs[jn] = nn
+                    last_run_stamp[jn] = stamp
 
-        if args.once:
-            log.info("--once: exiting after one scan.")
-            return 0
+                    nn = _next_run_dt(entry, now + dt.timedelta(seconds=1))
+                    if nn:
+                        next_runs[jn] = nn
 
-        time.sleep(max(1, int(poll_seconds)))
+            if args.once:
+                log.info("--once: exiting after one scan.")
+                return 0
+
+            time.sleep(max(1, int(poll_seconds)))
+    finally:
+        async_runner.close()
 
 
 if __name__ == "__main__":
