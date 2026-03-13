@@ -213,40 +213,39 @@ batching:
 - `article_clip_chars`: klipper varje artikeltext.
 - `meta_*`: styr hur mycket som får plats i meta-steget.
 
-#### `llm` och `llm_fallback`
-Primary LLM och fallback:
+#### `llm`
+LLM-konfiguration anges som en lista där första posten är primary och efterföljande poster används som fallback i den ordning `feedsummary_core` förväntar sig:
 
 ```yaml
 llm:
-  provider: ollama_cloud
-  host: https://ollama.com
-  model: gemma3:27b-cloud
-  api_key: CHANGE-ME
-  context_window_tokens: 24576
-  max_output_tokens: 500
-  prompt_safety_margin: 1600
-  token_chars_per_token: 2.4
-  prompt_too_long_max_attempts: 6
-  prompt_too_long_structural_threshold_tokens: 1200
-  quota:
-    preflight: true
-    min_interval_seconds: 2
+  - provider: ollama_cloud
+    host: https://ollama.com
+    model: gemma3:27b-cloud
+    api_key: CHANGE-ME
+    context_window_tokens: 24576
+    max_output_tokens: 500
+    prompt_safety_margin: 1600
+    token_chars_per_token: 2.4
+    prompt_too_long_max_attempts: 6
+    prompt_too_long_structural_threshold_tokens: 1200
+    quota:
+      preflight: true
+      min_interval_seconds: 2
 
-llm_fallback:
-  provider: ollama_local
-  model: gemma3:1b
-  base_url: http://localhost:11434
-  max_rps: 1
-  timeout_s: 6000
-  sock_read_timeout_s: 360
-  max_retries: 3
-  retry_backoff_s: 2.0
-  context_window_tokens: 24576
-  max_output_tokens: 500
-  prompt_safety_margin: 1600
-  token_chars_per_token: 2.4
-  prompt_too_long_max_attempts: 6
-  prompt_too_long_structural_threshold_tokens: 1200
+  - provider: ollama_local
+    model: gemma3:1b
+    base_url: http://localhost:11434
+    max_rps: 1
+    timeout_s: 6000
+    sock_read_timeout_s: 360
+    max_retries: 3
+    retry_backoff_s: 2.0
+    context_window_tokens: 24576
+    max_output_tokens: 500
+    prompt_safety_margin: 1600
+    token_chars_per_token: 2.4
+    prompt_too_long_max_attempts: 6
+    prompt_too_long_structural_threshold_tokens: 1200
 ```
 
 Viktiga begrepp:
@@ -333,8 +332,8 @@ prompts:
 - Om LLM klagar på för lång prompt:
   - minska `batching.max_chars_per_batch`
   - minska `batching.article_clip_chars`
-  - öka `llm.context_window_tokens` (om modellen stödjer)
-  - eller minska `llm.max_output_tokens` och/eller öka `prompt_safety_margin`
+  - öka `context_window_tokens` för den aktiva posten i `llm` (om modellen stödjer)
+  - eller minska `max_output_tokens` och/eller öka `prompt_safety_margin`
 - Om UI visar “Status-anslutning bröts”:
   - refresh-sidan reloadas normalt när jobbet blir `done`
   - annars kontrollera serverloggar

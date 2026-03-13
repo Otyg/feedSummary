@@ -44,6 +44,7 @@ from feedsummary_core.summarizer.prompt_replay import (
     rerun_summary_from_existing,
 )
 
+from uicommon import primary_llm_config
 from uicommon.bootstrap_ui import resolve_config_path
 from qt_ui.interactive_llm import InteractiveLLMClient, LLMFailureContext
 from feedsummary_core.llm_client import create_llm_client
@@ -114,7 +115,7 @@ class PipelineWorker(QThread):
             self.status.emit("Kör pipeline…")
 
             base_llm = create_llm_client(self.cfg)
-            llm_cfg = self.cfg.get("llm") or {}
+            llm_cfg = primary_llm_config(self.cfg)
             provider = str(llm_cfg.get("provider") or llm_cfg.get("type") or "unknown")
             model = str(llm_cfg.get("model") or llm_cfg.get("name") or "unknown")
 
@@ -190,7 +191,7 @@ class ResumeWorker(QThread):
             self.status.emit(f"Återupptar från checkpoint (job {self.job_id})…")
 
             # Wrap the provided llm too (in case caller passed a plain client)
-            llm_cfg = self.cfg.get("llm") or {}
+            llm_cfg = primary_llm_config(self.cfg)
             provider = str(llm_cfg.get("provider") or llm_cfg.get("type") or "unknown")
             model = str(llm_cfg.get("model") or llm_cfg.get("name") or "unknown")
 

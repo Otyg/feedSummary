@@ -55,6 +55,7 @@ from feedsummary_core.summarizer.batching import (
 from feedsummary_core.summarizer.chat import chat_guarded
 from feedsummary_core.summarizer.summarizer import _proofread_and_revise_meta_with_stats
 
+from uicommon import primary_llm_config
 from uicommon.bootstrap_ui import _setup_logging_if_needed
 
 log = logging.getLogger(__name__)
@@ -163,7 +164,7 @@ async def _build_batch_output_from_articles(
     max_n = int(batching.get("max_articles_per_batch", 10))
     article_clip_chars = int(batching.get("article_clip_chars", 6000))
 
-    llm_cfg = cfg.get("llm") or {}
+    llm_cfg = primary_llm_config(cfg)
     max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
     max_out = int(llm_cfg.get("max_output_tokens", 700))
     margin = int(llm_cfg.get("prompt_safety_margin", 1024))
