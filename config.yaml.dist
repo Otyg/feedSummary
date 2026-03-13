@@ -47,31 +47,30 @@ worker_api:
   host: "127.0.0.1"
   port: 8799
 llm:
-  provider: ollama_cloud
-  host: https://ollama.com
-  model: gemma3:27b-cloud
-  api_key: CHANGE-ME-CHANGE-ME
-  context_window_tokens: 24576
-  max_output_tokens: 500
-  prompt_safety_margin: 1600
-  token_chars_per_token: 2.4
-  prompt_too_long_max_attempts: 6
-  prompt_too_long_structural_threshold_tokens: 1200
-  quota:
-    preflight: true
-    min_interval_seconds: 2
-llm_fallback:
-  provider: ollama_local
-  model: qwen2.5:7b
-  base_url: http://localhost:11434
-  max_rps: 1
-  timeout_s: 6000
-  sock_read_timeout_s: 360
-  max_retries: 3
-  retry_backoff_s: 2.0
-  context_window_tokens: 8192
-  max_output_tokens: 500
-  prompt_safety_margin: 1600
-  token_chars_per_token: 2.4
-  prompt_too_long_max_attempts: 6
-  prompt_too_long_structural_threshold_tokens: 1200
+  - provider: ollama_cloud
+    host: https://ollama.com
+    model: gemma3:27b-cloud
+    api_key: CHANGE-ME-CHANGE-ME
+    context_window_tokens: 24576
+    max_output_tokens: 500
+    prompt_safety_margin: 1600
+    token_chars_per_token: 2.4
+    prompt_too_long_max_attempts: 6
+    prompt_too_long_structural_threshold_tokens: 1200
+    quota:
+      preflight: true
+      min_interval_seconds: 2
+  - provider: ollama_local
+    model: qwen2.5:7b
+    base_url: http://localhost:11434
+    max_rps: 1
+    timeout_s: 6000
+    sock_read_timeout_s: 360
+    max_retries: 3
+    retry_backoff_s: 2.0
+    context_window_tokens: 8192
+    max_output_tokens: 500
+    prompt_safety_margin: 1600
+    token_chars_per_token: 2.4
+    prompt_too_long_max_attempts: 6
+    prompt_too_long_structural_threshold_tokens: 1200
