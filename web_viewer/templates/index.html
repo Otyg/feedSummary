@@ -26,15 +26,16 @@
               class="list-group-item list-group-item-action {% if default_selected==sid %}active{% endif %}"
               href="{{ url_for('view_summary', summary_id=sid) }}"
             >
+              <div class="text-truncate">
+                {{ stitle if stitle else sid }}
+              </div>
               <div class="small">
-                {{ format_ts(created) if format_ts else created }}
+                {{ format_ts(created) if format_ts else created }}<br />
                 {% if topics_label %}
                   · {{ topics_label }}
                 {% endif %}
               </div>
-              <div class="text-truncate">
-                {{ stitle if stitle else sid }}
-              </div>
+              
             </a>
           {% endfor %}
         </div>
