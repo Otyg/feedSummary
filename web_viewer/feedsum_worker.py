@@ -33,6 +33,7 @@
 import argparse
 import asyncio
 import datetime as dt
+import inspect
 import json
 import logging
 import os
@@ -80,6 +81,14 @@ global RUNNING_JOB_ID
 global RUNNING_JOB_LOCK
 RUNNING_JOB_ID: Optional[int] = None
 RUNNING_JOB_LOCK = threading.Lock()
+
+
+def _supports_composed_proofread() -> bool:
+    try:
+        sig = inspect.signature(compose_summary_docs)
+    except (TypeError, ValueError):
+        return False
+    return "proofread_package" in sig.parameters
 
 
 class _AsyncRunner:
@@ -462,12 +471,13 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 def _parse_contents_block(
     entry: Dict[str, Any],
-) -> Tuple[List[Dict[str, str]], Optional[str], Optional[str]]:
+) -> Tuple[List[Dict[str, str]], Optional[str], Optional[str], Optional[str]]:
     contents = entry.get("contents") or []
     if not isinstance(contents, list) or not contents:
-        return [], None, None
+        return [], None, None, None
 
     jobs: List[Dict[str, str]] = []
+    proofread_pkg: Optional[str] = None
     title_pkg: Optional[str] = None
     ingress_pkg: Optional[str] = None
 
@@ -476,11 +486,18 @@ def _parse_contents_block(
             raise ValueError(f"contents[{i}] måste vara ett objekt")
 
         sched = str(item.get("schedule") or "").strip()
+        proofread = str(item.get("proofread") or "").strip()
         title = str(item.get("title") or "").strip()
         ingress = str(item.get("ingress") or "").strip()
 
         if sched:
             jobs.append({"schedule": sched})
+            continue
+
+        if proofread:
+            if proofread_pkg is not None:
+                raise ValueError("Bara en proofread-post får finnas i contents")
+            proofread_pkg = proofread
             continue
 
         if title:
@@ -495,12 +512,14 @@ def _parse_contents_block(
             ingress_pkg = ingress
             continue
 
-        raise ValueError(f"contents[{i}] måste innehålla schedule, title eller ingress")
+        raise ValueError(
+            f"contents[{i}] måste innehålla schedule, proofread, title eller ingress"
+        )
 
     if not jobs:
         raise ValueError("contents måste innehålla minst ett schedule-jobb")
 
-    return jobs, title_pkg, ingress_pkg
+    return jobs, proofread_pkg, title_pkg, ingress_pkg
 
 
 async def _run_regular_entry(
