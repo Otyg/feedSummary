@@ -122,6 +122,14 @@ class _AsyncRunner:
         self._loop.close()
 
 
+def _supports_composed_proofread() -> bool:
+    try:
+        sig = inspect.signature(compose_summary_docs)
+    except (TypeError, ValueError):
+        return False
+    return "proofread_package" in sig.parameters
+
+
 class _AsyncRunner:
     """Runs all coroutines on one dedicated event loop thread."""
 
