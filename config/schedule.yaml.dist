@@ -45,6 +45,7 @@ daily_summaries:
     - schedule: "Utrikes"
     - schedule: "Tech"
     - schedule: "Cybersec"
+    - proofread: "daily_hybrid_news_cyber_tech_se"
     - title: "daily_news_title"
     - ingress: "daily_super_meta"
 Inrikes:
