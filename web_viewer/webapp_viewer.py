@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 from functools import lru_cache
 import markdown as md
 from flask import Flask, abort, redirect, render_template, request, url_for, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
 import requests
 import yaml
 
@@ -52,6 +53,7 @@ app = Flask(
     template_folder=str(BASE_DIR / "templates"),
     static_folder=str(BASE_DIR / "static"),
 )
+app.wsgi_app = ProxyFix(app.wsgi_app, x_host=1, x_port=1, x_proto=1, x_prefix=1)
 
 # Global app state (loaded once)
 APP_CONFIG_PATH: str = ""
