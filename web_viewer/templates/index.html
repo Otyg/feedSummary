@@ -8,6 +8,13 @@
         <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('list_summaries') }}">Lista</a>
       </div>
 
+      {% set selected_topics = (summary.get('_viewer_topics') or []) if summary else [] %}
+      {% if selected_topics %}
+        <div class="small text-muted mb-2">
+          <strong>Kategorier:</strong> {{ selected_topics|join(', ') }}
+        </div>
+      {% endif %}
+
       {% if summaries %}
         <div class="list-group">
           {% for s in summaries %}

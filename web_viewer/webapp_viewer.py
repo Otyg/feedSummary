@@ -42,7 +42,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import requests
 import yaml
 
-from uicommon import format_ts, get_store, load_config
+from uicommon import format_ts, get_store, load_config, source_to_topics_map
 
 logger = logging.getLogger(__name__)
 
@@ -190,12 +190,48 @@ def _get_latest_summary(store) -> Optional[Dict[str, Any]]:
 
 
 def _summary_list_item(d: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    item = {
         "id": d.get("id"),
         "created": int(d.get("created") or 0),
         "sources_count": len(d.get("sources") or []),
         "title": d.get("title") or "",
     }
+    return _enrich_summary_view_model(item)
+
+
+@lru_cache(maxsize=1)
+def _viewer_source_topics_map() -> Dict[str, List[str]]:
+    try:
+        return source_to_topics_map(APP_CFG)
+    except Exception:
+        return {}
+
+
+def _summary_topics(d: Dict[str, Any]) -> List[str]:
+    topics = d.get("topics")
+    if isinstance(topics, list):
+        vals = [str(t).strip() for t in topics if str(t).strip()]
+        if vals:
+            return sorted(list(dict.fromkeys(vals)), key=lambda x: x.lower())
+
+    src_topics = _viewer_source_topics_map()
+    out: List[str] = []
+    for snap in d.get("sources_snapshots") or []:
+        if not isinstance(snap, dict):
+            continue
+        source = str(snap.get("source") or "").strip()
+        if not source:
+            continue
+        out.extend(src_topics.get(source, []))
+    return sorted(list(dict.fromkeys(out)), key=lambda x: x.lower())
+
+
+def _enrich_summary_view_model(d: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(d)
+    topics = _summary_topics(item)
+    item["_viewer_topics"] = topics
+    item["_viewer_topics_label"] = ", ".join(topics)
+    return item
 
 
 def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
@@ -581,6 +617,7 @@ def list_summaries():
     docs = store.list_summary_docs() or []
     docs = [d for d in docs if isinstance(d, dict)]
     docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+    docs = [_enrich_summary_view_model(d) for d in docs]
     return render_template("summaries.html", summaries=docs)
 
 
@@ -593,6 +630,7 @@ def view_summary(summary_id: str):
     docs = store.list_summary_docs() or []
     docs = [d for d in docs if isinstance(d, dict)]
     docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+    docs = [_enrich_summary_view_model(d) for d in docs]
 
     sid = str(summary_id).strip()
     sdoc = None
@@ -622,6 +660,7 @@ def view_summary(summary_id: str):
         )
 
     html = _md_to_html(summary_text)
+    sdoc = _enrich_summary_view_model(sdoc)
 
     return render_template(
         "index.html",
@@ -748,6 +787,7 @@ def view_license():
     docs = store.list_summary_docs() or []
     docs = [d for d in docs if isinstance(d, dict)]
     docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+    docs = [_enrich_summary_view_model(d) for d in docs]
 
     html = _md_to_html(_load_static_md("license.md"))
     return render_template(
@@ -769,6 +809,7 @@ def view_source():
     docs = store.list_summary_docs() or []
     docs = [d for d in docs if isinstance(d, dict)]
     docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+    docs = [_enrich_summary_view_model(d) for d in docs]
 
     html = _md_to_html(_load_static_md("source.md"))
     return render_template(
