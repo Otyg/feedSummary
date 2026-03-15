@@ -32,6 +32,7 @@
 
 import argparse
 import asyncio
+from collections import deque
 import datetime as dt
 import inspect
 import json
@@ -79,6 +80,7 @@ global RUNNING_JOB_ID
 global RUNNING_JOB_LOCK
 RUNNING_JOB_ID: Optional[int] = None
 RUNNING_JOB_LOCK = threading.Lock()
+WORKER_LOG_FILE: Optional[Path] = None
 
 
 def _supports_composed_proofread() -> bool:
@@ -176,10 +178,12 @@ def _setup_file_logging(
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 5,
 ) -> None:
+    global WORKER_LOG_FILE
     lp = Path(os.path.expandvars(os.path.expanduser(log_file)))
     if not lp.is_absolute():
         lp = (Path.cwd() / lp).resolve()
     lp.parent.mkdir(parents=True, exist_ok=True)
+    WORKER_LOG_FILE = lp
 
     level = getattr(logging, str(log_level).upper().strip(), logging.INFO)
 
@@ -211,6 +215,20 @@ def _setup_file_logging(
     logging.getLogger(__name__).info(
         "Logging initialized: file=%s level=%s", str(lp), logging.getLevelName(level)
     )
+
+
+def _tail_worker_log_lines(limit: int = 5) -> List[str]:
+    lp = WORKER_LOG_FILE
+    if lp is None or limit <= 0:
+        return []
+    try:
+        with lp.open("r", encoding="utf-8", errors="replace") as fh:
+            return [line.rstrip("\r\n") for line in deque(fh, maxlen=limit) if line.strip()]
+    except FileNotFoundError:
+        return []
+    except Exception:
+        log.exception("Failed to read worker log tail from %s", lp)
+        return []
 
 
 WEEKDAY = {
@@ -785,8 +803,13 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
             with RUNNING_JOB_LOCK:
                 rid = RUNNING_JOB_ID
 
+            log_tail = _tail_worker_log_lines(5)
+
             if rid is None:
-                self._send_json(200, {"running_job_id": None, "job": None})
+                self._send_json(
+                    200,
+                    {"running_job_id": None, "job": None, "last_log_lines": log_tail},
+                )
                 return
 
             try:
@@ -807,7 +830,14 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
                                 job = j
                                 break
 
-                self._send_json(200, {"running_job_id": int(rid), "job": job})
+                self._send_json(
+                    200,
+                    {
+                        "running_job_id": int(rid),
+                        "job": job,
+                        "last_log_lines": log_tail,
+                    },
+                )
                 return
             except Exception as e:
                 self._send_json(
@@ -815,6 +845,7 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
                     {
                         "error": "job_lookup_failed",
                         "running_job_id": int(rid),
+                        "last_log_lines": log_tail,
                         "detail": str(e),
                     },
                 )
