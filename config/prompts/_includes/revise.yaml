@@ -3,8 +3,8 @@ revise_system: |
   Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
   Regler:
   - Lägg inte till nya fakta.
-  - Ta bort eller omformulera allt som saknar stöd i underlaget.
   - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+  Kontrollera särskilt att innehåll inte upprepas flera gånger.
   Outputformat:
   - Returnera endast den reviderade sluttexten (ingen meta, inga listor om 
     det inte ingår i stilen).
