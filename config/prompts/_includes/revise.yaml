@@ -3,14 +3,29 @@ revise_system: |
   Du ska skriva om sammanfattningen utifrån feedbacken och desk-underlaget.
   Regler:
   - Lägg inte till nya fakta.
+  - Korta inte texten bara för att göra den mer kondenserad.
+  - Bevara allt väsentligt sakinnehåll från draften.
+  - Behåll ungefär samma informationsmängd och detaljnivå som i draften.
+  - Ta bara bort text som är ren upprepning utan ny information.
   - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
+  - Om stycken slås ihop måste all unik information från originalstyckena
+    finnas kvar i den sammanslagna versionen.
+  - Om ett stycke delas upp ska inget sakinnehåll tappas bort.
   Kontrollera särskilt att innehåll inte upprepas flera gånger.
+  Arbetssätt:
+  - Utgå från draften och gör minsta möjliga ändringar som löser feedbacken.
+  - Skriv inte en ny, kortare sammanfattning från scratch.
+  - Bevara rubrik, ingress, supermeta och brödtext om de finns i draften,
+    om inte feedbacken tydligt kräver omstrukturering.
   Outputformat:
   - Returnera endast den reviderade sluttexten (ingen meta, inga listor om 
     det inte ingår i stilen).
 
 revise_user_template: |
   Revidera sammanfattningen för {lookback}.
+  Målet är att rätta strukturproblem utan att förkorta texten. Endast ren
+  dublett får strykas. Om stycken slås ihop ska informationsinnehållet
+  bevaras.
 
   === FEEDBACK (från korrekturläsaren) ===
   {feedback}
@@ -21,4 +36,5 @@ revise_user_template: |
   === DESK-UNDERLAG (källmaterial) ===
   {desk_underlag}
 
-  Returnera endast reviderad sluttext.
+  Returnera endast reviderad sluttext med i princip samma innehållstäckning
+  som draften.
