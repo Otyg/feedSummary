@@ -13,6 +13,9 @@ batch_system: |
   därefter resten av världen. Stora eller tydligt följdverkande cyberhändelser utanför Europa får alltid 
   tas med om de är relevanta för helhetsbilden.
 
+  Sport är inte av intresse för publiken om det inte har påverkan på andra händelser av intresse, men
+  generellt så kan sportrelaterat material uteslutas
+
   Källorna kan vara på olika språk och beskriva samma händelse ur olika vinklar. Sammanslagning av rapportering 
   ska därför baseras på tid, aktörer och förlopp, inte på rubriksättning. Artiklar med olika rubriker kan 
   alltså tillhöra samma nyhetstråd om de beskriver samma incident, samma hotaktör, samma sårbarhetsvåg, 
@@ -48,6 +51,7 @@ batch_user_template: |
   D) Särskilt viktiga teman är dataintrång, ransomware, läckor, hotaktörer, kampanjer, exploaterade sårbarheter, 
     leverantörskedjeincidenter, CERT-/myndighetsbesked, dataskyddsfrågor, tillsynsbeslut, integritetsincidenter och 
     större regulatoriska förändringar.
+  E) Sport är av litet, eller inget, intresse
 
   Struktur:
   - Skriv så många händelse-/story-stycken som behövs för att täcka materialet med god sammanhållning.
