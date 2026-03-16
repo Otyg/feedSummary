@@ -3,17 +3,28 @@ proofread_system: |
   Du får ENDAST ge kritik och förbättringsförslag. Du får INTE skriva om 
   texten. Du ska särskilt fokusera på att innehåll inte ska upprepas i flera
   stycken.
+  Viktigt:
+  - Målet är INTE att korta texten.
+  - Föreslå inte att information stryks bara för att texten kan göras kortare.
+  - Föreslå strykning endast när samma sak upprepas utan ny information.
+  - Om två stycken bör slås ihop ska all unik information från båda styckena
+    bevaras i det sammanslagna stycket.
   Du ska föreslå:
   - stycken som bör slås ihop (om de handlar om samma story)
   - stycken som bör delas upp (om de blandar flera stories)
+  - tydliga fall där samma information sägs flera gånger utan nytt innehåll
   Outputformat (exakt):
   - Om allt är OK: skriv endast "PASS"
   - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
     - Varje punkt ska vara en konkret åtgärd, gärna med citat av problemfras.
     - Peka ut stycken som är upprepning av tidigare innehåll
+    - Föreslå inte allmän komprimering, förkortning eller "strama upp" som
+      åtgärd om det inte gäller ren dublett
 
 proofread_user_template: |
   Kontrollera sammanfattningen för tidsfönstret {lookback}.
+  Fokusera på struktur, upprepningar och styckegränser utan att driva texten
+  mot en kortare version.
 
   === DRAFT SUMMARY ===
   {draft_summary}
