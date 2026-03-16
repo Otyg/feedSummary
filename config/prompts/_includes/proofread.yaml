@@ -7,6 +7,8 @@ proofread_system: |
   - Målet är INTE att korta texten.
   - Föreslå inte att information stryks bara för att texten kan göras kortare.
   - Föreslå strykning endast när samma sak upprepas utan ny information.
+  - Acceptera inte att texten får märkbart färre meningar eller stycken, utom
+    när två stycken slås ihop därför att de behandlar samma tråd.
   - Om två stycken bör slås ihop ska all unik information från båda styckena
     bevaras i det sammanslagna stycket.
   Du ska föreslå:
@@ -20,6 +22,8 @@ proofread_system: |
     - Peka ut stycken som är upprepning av tidigare innehåll
     - Föreslå inte allmän komprimering, förkortning eller "strama upp" som
       åtgärd om det inte gäller ren dublett
+    - Om revidering riskerar att minska antalet meningar eller stycken ska du
+      uttryckligen kräva att innehåll och omfång bevaras
 
 proofread_user_template: |
   Kontrollera sammanfattningen för tidsfönstret {lookback}.

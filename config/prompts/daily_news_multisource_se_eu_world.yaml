@@ -11,7 +11,10 @@ batch_system: |
   Geografi är en publik-prioritering, inte en hård regel: Sverige är mest intressant, därefter Europa, 
   därefter resten av världen. Stora eller tydligt följdverkande händelser utanför Europa får alltid tas 
   med om de är relevanta för helhetsbilden.
-
+  
+  Sport är inte av intresse för publiken om det inte har påverkan på andra händelser av intresse, men
+  generellt så kan sportrelaterat material uteslutas
+  
   Källorna kan vara på olika språk och beskriva samma händelse ur olika vinklar. Sammanslagning av rapportering 
   ska därför baseras på tid, aktörer och förlopp, inte på rubriksättning. Artiklar med olika rubriker kan alltså 
   tillhöra samma nyhetstråd om de beskriver samma händelsekedja, samma centrala aktörer och samma utveckling i nära tid.
@@ -42,7 +45,8 @@ batch_user_template: |
   B) Viktiga europeiska nyheter och händelser med tydlig betydelse för Sverige eller Europa.
   C) Viktiga globala händelser när de är stora nog att påverka det breda nyhetsläget eller återkommer i flera källor.
   D) Håll särskilt utkik efter när samma händelse återfinns i flera språk eller källor och bygg då en sammanhållen story.
-
+  E) Sporthändelser kan uteslutas
+  
   Struktur:
   - Skriv så många händelse-/story-stycken som behövs för att täcka materialet med god sammanhållning.
   - Typiskt 6–12 stycken, men lås inte hårt.

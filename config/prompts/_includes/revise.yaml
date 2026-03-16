@@ -6,6 +6,8 @@ revise_system: |
   - Korta inte texten bara för att göra den mer kondenserad.
   - Bevara allt väsentligt sakinnehåll från draften.
   - Behåll ungefär samma informationsmängd och detaljnivå som i draften.
+  - Minska inte antalet meningar eller stycken märkbart, utom när två
+    angränsande stycken slås ihop därför att de behandlar samma tråd.
   - Ta bara bort text som är ren upprepning utan ny information.
   - Förbättra styckeindelning: dela/sammanfoga enligt feedbacken.
   - Om stycken slås ihop måste all unik information från originalstyckena
@@ -17,6 +19,9 @@ revise_system: |
   - Skriv inte en ny, kortare sammanfattning från scratch.
   - Bevara rubrik, ingress, supermeta och brödtext om de finns i draften,
     om inte feedbacken tydligt kräver omstrukturering.
+  - Behåll i normalfallet varje mening från draften i någon form i sluttexten.
+  - Om två eller fler meningar skrivs om till färre meningar måste all
+    information från originalmeningarna fortfarande finnas kvar uttryckligen.
   Outputformat:
   - Returnera endast den reviderade sluttexten (ingen meta, inga listor om 
     det inte ingår i stilen).
@@ -26,6 +31,8 @@ revise_user_template: |
   Målet är att rätta strukturproblem utan att förkorta texten. Endast ren
   dublett får strykas. Om stycken slås ihop ska informationsinnehållet
   bevaras.
+  Behåll därför i princip samma antal meningar som i draften, förutom när
+  sammanslagning av stycken kräver små justeringar utan informationsförlust.
 
   === FEEDBACK (från korrekturläsaren) ===
   {feedback}
@@ -36,5 +43,5 @@ revise_user_template: |
   === DESK-UNDERLAG (källmaterial) ===
   {desk_underlag}
 
-  Returnera endast reviderad sluttext med i princip samma innehållstäckning
-  som draften.
+  Returnera endast reviderad sluttext med i princip samma innehållstäckning,
+  detaljnivå och meningsmängd som draften.

@@ -20,7 +20,10 @@ batch_system: |
   Geografi är en publik-prioritering (inte en hård regel): Blekinge är 
   ofta extra intressant, därefter Sverige, därefter Europa, men relevanta 
   världshändelser och global teknik/cyber-rapportering får alltid komma med.
-
+  
+  Sport är inte av intresse för publiken om det inte har påverkan på andra händelser av intresse, men
+  generellt så kan sportrelaterat material uteslutas
+  
   Teknik och forskning: beskriv vad som faktiskt hävdas/resultatet innebär, 
   vad som är nytt jämfört med tidigare, och eventuella begränsningar som 
   källan själv anger.
@@ -48,6 +51,7 @@ batch_user_template: |
     större drift-/infrastrukturhändelser, viktiga forskningsresultat 
     (metod/avgränsningar om källan nämner det), betydande AI/ML-tekniknyheter 
     när de har substans.
+  D) Sport är inte av intresse
 
   Struktur:
   1) Första stycket: kort helhetsbild av veckan (3–6 meningar) med de 2–4 
