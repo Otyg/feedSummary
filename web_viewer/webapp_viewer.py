@@ -234,6 +234,49 @@ def _enrich_summary_view_model(d: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
+def _list_enriched_summaries(store) -> List[Dict[str, Any]]:
+    docs = store.list_summary_docs() or []
+    docs = [d for d in docs if isinstance(d, dict)]
+    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+    return [_enrich_summary_view_model(d) for d in docs]
+
+
+def _all_topics_from_summaries(docs: List[Dict[str, Any]]) -> List[str]:
+    out: List[str] = []
+    for d in docs:
+        for t in d.get("_viewer_topics") or []:
+            tt = str(t).strip()
+            if tt:
+                out.append(tt)
+    return sorted(list(dict.fromkeys(out)), key=lambda x: x.lower())
+
+
+def _selected_topics_from_request() -> List[str]:
+    vals = request.args.getlist("topic")
+    out: List[str] = []
+    for raw in vals:
+        for part in str(raw or "").split(","):
+            p = part.strip()
+            if p:
+                out.append(p)
+    return list(dict.fromkeys(out))
+
+
+def _filter_summaries_by_topics(
+    docs: List[Dict[str, Any]], selected_topics: List[str]
+) -> List[Dict[str, Any]]:
+    if not selected_topics:
+        return docs
+
+    selected_lower = {t.lower() for t in selected_topics}
+    filtered: List[Dict[str, Any]] = []
+    for d in docs:
+        topics = {str(t).strip().lower() for t in d.get("_viewer_topics") or []}
+        if topics & selected_lower:
+            filtered.append(d)
+    return filtered
+
+
 def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
     text = str(a.get("text") or "")
     preview = (text[:400]).replace("\n", " ")
@@ -412,6 +455,7 @@ def api_summaries():
     List summaries (like sidebar/list). Newest first.
     Query:
       limit= (default 200)
+      topic= can be repeated or comma-separated
     """
     store = APP_STORE
     if store is None:
@@ -423,12 +467,14 @@ def api_summaries():
         limit = 200
     limit = max(1, min(limit, 2000))
 
-    docs = store.list_summary_docs() or []
-    docs = [d for d in docs if isinstance(d, dict)]
-    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
+    selected_topics = _selected_topics_from_request()
+    docs = _list_enriched_summaries(store)
+    docs = _filter_summaries_by_topics(docs, selected_topics)
     docs = docs[:limit]
 
-    return jsonify({"items": [_summary_list_item(d) for d in docs]})
+    return jsonify(
+        {"items": [_summary_list_item(d) for d in docs], "active_topics": selected_topics}
+    )
 
 
 @app.route("/api/v1/summaries/latest")
@@ -594,18 +640,31 @@ def index():
     if store is None:
         abort(500)
 
-    latest = _get_latest_summary(store)
-    if not latest:
+    selected_topics = _selected_topics_from_request()
+    docs = _list_enriched_summaries(store)
+    all_topics = _all_topics_from_summaries(docs)
+    filtered_docs = _filter_summaries_by_topics(docs, selected_topics)
+
+    latest = filtered_docs[0] if filtered_docs else None
+    if not isinstance(latest, dict):
+        msg = (
+            "<p>Inga summaries matchar valt topic-filter.</p>"
+            if selected_topics
+            else "<p>Inga summaries ännu.</p>"
+        )
         return render_template(
             "index.html",
             summary=None,
-            html="<p>Inga summaries ännu.</p>",
-            summaries=[],
+            html=msg,
+            summaries=filtered_docs,
             default_selected=None,
+            available_topics=all_topics,
+            active_topics=selected_topics,
+            format_ts=format_ts,
         )
 
     sid = str(latest.get("id") or "")
-    return redirect(url_for("view_summary", summary_id=sid))
+    return redirect(url_for("view_summary", summary_id=sid, topic=selected_topics))
 
 
 @app.route("/summaries")
@@ -614,11 +673,17 @@ def list_summaries():
     if store is None:
         abort(500)
 
-    docs = store.list_summary_docs() or []
-    docs = [d for d in docs if isinstance(d, dict)]
-    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
-    docs = [_enrich_summary_view_model(d) for d in docs]
-    return render_template("summaries.html", summaries=docs)
+    selected_topics = _selected_topics_from_request()
+    docs = _list_enriched_summaries(store)
+    all_topics = _all_topics_from_summaries(docs)
+    filtered_docs = _filter_summaries_by_topics(docs, selected_topics)
+    return render_template(
+        "summaries.html",
+        summaries=filtered_docs,
+        available_topics=all_topics,
+        active_topics=selected_topics,
+        format_ts=format_ts,
+    )
 
 
 @app.route("/summary/<summary_id>")
@@ -627,10 +692,10 @@ def view_summary(summary_id: str):
     if store is None:
         abort(500)
 
-    docs = store.list_summary_docs() or []
-    docs = [d for d in docs if isinstance(d, dict)]
-    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
-    docs = [_enrich_summary_view_model(d) for d in docs]
+    selected_topics = _selected_topics_from_request()
+    all_docs = _list_enriched_summaries(store)
+    all_topics = _all_topics_from_summaries(all_docs)
+    docs = _filter_summaries_by_topics(all_docs, selected_topics)
 
     sid = str(summary_id).strip()
     sdoc = None
@@ -668,6 +733,8 @@ def view_summary(summary_id: str):
         html=html,
         summaries=docs,
         default_selected=sid,
+        available_topics=all_topics,
+        active_topics=selected_topics,
         format_ts=format_ts,
     )
 
@@ -784,10 +851,10 @@ def view_license():
     if store is None:
         abort(500)
 
-    docs = store.list_summary_docs() or []
-    docs = [d for d in docs if isinstance(d, dict)]
-    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
-    docs = [_enrich_summary_view_model(d) for d in docs]
+    selected_topics = _selected_topics_from_request()
+    all_docs = _list_enriched_summaries(store)
+    all_topics = _all_topics_from_summaries(all_docs)
+    docs = _filter_summaries_by_topics(all_docs, selected_topics)
 
     html = _md_to_html(_load_static_md("license.md"))
     return render_template(
@@ -796,6 +863,8 @@ def view_license():
         html=html,
         summaries=docs,
         default_selected="__license__",
+        available_topics=all_topics,
+        active_topics=selected_topics,
         format_ts=format_ts,
     )
 
@@ -806,10 +875,10 @@ def view_source():
     if store is None:
         abort(500)
 
-    docs = store.list_summary_docs() or []
-    docs = [d for d in docs if isinstance(d, dict)]
-    docs.sort(key=lambda d: int(d.get("created") or 0), reverse=True)
-    docs = [_enrich_summary_view_model(d) for d in docs]
+    selected_topics = _selected_topics_from_request()
+    all_docs = _list_enriched_summaries(store)
+    all_topics = _all_topics_from_summaries(all_docs)
+    docs = _filter_summaries_by_topics(all_docs, selected_topics)
 
     html = _md_to_html(_load_static_md("source.md"))
     return render_template(
@@ -818,6 +887,8 @@ def view_source():
         html=html,
         summaries=docs,
         default_selected="__source__",
+        available_topics=all_topics,
+        active_topics=selected_topics,
         format_ts=format_ts,
     )
 
