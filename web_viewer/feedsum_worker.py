@@ -223,7 +223,9 @@ def _tail_worker_log_lines(limit: int = 5) -> List[str]:
         return []
     try:
         with lp.open("r", encoding="utf-8", errors="replace") as fh:
-            return [line.rstrip("\r\n") for line in deque(fh, maxlen=limit) if line.strip()]
+            return [
+                line.rstrip("\r\n") for line in deque(fh, maxlen=limit) if line.strip()
+            ]
     except FileNotFoundError:
         return []
     except Exception:

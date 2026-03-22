@@ -473,7 +473,10 @@ def api_summaries():
     docs = docs[:limit]
 
     return jsonify(
-        {"items": [_summary_list_item(d) for d in docs], "active_topics": selected_topics}
+        {
+            "items": [_summary_list_item(d) for d in docs],
+            "active_topics": selected_topics,
+        }
     )
 
 
