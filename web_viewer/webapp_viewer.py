@@ -271,6 +271,11 @@ def _filter_summaries_by_topics(
     selected_lower = {t.lower() for t in selected_topics}
     filtered: List[Dict[str, Any]] = []
     for d in docs:
+        # Exclude composed summaries when filtering by topics
+        is_composed = d.get("meta", {}).get("composed", False)
+        if is_composed:
+            continue
+
         topics = {str(t).strip().lower() for t in d.get("_viewer_topics") or []}
         if topics & selected_lower:
             filtered.append(d)
