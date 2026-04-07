@@ -31,8 +31,10 @@
 #
 
 import argparse
+import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -401,6 +403,144 @@ def _filter_summaries_today(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # docs are already sorted newest-first; first inserted day is latest.
     latest_day = next(iter(by_date.keys()))
     return by_date.get(latest_day, [])
+
+
+def _normalize_schema_name(v: Any) -> str:
+    s = str(v or "").strip().lower()
+    s = re.sub(r"[\s_\-]+", " ", s)
+    return s.strip()
+
+
+def _schedule_entries() -> Dict[str, Dict[str, Any]]:
+    sch = APP_CFG.get("scheduler") if isinstance(APP_CFG, dict) else None
+    path = str((sch or {}).get("path") or "").strip() if isinstance(sch, dict) else ""
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and k.strip() and isinstance(v, dict):
+            out[k.strip()] = v
+    return out
+
+
+def _schedule_signature_from_entry(entry: Dict[str, Any]) -> tuple:
+    freq = str(entry.get("frequency") or "").strip().lower()
+    lb = str(entry.get("lookback") or "").strip()
+    if not lb:
+        if freq == "daily":
+            lb = "1d"
+        elif freq == "weekly":
+            lb = "1w"
+        elif freq == "quarterday":
+            lb = "6h"
+        elif freq == "halfday":
+            lb = "12h"
+    cats = entry.get("categories") or []
+    topics = (
+        sorted([str(x).strip() for x in cats if str(x).strip()], key=lambda x: x.lower())
+        if isinstance(cats, list)
+        else []
+    )
+    pp = str(entry.get("promptpackage") or "").strip()
+    return (_normalize_schema_name(lb), tuple(_normalize_schema_name(t) for t in topics), _normalize_schema_name(pp))
+
+
+def _schedule_signature_from_overrides(overrides: Dict[str, Any]) -> tuple:
+    lb = str(overrides.get("lookback") or "").strip()
+    topics = overrides.get("topics") or []
+    topics_list = (
+        sorted([str(x).strip() for x in topics if str(x).strip()], key=lambda x: x.lower())
+        if isinstance(topics, list)
+        else []
+    )
+    pp = str(overrides.get("prompt_package") or "").strip()
+    return (_normalize_schema_name(lb), tuple(_normalize_schema_name(t) for t in topics_list), _normalize_schema_name(pp))
+
+
+def _extract_job_id_from_summary_id(summary_id: str) -> Optional[int]:
+    m = re.search(r"_job(\d+)$", str(summary_id or "").strip())
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _infer_schema_name_from_job(summary_id: str, store: Any) -> Optional[str]:
+    jid = _extract_job_id_from_summary_id(summary_id)
+    if jid is None:
+        return None
+
+    job = None
+    get_job = getattr(store, "get_job", None)
+    if callable(get_job):
+        try:
+            job = get_job(int(jid))
+        except Exception:
+            job = None
+    if not isinstance(job, dict):
+        return None
+
+    fields_raw = job.get("fields_json")
+    fields: Dict[str, Any] = {}
+    if isinstance(fields_raw, dict):
+        fields = fields_raw
+    elif isinstance(fields_raw, str) and fields_raw.strip():
+        try:
+            parsed = json.loads(fields_raw)
+            if isinstance(parsed, dict):
+                fields = parsed
+        except Exception:
+            fields = {}
+    overrides = fields.get("overrides")
+    if not isinstance(overrides, dict):
+        return None
+
+    sig = _schedule_signature_from_overrides(overrides)
+    sched = _schedule_entries()
+    matches: List[str] = []
+    for name, entry in sched.items():
+        if _schedule_signature_from_entry(entry) == sig:
+            matches.append(name)
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _doc_schema_names(doc: Dict[str, Any], store: Any) -> List[str]:
+    out: List[str] = []
+    sel = doc.get("selection") if isinstance(doc.get("selection"), dict) else {}
+    meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
+    for cand in (
+        sel.get("name"),
+        sel.get("schedule"),
+        meta.get("schedule_name"),
+        meta.get("job_name"),
+    ):
+        c = str(cand or "").strip()
+        if c:
+            out.append(c)
+    inferred = _infer_schema_name_from_job(str(doc.get("id") or ""), store)
+    if inferred:
+        out.append(inferred)
+    uniq: List[str] = []
+    seen: set = set()
+    for x in out:
+        k = _normalize_schema_name(x)
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append(x)
+    return uniq
 
 
 def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
@@ -1292,6 +1432,31 @@ def view_source():
         active_topics=selected_topics,
         format_ts=format_ts,
     )
+
+
+@app.route("/<schema_name>")
+def view_latest_for_schema(schema_name: str):
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    target = _normalize_schema_name(schema_name)
+    if not target:
+        abort(404)
+
+    selected_topics = _selected_topics_from_request()
+    docs = _list_enriched_summaries(store)
+
+    for d in docs:
+        names = _doc_schema_names(d, store)
+        if any(_normalize_schema_name(n) == target for n in names):
+            sid = str(d.get("id") or "").strip()
+            if sid:
+                return redirect(
+                    url_for("view_summary", summary_id=sid, topic=selected_topics)
+                )
+
+    abort(404)
 
 
 # ---- WSGI init (gunicorn/waitress): initialize from env/cwd ----

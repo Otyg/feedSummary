@@ -626,6 +626,41 @@ def _store_composed_proofread_original(
     store.save_summary_doc(final_doc)
 
 
+def _annotate_summary_with_schedule_name(
+    *, store, summary_id: str, job_name: str
+) -> None:
+    sid = str(summary_id or "").strip()
+    jn = str(job_name or "").strip()
+    if not sid or not jn:
+        return
+    schema_name = jn.split("::")[-1].strip() or jn
+    try:
+        doc = store.get_summary_doc(sid)
+        if not isinstance(doc, dict):
+            return
+        out = dict(doc)
+
+        sel = out.get("selection") if isinstance(out.get("selection"), dict) else {}
+        sel = dict(sel)
+        if not str(sel.get("name") or "").strip():
+            sel["name"] = schema_name
+        out["selection"] = sel
+
+        meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+        meta = dict(meta)
+        meta["schedule_name"] = schema_name
+        meta["job_name"] = jn
+        out["meta"] = meta
+
+        store.save_summary_doc(out)
+    except Exception:
+        log.exception(
+            "Could not annotate summary_doc %s with schedule name from job '%s'",
+            sid,
+            jn,
+        )
+
+
 async def _run_regular_entry(
     config_path: str,
     cfg: Dict[str, Any],
@@ -652,6 +687,10 @@ async def _run_regular_entry(
             job_id=job_id,
             overrides=overrides,
             config_dict=cfg,
+        )
+
+        _annotate_summary_with_schedule_name(
+            store=store, summary_id=str(summary_id), job_name=job_name
         )
 
         log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
@@ -770,6 +809,10 @@ async def _run_composed_entry(
                     "Failed to store original composed summary for summary_id=%s",
                     str(final_summary_id),
                 )
+
+        _annotate_summary_with_schedule_name(
+            store=store, summary_id=str(final_summary_id), job_name=job_name
+        )
 
         store.update_job(
             parent_job_id,
