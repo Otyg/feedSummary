@@ -45,12 +45,14 @@ from feedsummary_core.summarizer.prompt_replay import (
 )
 
 from uicommon import primary_llm_config
+from uicommon.proofread_rounds import enable_configurable_proofread_rounds
 from uicommon.bootstrap_ui import resolve_config_path
 from qt_ui.interactive_llm import InteractiveLLMClient, LLMFailureContext
 from feedsummary_core.llm_client import create_llm_client
 
 RUNTIME = resolve_config_path()
 CONFIG_PATH = str(RUNTIME.config_path)
+enable_configurable_proofread_rounds()
 
 
 class _DecisionBox:
