@@ -39,6 +39,17 @@
 
   <div class="col-12">
     <div class="border rounded p-3">
+      <h5>Proofread Output</h5>
+      {% if proofread_output_text %}
+        <pre class="small">{{ proofread_output_text }}</pre>
+      {% else %}
+        <div class="text-muted">Ingen proofread output sparad.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="border rounded p-3">
       <h5>Publicerad (lagrad summary)</h5>
       {% if published_text %}
         <pre class="small">{{ published_text }}</pre>

@@ -33,6 +33,8 @@
 import argparse
 import logging
 import os
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from functools import lru_cache
@@ -42,7 +44,13 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import requests
 import yaml
 
-from uicommon import format_ts, get_store, load_config, source_to_topics_map
+from uicommon import (
+    format_ts,
+    get_store,
+    load_config,
+    parse_ymd_to_range,
+    source_to_topics_map,
+)
 from feedsummary_core.summarizer.main import (
     _build_composed_summary_text,
     _strip_sources_appendix_from_summary,
@@ -163,11 +171,18 @@ def _has_proofread_audit_data(d: Dict[str, Any]) -> bool:
     for k in direct_keys:
         if str(d.get(k) or "").strip():
             return True
+    if str(d.get("proofread_output") or "").strip():
+        return True
     pa = d.get("proofread_audit") or {}
     if isinstance(pa, dict):
         latest = pa.get("latest") or {}
         if isinstance(latest, dict):
-            for k in ("original_summary", "revised_summary", "published_summary"):
+            for k in (
+                "original_summary",
+                "revised_summary",
+                "published_summary",
+                "proofread_output",
+            ):
                 if str(latest.get(k) or "").strip():
                     return True
     return False
@@ -362,6 +377,32 @@ def _filter_summaries_by_topics(
     return filtered
 
 
+def _filter_summaries_today(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Prefer summaries created today; if none exist, fallback to latest date
+    that has summaries.
+    """
+    today = datetime.now().date()
+    by_date: Dict[str, List[Dict[str, Any]]] = {}
+    for d in docs:
+        created = _coerce_positive_ts(d.get("created"))
+        if created <= 0:
+            continue
+        day_key = datetime.fromtimestamp(int(created)).strftime("%Y-%m-%d")
+        by_date.setdefault(day_key, []).append(d)
+
+    if not by_date:
+        return []
+
+    today_key = today.strftime("%Y-%m-%d")
+    if today_key in by_date:
+        return by_date[today_key]
+
+    # docs are already sorted newest-first; first inserted day is latest.
+    latest_day = next(iter(by_date.keys()))
+    return by_date.get(latest_day, [])
+
+
 def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
     text = str(a.get("text") or "")
     preview = (text[:400]).replace("\n", " ")
@@ -370,10 +411,183 @@ def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
         "title": a.get("title") or "",
         "source": a.get("source") or "",
         "url": a.get("url") or "",
-        "published_ts": int(a.get("published_ts") or 0),
-        "fetched_at": int(a.get("fetched_at") or 0),
+        "published_ts": int(_coerce_positive_ts(a.get("published_ts"))),
+        "fetched_at": int(_coerce_positive_ts(a.get("fetched_at"))),
         "preview": preview,
     }
+
+
+def _coerce_positive_ts(v: Any) -> float:
+    """
+    Coerce timestamps to positive Unix seconds.
+    Accept int/float/numeric string, including millisecond epochs.
+    """
+    if isinstance(v, bool):
+        return 0.0
+    try:
+        fv = float(v)
+    except Exception:
+        return 0.0
+    if fv <= 0:
+        return 0.0
+    # Millisecond epoch guard (e.g. 1775502985000 -> 1775502985).
+    if fv > 10_000_000_000:
+        fv = fv / 1000.0
+    return fv
+
+
+def _article_published_ts(a: Dict[str, Any]) -> float:
+    return _coerce_positive_ts(a.get("published_ts"))
+
+
+def _sqlite_store_path_from_cfg() -> Optional[str]:
+    st = APP_CFG.get("store") if isinstance(APP_CFG, dict) else None
+    if not isinstance(st, dict):
+        return None
+    provider = str(st.get("provider") or "").strip().lower()
+    path = str(st.get("path") or "").strip()
+    if provider != "sqlite" or not path:
+        return None
+    return path
+
+
+def _list_article_dates_fast(store, *, max_days: int) -> List[Dict[str, Any]]:
+    """
+    Return [{date: 'YYYY-MM-DD', count: N}, ...] ordered desc.
+    Uses fast SQL path for sqlite store; falls back to in-memory grouping.
+    """
+    sqlite_path = _sqlite_store_path_from_cfg()
+    if sqlite_path:
+        try:
+            con = sqlite3.connect(sqlite_path)
+            try:
+                cur = con.execute(
+                    """
+                    SELECT
+                      DATE(COALESCE(NULLIF(published_ts, 0), fetched_at), 'unixepoch', 'localtime') AS day_key,
+                      COUNT(*) AS cnt
+                    FROM articles
+                    WHERE COALESCE(NULLIF(published_ts, 0), fetched_at, 0) > 0
+                    GROUP BY day_key
+                    ORDER BY day_key DESC
+                    LIMIT ?
+                    """,
+                    (max_days,),
+                )
+                rows = cur.fetchall()
+            finally:
+                con.close()
+            out: List[Dict[str, Any]] = []
+            for day_key, cnt in rows:
+                if day_key:
+                    out.append({"date": str(day_key), "count": int(cnt or 0)})
+            return out
+        except Exception:
+            pass
+
+    # Fallback for non-sqlite stores.
+    raw = store.list_articles(limit=50000) or []
+    counts: Dict[str, int] = {}
+    for a in raw:
+        if not isinstance(a, dict):
+            continue
+        tsv = int(_article_published_ts(a))
+        if tsv <= 0:
+            continue
+        day_key = datetime.fromtimestamp(tsv).strftime("%Y-%m-%d")
+        counts[day_key] = counts.get(day_key, 0) + 1
+    days = sorted(counts.keys(), reverse=True)[:max_days]
+    return [{"date": d, "count": counts[d]} for d in days]
+
+
+def _list_articles_for_day_fast(
+    store, *, date_ymd: str, limit: int
+) -> List[Dict[str, Any]]:
+    """
+    Return lightweight article rows for one date only.
+    """
+    dr = parse_ymd_to_range(date_ymd)
+    if not dr:
+        return []
+    start_ts, end_ts = dr
+
+    sqlite_path = _sqlite_store_path_from_cfg()
+    if sqlite_path:
+        try:
+            con = sqlite3.connect(sqlite_path)
+            try:
+                cur = con.execute(
+                    """
+                    SELECT id, title, source, url, published_ts, fetched_at
+                    FROM articles
+                    WHERE COALESCE(NULLIF(published_ts, 0), fetched_at, 0) BETWEEN ? AND ?
+                    ORDER BY COALESCE(NULLIF(published_ts, 0), fetched_at, 0) DESC
+                    LIMIT ?
+                    """,
+                    (int(start_ts), int(end_ts), int(limit)),
+                )
+                rows = cur.fetchall()
+            finally:
+                con.close()
+            out: List[Dict[str, Any]] = []
+            for rid, title, source, url, published_ts, fetched_at in rows:
+                out.append(
+                    {
+                        "id": rid,
+                        "title": title or "",
+                        "source": source or "",
+                        "url": url or "",
+                        "published_ts": int(_coerce_positive_ts(published_ts)),
+                        "fetched_at": int(_coerce_positive_ts(fetched_at)),
+                    }
+                )
+            return out
+        except Exception:
+            pass
+
+    # Fallback for non-sqlite stores.
+    src_map = source_to_topics_map(APP_CFG)
+    sources = sorted(list(src_map.keys()))
+    rows: List[Dict[str, Any]] = []
+    if sources:
+        try:
+            rows = (
+                store.list_articles_by_filter(
+                    sources=sources,
+                    since_ts=int(start_ts),
+                    until_ts=int(end_ts),
+                    limit=int(limit),
+                )
+                or []
+            )
+        except Exception:
+            rows = []
+    if not rows:
+        raw = store.list_articles(limit=50000) or []
+        rows = []
+        for a in raw:
+            if not isinstance(a, dict):
+                continue
+            tsv = int(_article_published_ts(a))
+            if start_ts <= tsv <= end_ts:
+                rows.append(a)
+        rows.sort(key=_article_published_ts, reverse=True)
+        rows = rows[:limit]
+
+    out: List[Dict[str, Any]] = []
+    for a in rows:
+        if isinstance(a, dict) and a.get("id"):
+            out.append(
+                {
+                    "id": a.get("id"),
+                    "title": a.get("title") or "",
+                    "source": a.get("source") or "",
+                    "url": a.get("url") or "",
+                    "published_ts": int(_article_published_ts(a)),
+                    "fetched_at": int(_coerce_positive_ts(a.get("fetched_at"))),
+                }
+            )
+    return out
 
 
 def _load_yaml_file(path: str) -> dict:
@@ -621,17 +835,10 @@ def api_articles():
         limit = 300
     limit = max(1, min(limit, 5000))
 
-    raw = store.list_articles(limit=limit) or []
+    raw = store.list_articles() or []
     articles = [a for a in raw if isinstance(a, dict) and a.get("id")]
-
-    def ts(a: Dict[str, Any]) -> int:
-        p = a.get("published_ts")
-        if isinstance(p, int) and p > 0:
-            return p
-        return int(a.get("fetched_at") or 0)
-
-    articles.sort(key=ts, reverse=True)
-    return jsonify({"items": [_article_list_item(a) for a in articles]})
+    articles.sort(key=_article_published_ts, reverse=True)
+    return jsonify({"items": [_article_list_item(a) for a in articles[:limit]]})
 
 
 @app.route("/api/v1/article/<article_id>")
@@ -732,19 +939,20 @@ def index():
     docs = _list_enriched_summaries(store)
     all_topics = _all_topics_from_summaries(docs)
     filtered_docs = _filter_summaries_by_topics(docs, selected_topics)
+    sidebar_docs = _filter_summaries_today(filtered_docs)
 
-    latest = filtered_docs[0] if filtered_docs else None
+    latest = sidebar_docs[0] if sidebar_docs else None
     if not isinstance(latest, dict):
         msg = (
             "<p>Inga summaries matchar valt topic-filter.</p>"
             if selected_topics
-            else "<p>Inga summaries ännu.</p>"
+            else "<p>Inga summaries ännu. Använd knappen Lista för historik.</p>"
         )
         return render_template(
             "index.html",
             summary=None,
             html=msg,
-            summaries=filtered_docs,
+            summaries=sidebar_docs,
             default_selected=None,
             available_topics=all_topics,
             active_topics=selected_topics,
@@ -784,6 +992,7 @@ def view_summary(summary_id: str):
     all_docs = _list_enriched_summaries(store)
     all_topics = _all_topics_from_summaries(all_docs)
     docs = _filter_summaries_by_topics(all_docs, selected_topics)
+    sidebar_docs = _filter_summaries_today(docs)
 
     sid = str(summary_id).strip()
     sdoc = None
@@ -801,7 +1010,12 @@ def view_summary(summary_id: str):
     if not isinstance(sdoc, dict):
         abort(404)
 
-    summary_text = str(sdoc.get("summary") or "").strip()
+    summary_text = str(
+        sdoc.get("proofread_revised_summary")
+        or sdoc.get("proofread_published_summary")
+        or sdoc.get("summary")
+        or ""
+    ).strip()
     if not summary_text:
         keys = ", ".join(sorted(list(sdoc.keys())))
         summary_text = (
@@ -820,7 +1034,7 @@ def view_summary(summary_id: str):
         summary=sdoc,
         html=html,
         has_proofread_audit=_has_proofread_audit_data(sdoc),
-        summaries=docs,
+        summaries=sidebar_docs,
         default_selected=sid,
         available_topics=all_topics,
         active_topics=selected_topics,
@@ -870,6 +1084,18 @@ def view_summary_proofread_audit(summary_id: str):
 
     history = pa.get("history") if isinstance(pa, dict) else []
     history = history if isinstance(history, list) else []
+    proofread_output_text = str(
+        latest.get("proofread_output")
+        or sdoc.get("proofread_output")
+        or ""
+    ).strip()
+    if not proofread_output_text:
+        for h in reversed(history):
+            if isinstance(h, dict):
+                cand = str(h.get("proofread_output") or "").strip()
+                if cand:
+                    proofread_output_text = cand
+                    break
 
     return render_template(
         "summary_proofread_audit.html",
@@ -878,6 +1104,7 @@ def view_summary_proofread_audit(summary_id: str):
         active_topics=selected_topics,
         original_text=original_text,
         revised_text=revised_text,
+        proofread_output_text=proofread_output_text,
         published_text=published_text,
         history=history,
         format_ts=format_ts,
@@ -891,27 +1118,54 @@ def list_articles():
         abort(500)
 
     try:
-        limit = int(request.args.get("limit", "300"))
+        limit = int(request.args.get("limit", "2000"))
     except Exception:
-        limit = 300
-    limit = max(1, min(limit, 5000))
+        limit = 2000
+    limit = max(1, min(limit, 50000))
 
-    raw = store.list_articles(limit=limit) or []
-    articles: List[Dict[str, Any]] = []
-    for a in raw:
-        if isinstance(a, dict) and a.get("id"):
-            articles.append(a)
+    try:
+        max_days = int(request.args.get("days", "3650"))
+    except Exception:
+        max_days = 3650
+    max_days = max(1, min(max_days, 10000))
 
-    def ts(a: Dict[str, Any]) -> int:
-        p = a.get("published_ts")
-        if isinstance(p, int) and p > 0:
-            return p
-        f = a.get("fetched_at")
-        return int(f or 0)
+    date_rows = _list_article_dates_fast(store, max_days=max_days)
+    date_tabs = [str(r.get("date") or "") for r in date_rows if r.get("date")]
+    date_counts: Dict[str, int] = {
+        str(r.get("date")): int(r.get("count") or 0) for r in date_rows if r.get("date")
+    }
 
-    articles.sort(key=ts, reverse=True)
+    def _format_published_ts_iso(a: Dict[str, Any]) -> str:
+        tsv = _article_published_ts(a)
+        if tsv <= 0:
+            return ""
+        whole = int(tsv)
+        frac2 = int(round((tsv - whole) * 100))
+        if frac2 >= 100:
+            whole += 1
+            frac2 = 0
+        return f"{datetime.fromtimestamp(whole).strftime('%Y-%m-%dT%H:%M:%S')}.{frac2:02d}"
+
+    requested_date = str(request.args.get("date") or "").strip()
+    active_date = requested_date if requested_date in date_counts else ""
+    if not active_date and date_tabs:
+        active_date = date_tabs[0]
+
+    active_articles: List[Dict[str, Any]] = []
+    if active_date:
+        active_articles = _list_articles_for_day_fast(
+            store, date_ymd=active_date, limit=limit
+        )
+
     return render_template(
-        "articles.html", articles=articles, format_ts=format_ts, error=None
+        "articles.html",
+        active_articles=active_articles,
+        date_tabs=date_tabs,
+        date_counts=date_counts,
+        active_date=active_date,
+        format_published_ts_iso=_format_published_ts_iso,
+        format_ts=format_ts,
+        error=None,
     )
 
 
@@ -1000,13 +1254,14 @@ def view_license():
     all_docs = _list_enriched_summaries(store)
     all_topics = _all_topics_from_summaries(all_docs)
     docs = _filter_summaries_by_topics(all_docs, selected_topics)
+    sidebar_docs = _filter_summaries_today(docs)
 
     html = _md_to_html(_load_static_md("license.md"))
     return render_template(
         "index.html",
         summary={},
         html=html,
-        summaries=docs,
+        summaries=sidebar_docs,
         default_selected="__license__",
         available_topics=all_topics,
         active_topics=selected_topics,
@@ -1024,13 +1279,14 @@ def view_source():
     all_docs = _list_enriched_summaries(store)
     all_topics = _all_topics_from_summaries(all_docs)
     docs = _filter_summaries_by_topics(all_docs, selected_topics)
+    sidebar_docs = _filter_summaries_today(docs)
 
     html = _md_to_html(_load_static_md("source.md"))
     return render_template(
         "index.html",
         summary={},
         html=html,
-        summaries=docs,
+        summaries=sidebar_docs,
         default_selected="__source__",
         available_topics=all_topics,
         active_topics=selected_topics,
