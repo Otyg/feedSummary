@@ -712,6 +712,7 @@ async def _run_composed_entry(
     schedule_path: str,
     job_name: str,
     entry: Dict[str, Any],
+    ancestry: Optional[List[str]] = None,
 ) -> str:
     global RUNNING_JOB_ID
 
@@ -739,8 +740,10 @@ async def _run_composed_entry(
             if not isinstance(child_entry, dict):
                 raise KeyError(f"Schedule '{child_name}' hittades inte")
 
+            child_contents = child_entry.get("contents")
+            child_is_composed = isinstance(child_contents, list) and bool(child_contents)
             freq = str(child_entry.get("frequency") or "").strip().lower()
-            if freq != "triggered":
+            if not child_is_composed and freq != "triggered":
                 raise ValueError(
                     f"Schedule '{child_name}' måste ha frequency: triggered"
                 )
@@ -750,12 +753,14 @@ async def _run_composed_entry(
                 message=f"Kör deljobb {idx}/{len(jobs)}: {child_name}...",
             )
 
-            summary_id = await _run_regular_entry(
+            summary_id = await _run_one(
                 config_path=config_path,
                 cfg=cfg,
                 store=store,
+                schedule_path=schedule_path,
                 job_name=f"{job_name}::{child_name}",
                 entry=child_entry,
+                ancestry=ancestry,
             )
 
             child_pp = str(child_entry.get("promptpackage") or "").strip()
@@ -848,7 +853,16 @@ async def _run_one(
     schedule_path: str,
     job_name: str,
     entry: Dict[str, Any],
+    ancestry: Optional[List[str]] = None,
 ) -> str:
+    lineage = list(ancestry or [])
+    node = str(job_name or "").split("::")[-1].strip()
+    if node:
+        if node in lineage:
+            cycle = " -> ".join(lineage + [node])
+            raise ValueError(f"Cykel i schedule contents: {cycle}")
+        lineage.append(node)
+
     contents = entry.get("contents")
     if isinstance(contents, list) and contents:
         return await _run_composed_entry(
@@ -858,6 +872,7 @@ async def _run_one(
             schedule_path=schedule_path,
             job_name=job_name,
             entry=entry,
+            ancestry=lineage,
         )
 
     return await _run_regular_entry(
