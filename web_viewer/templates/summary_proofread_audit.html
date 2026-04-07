@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row g-3">
+  <div class="col-12">
+    <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">
+      <div>
+        <h4 class="mb-1">Proofread Audit</h4>
+        <div class="text-muted small">
+          Summary: {{ summary.get('title') or summary_id }}
+        </div>
+      </div>
+      <a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_summary', summary_id=summary_id, topic=active_topics) }}">
+        Till publicerad sammanfattning
+      </a>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="border rounded p-3">
+      <h5>Original (före proofread)</h5>
+      {% if original_text %}
+        <pre class="small">{{ original_text }}</pre>
+      {% else %}
+        <div class="text-muted">Ingen originaltext sparad.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="border rounded p-3">
+      <h5>Reviderad (efter proofread/revise)</h5>
+      {% if revised_text %}
+        <pre class="small">{{ revised_text }}</pre>
+      {% else %}
+        <div class="text-muted">Ingen reviderad text sparad.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="border rounded p-3">
+      <h5>Publicerad (lagrad summary)</h5>
+      {% if published_text %}
+        <pre class="small">{{ published_text }}</pre>
+      {% else %}
+        <div class="text-muted">Ingen publicerad text hittades.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="border rounded p-3">
+      <h5>Historik</h5>
+      {% if history %}
+        <div class="table-responsive">
+          <table class="table table-sm table-striped align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Tid</th>
+                <th>Jobb</th>
+                <th>Proofread-paket</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for h in history|reverse %}
+                <tr>
+                  <td>{{ format_ts(h.get('created_at')) if format_ts else h.get('created_at') }}</td>
+                  <td>{{ h.get('job_name') or '-' }}</td>
+                  <td>{{ h.get('proofread_package') or '-' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="text-muted">Ingen historik sparad ännu.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
