@@ -43,6 +43,10 @@ import requests
 import yaml
 
 from uicommon import format_ts, get_store, load_config, source_to_topics_map
+from feedsummary_core.summarizer.main import (
+    _build_composed_summary_text,
+    _strip_sources_appendix_from_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +171,61 @@ def _has_proofread_audit_data(d: Dict[str, Any]) -> bool:
                 if str(latest.get(k) or "").strip():
                     return True
     return False
+
+
+def _reconstruct_composed_original_summary(store, sdoc: Dict[str, Any]) -> str:
+    """
+    Best-effort fallback for older composed docs where original proofread text
+    was not persisted.
+    """
+    if not isinstance(sdoc, dict):
+        return ""
+
+    sections = sdoc.get("sections") or []
+    if not isinstance(sections, list) or not sections:
+        return ""
+
+    loaded_sections: List[Dict[str, str]] = []
+    for s in sections:
+        if not isinstance(s, dict):
+            continue
+        sec_id = str(s.get("summary_id") or "").strip()
+        sec_summary_raw = ""
+        if sec_id:
+            try:
+                sec_doc = store.get_summary_doc(sec_id)
+            except Exception:
+                sec_doc = None
+            if isinstance(sec_doc, dict):
+                sec_summary_raw = str(sec_doc.get("summary") or "")
+        else:
+            # Older composed docs may embed the section summary inline.
+            sec_summary_raw = str(s.get("summary") or "")
+
+        sec_summary = _strip_sources_appendix_from_summary(sec_summary_raw)
+        if not sec_summary.strip():
+            continue
+        heading = (
+            str(s.get("tag") or "").strip()
+            or str(s.get("topic") or "").strip()
+            or str(s.get("schedule") or "").strip()
+            or str(s.get("promptpackage") or "").strip()
+        )
+        loaded_sections.append({"tag": heading, "summary": sec_summary})
+
+    if not loaded_sections:
+        return ""
+
+    try:
+        return str(
+            _build_composed_summary_text(
+                sections=loaded_sections,
+                ingress=None,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
 
 
 def _get_latest_summary(store) -> Optional[Dict[str, Any]]:
@@ -795,6 +854,8 @@ def view_summary_proofread_audit(summary_id: str):
         or latest.get("original_summary")
         or ""
     ).strip()
+    if not original_text:
+        original_text = _reconstruct_composed_original_summary(store, sdoc)
     revised_text = str(
         sdoc.get("proofread_revised_summary")
         or latest.get("revised_summary")
