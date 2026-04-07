@@ -4,13 +4,18 @@ import contextvars
 import logging
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 _PATCHED = False
 _LAST_LOGGED_EFFECTIVE: Optional[int] = None
 _PROOFREAD_SNAPSHOT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("proofread_snapshot", default=None)
 )
+
+
+def _clip(s: Any, max_len: int = 12000) -> str:
+    t = str(s or "")
+    return t if len(t) <= max_len else (t[: max_len - 3] + "...")
 
 
 def _strip_proofread_feedback_from_summary(
@@ -138,9 +143,60 @@ def enable_configurable_proofread_rounds(
             )
             _LAST_LOGGED_EFFECTIVE = effective
 
+        proof_sys = str(prompts.get("proofread_system") or "").strip()
+        revise_sys = str(prompts.get("revise_system") or "").strip()
+
+        proofread_trace: List[Dict[str, Any]] = []
+        proofread_round = 0
+        revise_round = 0
+
+        class _LLMRecorder:
+            def __init__(self, inner: Any):
+                self._inner = inner
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._inner, name)
+
+            async def chat(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+                nonlocal proofread_round, revise_round
+                reply = await self._inner.chat(messages, *args, **kwargs)
+
+                role = "other"
+                sys_msg = ""
+                try:
+                    if isinstance(messages, list) and messages:
+                        first = messages[0] if isinstance(messages[0], dict) else {}
+                        sys_msg = str(first.get("content") or "").strip()
+                except Exception:
+                    sys_msg = ""
+
+                if proof_sys and sys_msg == proof_sys:
+                    role = "proofread"
+                    proofread_round += 1
+                    round_no = proofread_round
+                elif revise_sys and sys_msg == revise_sys:
+                    role = "revise"
+                    revise_round += 1
+                    round_no = revise_round
+                else:
+                    round_no = 0
+
+                if role in {"proofread", "revise"}:
+                    proofread_trace.append(
+                        {
+                            "round": int(round_no),
+                            "step": role,
+                            "at": int(time.time()),
+                            "output": _clip(reply, 16000),
+                        }
+                    )
+                return reply
+
+        llm_rec = _LLMRecorder(llm)
+
         revised_text, stats = await original(
             config=config,
-            llm=llm,
+            llm=llm_rec,
             store=store,
             job_id=job_id,
             prompts=prompts,
@@ -150,14 +206,16 @@ def enable_configurable_proofread_rounds(
             sources_text=sources_text,
             max_rounds=effective,
         )
+        stats_out = dict(stats or {})
+        stats_out["proofread_trace"] = list(proofread_trace)
         _PROOFREAD_SNAPSHOT.set(
             {
                 "original_summary": original_meta,
                 "revised_summary": str(revised_text or ""),
-                "proofread_stats": dict(stats or {}),
+                "proofread_stats": stats_out,
             }
         )
-        return revised_text, stats
+        return revised_text, stats_out
 
     def _persist_summary_doc_with_proofread_snapshot(store: Any, doc: Dict[str, Any]) -> Any:
         snapshot = _PROOFREAD_SNAPSHOT.get()
@@ -199,6 +257,24 @@ def enable_configurable_proofread_rounds(
                                 "proofread_output"
                             )
                             or ""
+                        ),
+                        "proofread_last_feedback": str(
+                            (snapshot.get("proofread_stats") or {}).get(
+                                "proofread_last_feedback"
+                            )
+                            or ""
+                        ),
+                        "proofread_rounds": int(
+                            (snapshot.get("proofread_stats") or {}).get(
+                                "proofread_rounds"
+                            )
+                            or 0
+                        ),
+                        "proofread_trace": (
+                            (snapshot.get("proofread_stats") or {}).get(
+                                "proofread_trace"
+                            )
+                            or []
                         ),
                     }
                     pa = out.get("proofread_audit") or {}
