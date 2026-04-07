@@ -118,12 +118,18 @@ def enable_configurable_proofread_rounds(
             if isinstance(snapshot, dict):
                 original_summary = str(snapshot.get("original_summary") or "").strip()
                 revised_summary = str(snapshot.get("revised_summary") or "").strip()
-                has_sections = isinstance(out.get("sections"), list) and bool(
-                    out.get("sections")
-                )
-                if original_summary and revised_summary and not has_sections:
-                    out["proofread_original_summary"] = original_summary
-                    out["proofread_revised_summary"] = revised_summary
+                if original_summary and revised_summary:
+                    existing_original = str(
+                        out.get("proofread_original_summary") or ""
+                    ).strip()
+                    existing_revised = str(
+                        out.get("proofread_revised_summary") or ""
+                    ).strip()
+
+                    if not existing_original:
+                        out["proofread_original_summary"] = original_summary
+                    if not existing_revised:
+                        out["proofread_revised_summary"] = revised_summary
 
                     audit_entry = {
                         "created_at": int(time.time()),
@@ -132,8 +138,12 @@ def enable_configurable_proofread_rounds(
                             or (out.get("selection") or {}).get("prompt_package")
                             or ""
                         ),
-                        "original_summary": original_summary,
-                        "revised_summary": revised_summary,
+                        "original_summary": str(
+                            out.get("proofread_original_summary") or original_summary
+                        ),
+                        "revised_summary": str(
+                            out.get("proofread_revised_summary") or revised_summary
+                        ),
                         "proofread_output": str(
                             (snapshot.get("proofread_stats") or {}).get(
                                 "proofread_output"
