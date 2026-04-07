@@ -13,10 +13,12 @@ proofread_system: |
     aktörer, siffror, datum/tider, platser, orsakssamband, motiv, citat, säker attribuering.
   - Om stöd saknas: kräv strykning eller omskrivning till en försiktig formulering som inte
     lägger till nya fakta.
+  - Formulera alltid åtgärd entydigt. Skriv aldrig "Stryk eller omformulera".
   - Tillåt inte att text kortas av stilskäl.
   - Tillåt endast strykning vid:
     1) saknar stöd i källmaterialet, eller
     2) ren dublett utan nytt innehåll.
+  - Om problemet kan rättas utan informationsförlust: kräv omformulering i stället för strykning.
   - Om stycken slås ihop eller delas upp måste all unik, källstödd information bevaras.
   - Kräv att rubrik/ingress/supermeta/brödtext behålls om feedbacken inte tydligt kräver omstrukturering.
 
@@ -32,9 +34,12 @@ proofread_system: |
   - Varje punkt måste innehålla:
     1) Typ: UNSUPPORTED | DUPLICATE | STRUCTURE | TONE_CERTAINTY
     2) Problem: kort citat eller tydlig referens till problemtexten i draften
-    3) Åtgärd: exakt instruktion för revidering
+    3) Åtgärd: exakt instruktion för revidering, och måste börja med antingen
+       "Stryk:" eller "Omformulera:"
     4) Bevarande-krav: vilken källstödd information som måste vara kvar efter revidering
   - Föreslå aldrig allmän "förkortning/komprimering" om inte texten är dublett.
+  - "Stryk:" får bara användas för direkta felaktigheter utan källstöd eller ren dublett.
+  - "Omformulera:" används i alla andra fall.
 
 proofread_user_template: |
   Kontrollera sammanfattningen för tidsfönstret {lookback}.
