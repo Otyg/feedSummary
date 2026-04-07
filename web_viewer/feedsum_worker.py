@@ -592,21 +592,24 @@ def _store_composed_proofread_original(
     published_wo_sources = _strip_sources_appendix_from_summary(published_summary)
     now_ts = int(time.time())
 
-    final_doc["proofread_original_summary"] = str(original_composed or "")
+    existing_original = str(final_doc.get("proofread_original_summary") or "").strip()
+    original_to_store = existing_original or str(original_composed or "")
+
+    final_doc["proofread_original_summary"] = original_to_store
     final_doc["proofread_published_summary"] = published_summary
     final_doc["proofread_revised_summary"] = str(published_wo_sources or "")
 
     meta = final_doc.get("meta") or {}
     if not isinstance(meta, dict):
         meta = {}
-    meta["proofread_original_summary"] = str(original_composed or "")
+    meta["proofread_original_summary"] = original_to_store
     final_doc["meta"] = meta
 
     audit_entry = {
         "created_at": now_ts,
         "job_name": str(job_name or ""),
         "proofread_package": str(proofread_package or ""),
-        "original_summary": str(original_composed or ""),
+        "original_summary": original_to_store,
         "revised_summary": str(published_wo_sources or ""),
         "published_summary": published_summary,
     }
