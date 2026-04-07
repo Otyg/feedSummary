@@ -427,6 +427,12 @@ async def _run_command(args: argparse.Namespace) -> int:
         p["selected"] = str(args.prompt_package)
 
     store_cfg = _get_store_cfg(cfg)
+    if args.sqlite_db:
+        sqlite_db = str(Path(args.sqlite_db).expanduser())
+        store_cfg["provider"] = "sqlite"
+        store_cfg["path"] = sqlite_db
+        log.info(f"Using SQLite DB override from CLI: {sqlite_db}")
+
     store: NewsStore = create_store(store_cfg)
     llm = create_llm_client(cfg)
     prompts = load_prompts(cfg)
@@ -641,6 +647,11 @@ def main() -> int:
         help="Run proofread+revise and store a run record (reuses batch_output on reruns)",
     )
     runp.add_argument("--config", required=True, help="Path to config.yaml")
+    runp.add_argument(
+        "--sqlite-db",
+        default="",
+        help="Override source DB for this run (forces store.provider=sqlite and sets store.path)",
+    )
 
     grp = runp.add_mutually_exclusive_group(required=True)
     grp.add_argument(
