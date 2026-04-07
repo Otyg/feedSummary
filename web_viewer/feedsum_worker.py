@@ -59,6 +59,7 @@ from feedsummary_core.summarizer.main import (
     run_tag_based_summary,
 )
 from uicommon import load_config
+from uicommon.proofread_rounds import enable_configurable_proofread_rounds
 
 from feedsummary_core.persistence import create_store
 from feedsummary_core.llm_client import create_llm_client
@@ -77,6 +78,7 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
 log = logging.getLogger(__name__)
+enable_configurable_proofread_rounds(logger=log)
 
 TRIGGERS: Dict[str, Dict[str, Any]] = {}
 TRIGGERS_LOCK = threading.Lock()
