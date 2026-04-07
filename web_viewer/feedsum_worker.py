@@ -50,6 +50,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from feedsummary_core.summarizer.main import (
+    _build_composed_summary_text,
+    _strip_sources_appendix_from_summary,
     run_pipeline,
     run_resume_job,
     compose_summary_docs,
@@ -533,6 +535,92 @@ def _parse_contents_block(
     return jobs, proofread_pkg, title_pkg, ingress_pkg
 
 
+def _store_composed_proofread_original(
+    *,
+    store,
+    final_summary_id: str,
+    job_name: str,
+    proofread_package: str,
+) -> None:
+    """
+    Persist pre-proofread composed text in the same summary_doc, so original vs
+    published can be compared later.
+    """
+    sid = str(final_summary_id or "").strip()
+    if not sid:
+        return
+
+    final_doc = store.get_summary_doc(sid)
+    if not isinstance(final_doc, dict):
+        return
+
+    sections = final_doc.get("sections") or []
+    if not isinstance(sections, list) or not sections:
+        return
+
+    loaded_sections: List[Dict[str, Any]] = []
+    for s in sections:
+        if not isinstance(s, dict):
+            continue
+        sec_id = str(s.get("summary_id") or "").strip()
+        if not sec_id:
+            continue
+        sec_doc = store.get_summary_doc(sec_id)
+        if not isinstance(sec_doc, dict):
+            continue
+        sec_summary = _strip_sources_appendix_from_summary(
+            str(sec_doc.get("summary") or "")
+        )
+        heading = (
+            str(s.get("tag") or "").strip()
+            or str(s.get("schedule") or "").strip()
+            or str(s.get("promptpackage") or "").strip()
+        )
+        loaded_sections.append({"tag": heading, "summary": sec_summary})
+
+    if not loaded_sections:
+        return
+
+    original_composed = _build_composed_summary_text(
+        sections=loaded_sections,
+        ingress=None,
+    )
+
+    published_summary = str(final_doc.get("summary") or "")
+    published_wo_sources = _strip_sources_appendix_from_summary(published_summary)
+    now_ts = int(time.time())
+
+    final_doc["proofread_original_summary"] = str(original_composed or "")
+    final_doc["proofread_published_summary"] = published_summary
+    final_doc["proofread_revised_summary"] = str(published_wo_sources or "")
+
+    meta = final_doc.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["proofread_original_summary"] = str(original_composed or "")
+    final_doc["meta"] = meta
+
+    audit_entry = {
+        "created_at": now_ts,
+        "job_name": str(job_name or ""),
+        "proofread_package": str(proofread_package or ""),
+        "original_summary": str(original_composed or ""),
+        "revised_summary": str(published_wo_sources or ""),
+        "published_summary": published_summary,
+    }
+    pa = final_doc.get("proofread_audit") or {}
+    if not isinstance(pa, dict):
+        pa = {}
+    history = pa.get("history") or []
+    if not isinstance(history, list):
+        history = []
+    history.append(audit_entry)
+    history = history[-20:]
+    final_doc["proofread_audit"] = {"latest": audit_entry, "history": history}
+
+    store.save_summary_doc(final_doc)
+
+
 async def _run_regular_entry(
     config_path: str,
     cfg: Dict[str, Any],
@@ -659,6 +747,24 @@ async def _run_composed_entry(
             ingress_package=ingress_pkg,
             title_package=title_pkg,
         )
+
+        if proofread_pkg:
+            try:
+                _store_composed_proofread_original(
+                    store=store,
+                    final_summary_id=str(final_summary_id),
+                    job_name=job_name,
+                    proofread_package=proofread_pkg,
+                )
+                log.info(
+                    "Stored original composed summary for proofread-composed doc: %s",
+                    str(final_summary_id),
+                )
+            except Exception:
+                log.exception(
+                    "Failed to store original composed summary for summary_id=%s",
+                    str(final_summary_id),
+                )
 
         store.update_job(
             parent_job_id,

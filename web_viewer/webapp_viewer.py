@@ -148,6 +148,27 @@ def _md_to_html(text: str) -> str:
     return md.markdown(text or "", extensions=["extra"])
 
 
+def _has_proofread_audit_data(d: Dict[str, Any]) -> bool:
+    if not isinstance(d, dict):
+        return False
+    direct_keys = (
+        "proofread_original_summary",
+        "proofread_revised_summary",
+        "proofread_published_summary",
+    )
+    for k in direct_keys:
+        if str(d.get(k) or "").strip():
+            return True
+    pa = d.get("proofread_audit") or {}
+    if isinstance(pa, dict):
+        latest = pa.get("latest") or {}
+        if isinstance(latest, dict):
+            for k in ("original_summary", "revised_summary", "published_summary"):
+                if str(latest.get(k) or "").strip():
+                    return True
+    return False
+
+
 def _get_latest_summary(store) -> Optional[Dict[str, Any]]:
     """
     Robust: try get_latest_summary_doc; otherwise pick newest from list and refetch if needed.
@@ -739,10 +760,65 @@ def view_summary(summary_id: str):
         "index.html",
         summary=sdoc,
         html=html,
+        has_proofread_audit=_has_proofread_audit_data(sdoc),
         summaries=docs,
         default_selected=sid,
         available_topics=all_topics,
         active_topics=selected_topics,
+        format_ts=format_ts,
+    )
+
+
+@app.route("/summary/<summary_id>/proofread-audit")
+def view_summary_proofread_audit(summary_id: str):
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    selected_topics = _selected_topics_from_request()
+    sid = str(summary_id).strip()
+    sdoc = None
+    try:
+        sdoc = store.get_summary_doc(sid)
+    except Exception:
+        sdoc = None
+
+    if not isinstance(sdoc, dict):
+        abort(404)
+
+    pa = sdoc.get("proofread_audit") or {}
+    latest = pa.get("latest") if isinstance(pa, dict) else {}
+    latest = latest if isinstance(latest, dict) else {}
+
+    original_text = str(
+        sdoc.get("proofread_original_summary")
+        or latest.get("original_summary")
+        or ""
+    ).strip()
+    revised_text = str(
+        sdoc.get("proofread_revised_summary")
+        or latest.get("revised_summary")
+        or ""
+    ).strip()
+    published_text = str(
+        sdoc.get("proofread_published_summary")
+        or latest.get("published_summary")
+        or sdoc.get("summary")
+        or ""
+    ).strip()
+
+    history = pa.get("history") if isinstance(pa, dict) else []
+    history = history if isinstance(history, list) else []
+
+    return render_template(
+        "summary_proofread_audit.html",
+        summary=sdoc,
+        summary_id=sid,
+        active_topics=selected_topics,
+        original_text=original_text,
+        revised_text=revised_text,
+        published_text=published_text,
+        history=history,
         format_ts=format_ts,
     )
 

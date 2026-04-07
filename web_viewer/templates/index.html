@@ -81,7 +81,18 @@
   <div class="col-12 col-lg-9">
     <div class="content border rounded p-3 summary-html">
       {# summary-blocket används inte längre eftersom webapp_viewer.py injicerar egen header i html #}
-      <h1>{{ summary.get('title') or '' }}</h1>
+      <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">
+        <h1 class="m-0">{{ summary.get('title') or '' }}</h1>
+        {% if summary and has_proofread_audit %}
+          <a
+            class="btn btn-sm btn-outline-secondary"
+            href="{{ url_for('view_summary_proofread_audit', summary_id=summary.get('id'), topic=active_topics) }}"
+          >
+            Visa proofread-audit
+          </a>
+        {% endif %}
+      </div>
+      <hr />
       {{ html|safe }}
     </div>
   </div>
