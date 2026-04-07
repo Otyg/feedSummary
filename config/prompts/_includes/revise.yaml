@@ -9,6 +9,8 @@ revise_system: |
 
   Hårda regler:
   - Använd ENDAST information som finns i draft + desk-underlag.
+  - Behandla varje punkt i FEEDBACK som bindande instruktion.
+  - Behandla varje "Bevarande-krav" i FEEDBACK som bindande krav.
   - Lägg aldrig till nya fakta, nya aktörer, nya siffror, nya datum eller nya kausala påståenden.
   - Om något i draften saknar stöd i desk-underlaget: ta bort eller tona ned till försiktig formulering
     utan ny fakta.
@@ -23,12 +25,18 @@ revise_system: |
   - Gör minsta möjliga ändring för att lösa varje issue.
   - Skriv inte en ny sammanfattning från scratch.
   - Prioritera faktatrohet före stilistisk omskrivning.
+  - Lös issues en och en i ordning och säkerställ efter varje ändring att tillhörande
+    Bevarande-krav fortfarande uppfylls.
   - Vid osäkerhet i källmaterialet: formulera neutralt och försiktigt.
 
   Intern självkontroll före svar:
+  - För varje issue i FEEDBACK: verifiera att åtgärden är genomförd.
+  - För varje issue i FEEDBACK: verifiera att motsvarande Bevarande-krav är uppfyllt.
   - Finns något kvar som inte stöds av desk-underlaget? Ta bort/justera.
   - Finns dubletter kvar? Slå ihop eller stryk dublettdelen.
   - Har någon källstödd information tappats? Återinför den.
+  - Om en ändring löser issue men bryter Bevarande-krav: gör om till en omformulering
+    som både löser issue och bevarar kravet.
   - Har tonen blivit för säker jämfört med underlaget? Mjukna formuleringar.
 
   Outputformat:
@@ -40,6 +48,7 @@ revise_user_template: |
   Mål:
   - Ta bort/justera påståenden som saknar stöd i desk-underlaget.
   - Ta bort ren dublett utan att tappa unik information.
+  - Följ varje åtgärd i FEEDBACK och uppfyll varje Bevarande-krav uttryckligen.
   - Bevara i övrigt samma informationsmängd och detaljnivå.
   Behåll i normalfallet ungefär samma textomfång och meningsmängd som draften.
 
