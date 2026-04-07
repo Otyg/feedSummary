@@ -50,6 +50,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from feedsummary_core.summarizer.main import (
+    _build_composed_summary_text,
+    _strip_sources_appendix_from_summary,
     run_pipeline,
     run_resume_job,
     compose_summary_docs,
@@ -542,6 +544,92 @@ def _parse_contents_block(
     return jobs, proofread_pkg, title_pkg, ingress_pkg
 
 
+def _store_composed_proofread_original(
+    *,
+    store,
+    final_summary_id: str,
+    job_name: str,
+    proofread_package: str,
+) -> None:
+    """
+    Persist pre-proofread composed text in the same summary_doc, so original vs
+    published can be compared later.
+    """
+    sid = str(final_summary_id or "").strip()
+    if not sid:
+        return
+
+    final_doc = store.get_summary_doc(sid)
+    if not isinstance(final_doc, dict):
+        return
+
+    sections = final_doc.get("sections") or []
+    if not isinstance(sections, list) or not sections:
+        return
+
+    loaded_sections: List[Dict[str, Any]] = []
+    for s in sections:
+        if not isinstance(s, dict):
+            continue
+        sec_id = str(s.get("summary_id") or "").strip()
+        if not sec_id:
+            continue
+        sec_doc = store.get_summary_doc(sec_id)
+        if not isinstance(sec_doc, dict):
+            continue
+        sec_summary = _strip_sources_appendix_from_summary(
+            str(sec_doc.get("summary") or "")
+        )
+        heading = (
+            str(s.get("tag") or "").strip()
+            or str(s.get("schedule") or "").strip()
+            or str(s.get("promptpackage") or "").strip()
+        )
+        loaded_sections.append({"tag": heading, "summary": sec_summary})
+
+    if not loaded_sections:
+        return
+
+    original_composed = _build_composed_summary_text(
+        sections=loaded_sections,
+        ingress=None,
+    )
+
+    published_summary = str(final_doc.get("summary") or "")
+    published_wo_sources = _strip_sources_appendix_from_summary(published_summary)
+    now_ts = int(time.time())
+
+    final_doc["proofread_original_summary"] = str(original_composed or "")
+    final_doc["proofread_published_summary"] = published_summary
+    final_doc["proofread_revised_summary"] = str(published_wo_sources or "")
+
+    meta = final_doc.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["proofread_original_summary"] = str(original_composed or "")
+    final_doc["meta"] = meta
+
+    audit_entry = {
+        "created_at": now_ts,
+        "job_name": str(job_name or ""),
+        "proofread_package": str(proofread_package or ""),
+        "original_summary": str(original_composed or ""),
+        "revised_summary": str(published_wo_sources or ""),
+        "published_summary": published_summary,
+    }
+    pa = final_doc.get("proofread_audit") or {}
+    if not isinstance(pa, dict):
+        pa = {}
+    history = pa.get("history") or []
+    if not isinstance(history, list):
+        history = []
+    history.append(audit_entry)
+    history = history[-20:]
+    final_doc["proofread_audit"] = {"latest": audit_entry, "history": history}
+
+    store.save_summary_doc(final_doc)
+
+
 async def _run_regular_entry(
     config_path: str,
     cfg: Dict[str, Any],
@@ -614,9 +702,166 @@ async def _run_regular_entry(
             RUNNING_JOB_ID = None
 
 
-# ----------------------------
-# Cleanup policy: call persistence run_cleanup
-# ----------------------------
+sync def _run_composed_entry(
+    config_path: str,
+    cfg: Dict[str, Any],
+    store,
+    schedule_path: str,
+    job_name: str,
+    entry: Dict[str, Any],
+) -> str:
+    global RUNNING_JOB_ID
+
+    jobs, proofread_pkg, title_pkg, ingress_pkg = _parse_contents_block(entry)
+    schedule = _read_schedule_yaml(schedule_path)
+
+    parent_job_id = store.create_job()
+
+    try:
+        with RUNNING_JOB_LOCK:
+            RUNNING_JOB_ID = int(parent_job_id)
+
+        store.update_job(
+            parent_job_id,
+            status="running",
+            started_at=int(time.time()),
+            message=f"Startar composed-jobb '{job_name}'...",
+        )
+
+        section_results: List[Dict[str, str]] = []
+
+        for idx, spec in enumerate(jobs, start=1):
+            child_name = str(spec["schedule"]).strip()
+            child_entry = schedule.get(child_name)
+            if not isinstance(child_entry, dict):
+                raise KeyError(f"Schedule '{child_name}' hittades inte")
+
+            freq = str(child_entry.get("frequency") or "").strip().lower()
+            if freq != "triggered":
+                raise ValueError(
+                    f"Schedule '{child_name}' måste ha frequency: triggered"
+                )
+
+            store.update_job(
+                parent_job_id,
+                message=f"Kör deljobb {idx}/{len(jobs)}: {child_name}...",
+            )
+
+            summary_id = await _run_regular_entry(
+                config_path=config_path,
+                cfg=cfg,
+                store=store,
+                job_name=f"{job_name}::{child_name}",
+                entry=child_entry,
+            )
+
+            child_pp = str(child_entry.get("promptpackage") or "").strip()
+
+            section_results.append(
+                {
+                    "schedule": child_name,
+                    "promptpackage": child_pp,
+                    "summary_id": str(summary_id),
+                }
+            )
+
+        store.update_job(
+            parent_job_id,
+            message="Sammanfogar delresultat...",
+        )
+
+        if proofread_pkg and not _supports_composed_proofread():
+            raise RuntimeError(
+                "Installerad feedsummary_core saknar stöd för proofread_package i "
+                "compose_summary_docs. Uppgradera till minst 1.10.0."
+            )
+
+        llm = create_llm_client(cfg)
+        final_summary_id = await compose_summary_docs(
+            config=cfg,
+            store=store,
+            llm=llm,
+            job_id=parent_job_id,
+            name=job_name,
+            sections=section_results,
+            proofread_package=proofread_pkg,
+            ingress_package=ingress_pkg,
+            title_package=title_pkg,
+        )
+
+        if proofread_pkg:
+            try:
+                _store_composed_proofread_original(
+                    store=store,
+                    final_summary_id=str(final_summary_id),
+                    job_name=job_name,
+                    proofread_package=proofread_pkg,
+                )
+                log.info(
+                    "Stored original composed summary for proofread-composed doc: %s",
+                    str(final_summary_id),
+                )
+            except Exception:
+                log.exception(
+                    "Failed to store original composed summary for summary_id=%s",
+                    str(final_summary_id),
+                )
+
+        store.update_job(
+            parent_job_id,
+            status="done",
+            finished_at=int(time.time()),
+            message=f"Klart: composed-jobb '{job_name}' färdigt.",
+            summary_id=str(final_summary_id),
+        )
+        return str(final_summary_id)
+
+    except Exception as e:
+        try:
+            store.update_job(
+                parent_job_id,
+                status="failed",
+                finished_at=int(time.time()),
+                message=f"Fel: {e}",
+            )
+        except Exception:
+            pass
+        log.exception("Composed job '%s' failed", job_name)
+        raise
+
+    finally:
+        with RUNNING_JOB_LOCK:
+            RUNNING_JOB_ID = None
+
+
+async def _run_one(
+    config_path: str,
+    cfg: Dict[str, Any],
+    store,
+    schedule_path: str,
+    job_name: str,
+    entry: Dict[str, Any],
+) -> str:
+    contents = entry.get("contents")
+    if isinstance(contents, list) and contents:
+        return await _run_composed_entry(
+            config_path=config_path,
+            cfg=cfg,
+            store=store,
+            schedule_path=schedule_path,
+            job_name=job_name,
+            entry=entry,
+        )
+
+    return await _run_regular_entry(
+        config_path=config_path,
+        cfg=cfg,
+        store=store,
+        job_name=job_name,
+        entry=entry,
+    )
+
+
 def _cleanup_policy(cfg: Dict[str, Any]) -> "CleanupPolicy":
     d = cfg.get("cleanup") if isinstance(cfg, dict) else None
     d = d if isinstance(d, dict) else {}
