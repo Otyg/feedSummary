@@ -6,6 +6,7 @@
       <h4>Artiklar</h4>
       <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Till summaries</a>
     </div>
+<<<<<<< HEAD
     
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
@@ -221,3 +222,52 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 </style>
 {% endblock %}
+=======
+    {% if date_tabs %}
+      <ul class="nav nav-tabs mt-3 flex-nowrap overflow-auto">
+        {% for day in date_tabs %}
+          <li class="nav-item">
+            <a
+              class="nav-link {% if day == active_date %}active{% endif %}"
+              href="{{ url_for('list_articles', date=day) }}"
+            >
+              {{ day }}
+              <span class="badge text-bg-light ms-1">{{ date_counts.get(day, 0) }}</span>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+      <div class="table-responsive mt-2">
+        <table class="table table-sm table-striped align-middle">
+          <thead>
+            <tr>
+              <th>Titel</th>
+              <th>Källa</th>
+              <th>Publicerad</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in (active_articles or []) %}
+            <tr>
+              <td style="max-width: 520px;">
+                <div class="text-truncate">{{ a.get('title') or '' }}</div>
+                <div class="small text-muted text-truncate">{{ a.get('url') or '' }}</div>
+              </td>
+              <td>{{ a.get('source') or '' }}</td>
+              <td>
+                {{ format_published_ts_iso(a) if format_published_ts_iso else '' }}
+              </td>
+              <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_article', article_id=a.get('id')) }}">Öppna</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="alert alert-secondary mt-3 mb-0">Inga artiklar hittades.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+>>>>>>> 29e313a (Various fixes around articles and proofreading)
