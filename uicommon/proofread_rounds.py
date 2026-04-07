@@ -28,6 +28,17 @@ def _pick_effective_max_rounds(config: Dict[str, Any], fallback: int) -> int:
         return int(fallback)
 
 
+def _should_override_rounds(callsite_max_rounds: int) -> bool:
+    """
+    Only override regular pipeline rounds.
+    feedsummary_core regular flow calls with 4; composed flow calls with 1.
+    """
+    try:
+        return int(callsite_max_rounds) >= 2
+    except Exception:
+        return False
+
+
 def enable_configurable_proofread_rounds(
     *, logger: Optional[logging.Logger] = None
 ) -> None:
@@ -76,7 +87,12 @@ def enable_configurable_proofread_rounds(
         sources_text: str,
         max_rounds: int = 1,
     ):
-        effective = _pick_effective_max_rounds(config, int(max_rounds))
+        callsite_rounds = int(max_rounds)
+        effective = (
+            _pick_effective_max_rounds(config, callsite_rounds)
+            if _should_override_rounds(callsite_rounds)
+            else callsite_rounds
+        )
         original_meta = str(meta_text or "")
 
         global _LAST_LOGGED_EFFECTIVE
