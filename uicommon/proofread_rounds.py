@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import re
 import time
 from typing import Any, Dict, Optional
 
@@ -10,6 +11,39 @@ _LAST_LOGGED_EFFECTIVE: Optional[int] = None
 _PROOFREAD_SNAPSHOT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("proofread_snapshot", default=None)
 )
+
+
+def _strip_proofread_feedback_from_summary(
+    summary_text: str, proofread_stats: Optional[Dict[str, Any]]
+) -> str:
+    text = str(summary_text or "")
+    stats = proofread_stats if isinstance(proofread_stats, dict) else {}
+
+    # Remove exact injected feedback blobs when present.
+    for key in ("proofread_last_feedback", "proofread_output"):
+        blob = str(stats.get(key) or "").strip()
+        if len(blob) < 40:
+            continue
+        if blob in text:
+            text = text.replace(blob, "").strip()
+
+    # Remove orphan PASS/FAIL lines right before sources appendix.
+    text = re.sub(
+        r"\n{2,}(?:PASS|FAIL)\s*\n{2,}(?=##\s*Källor\b)",
+        "\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Remove injected PASS/FAIL + optional ISSUES block before sources appendix.
+    text = re.sub(
+        r"\n{2,}(?:PASS|FAIL)\s*(?:\n+[\s\S]*?)?(?=\n##\s*Källor\b)",
+        "\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Normalize excessive blank lines left after stripping.
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    return text.strip()
 
 
 def _pick_effective_max_rounds(config: Dict[str, Any], fallback: int) -> int:
@@ -175,6 +209,14 @@ def enable_configurable_proofread_rounds(
                         history = []
                     history.append(audit_entry)
                     out["proofread_audit"] = {"latest": audit_entry, "history": history[-20:]}
+
+                if str(out.get("summary") or "").strip():
+                    out["summary"] = _strip_proofread_feedback_from_summary(
+                        str(out.get("summary") or ""),
+                        snapshot.get("proofread_stats")
+                        if isinstance(snapshot.get("proofread_stats"), dict)
+                        else {},
+                    )
         except Exception:
             out = dict(doc or {})
 
