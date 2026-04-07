@@ -50,6 +50,24 @@
 
   <div class="col-12">
     <div class="border rounded p-3">
+      <h5>Proofread-rundor (full logg)</h5>
+      {% if proofread_trace %}
+        {% for t in proofread_trace %}
+          <div class="mb-3">
+            <div class="small text-muted mb-1">
+              {{ t.get('step') or '-' }} · runda {{ t.get('round') or '-' }} · {{ format_ts(t.get('at')) if format_ts else t.get('at') }}
+            </div>
+            <pre class="small">{{ t.get('output') or '' }}</pre>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="text-muted">Ingen detaljerad rundlogg sparad för denna körning.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="border rounded p-3">
       <h5>Publicerad (lagrad summary)</h5>
       {% if published_text %}
         <pre class="small">{{ published_text }}</pre>

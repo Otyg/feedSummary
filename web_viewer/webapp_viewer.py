@@ -1237,6 +1237,19 @@ def view_summary_proofread_audit(summary_id: str):
                     proofread_output_text = cand
                     break
 
+    proofread_trace: List[Dict[str, Any]] = []
+    trace_candidate = latest.get("proofread_trace")
+    if isinstance(trace_candidate, list):
+        proofread_trace = [t for t in trace_candidate if isinstance(t, dict)]
+    if not proofread_trace:
+        for h in reversed(history):
+            if isinstance(h, dict) and isinstance(h.get("proofread_trace"), list):
+                proofread_trace = [
+                    t for t in (h.get("proofread_trace") or []) if isinstance(t, dict)
+                ]
+                if proofread_trace:
+                    break
+
     return render_template(
         "summary_proofread_audit.html",
         summary=sdoc,
@@ -1245,6 +1258,7 @@ def view_summary_proofread_audit(summary_id: str):
         original_text=original_text,
         revised_text=revised_text,
         proofread_output_text=proofread_output_text,
+        proofread_trace=proofread_trace,
         published_text=published_text,
         history=history,
         format_ts=format_ts,

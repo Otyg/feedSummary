@@ -234,6 +234,9 @@ def _update_summary_doc_audit(
     original_summary: str,
     revised_summary: str,
     proofread_output: str,
+    proofread_trace: List[Dict[str, Any]],
+    proofread_rounds: int,
+    proofread_last_feedback: str,
     prompt_package: str,
     run_revision: int,
 ) -> Dict[str, Any]:
@@ -255,6 +258,9 @@ def _update_summary_doc_audit(
         "original_summary": str(original_summary or ""),
         "revised_summary": str(revised_summary or ""),
         "proofread_output": str(proofread_output or ""),
+        "proofread_rounds": int(proofread_rounds or 0),
+        "proofread_last_feedback": str(proofread_last_feedback or ""),
+        "proofread_trace": list(proofread_trace or []),
     }
 
     pa = out.get("proofread_audit") or {}
@@ -800,9 +806,50 @@ async def _run_command(args: argparse.Namespace) -> int:
     log.info(
         f"Proofreading summary_doc {original_summary_id} (max_rounds={int(args.max_rounds)})"
     )
+    proof_sys = str(prompts.get("proofread_system") or "").strip()
+    revise_sys = str(prompts.get("revise_system") or "").strip()
+    trace_rows: List[Dict[str, Any]] = []
+    proof_round = 0
+    revise_round = 0
+
+    class _TraceLLM:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def chat(self, messages: List[Dict[str, str]], *, temperature: float = 0.2) -> str:
+            nonlocal proof_round, revise_round
+            out = await self._inner.chat(messages, temperature=temperature)
+
+            sys_msg = str((messages[0] or {}).get("content") or "").strip() if messages else ""
+            step = ""
+            round_no = 0
+            if proof_sys and sys_msg == proof_sys:
+                step = "proofread"
+                proof_round += 1
+                round_no = proof_round
+            elif revise_sys and sys_msg == revise_sys:
+                step = "revise"
+                revise_round += 1
+                round_no = revise_round
+
+            if step:
+                trace_rows.append(
+                    {
+                        "at": int(time.time()),
+                        "step": step,
+                        "round": int(round_no),
+                        "output": clip_text(str(out or ""), 16000),
+                    }
+                )
+            return out
+
+    llm_for_proofread = _TraceLLM(llm)
     revised, pr_stats = await _proofread_and_revise_meta_with_stats(
         config=cfg,
-        llm=llm,
+        llm=llm_for_proofread,
         store=store,
         job_id=None,
         prompts=prompts,
@@ -812,6 +859,9 @@ async def _run_command(args: argparse.Namespace) -> int:
         sources_text=sources_text,
         max_rounds=int(args.max_rounds),
     )
+    pr_stats = dict(pr_stats or {})
+    if trace_rows and not isinstance(pr_stats.get("proofread_trace"), list):
+        pr_stats["proofread_trace"] = trace_rows
 
     proof_out = (
         pr_stats.get("proofread_output")
@@ -843,6 +893,9 @@ async def _run_command(args: argparse.Namespace) -> int:
         "sources_text": sources_text,
         "corrected_summary": corrected_summary,
         "proofread_output": proof_out,
+        "proofread_rounds": int(pr_stats.get("proofread_rounds") or 0),
+        "proofread_last_feedback": str(pr_stats.get("proofread_last_feedback") or ""),
+        "proofread_trace": list(pr_stats.get("proofread_trace") or []),
         "prompts": {
             "prompt_package": str(prompts.get("_package") or ""),
             "proofread_system": str(prompts.get("proofread_system") or ""),
@@ -901,6 +954,11 @@ async def _run_command(args: argparse.Namespace) -> int:
                 original_summary=original_summary,
                 revised_summary=corrected_summary,
                 proofread_output=proof_out,
+                proofread_trace=list(pr_stats.get("proofread_trace") or []),
+                proofread_rounds=int(pr_stats.get("proofread_rounds") or 0),
+                proofread_last_feedback=str(
+                    pr_stats.get("proofread_last_feedback") or ""
+                ),
                 prompt_package=str(prompts.get("_package") or ""),
                 run_revision=run_revision,
             )
