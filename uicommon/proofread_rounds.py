@@ -70,6 +70,7 @@ def _pick_effective_max_rounds(config: Dict[str, Any], fallback: int) -> int:
         return int(fallback)
 
 
+<<<<<<< HEAD
 def _should_override_rounds(callsite_max_rounds: int) -> bool:
     """
     Only override regular pipeline rounds.
@@ -81,6 +82,8 @@ def _should_override_rounds(callsite_max_rounds: int) -> bool:
         return False
 
 
+=======
+>>>>>>> 5ff7536 (Proofreader rounds)
 def enable_configurable_proofread_rounds(
     *, logger: Optional[logging.Logger] = None
 ) -> None:
@@ -112,10 +115,13 @@ def enable_configurable_proofread_rounds(
         _PATCHED = True
         return
 
+<<<<<<< HEAD
     original_persist = getattr(main_mod, "_persist_summary_doc", None)
     if not callable(original_persist):
         return
 
+=======
+>>>>>>> 5ff7536 (Proofreader rounds)
     async def _proofread_and_revise_meta_with_config(
         *,
         config: Dict[str, Any],
@@ -129,6 +135,7 @@ def enable_configurable_proofread_rounds(
         sources_text: str,
         max_rounds: int = 1,
     ):
+<<<<<<< HEAD
         callsite_rounds = int(max_rounds)
         effective = (
             _pick_effective_max_rounds(config, callsite_rounds)
@@ -136,6 +143,9 @@ def enable_configurable_proofread_rounds(
             else callsite_rounds
         )
         original_meta = str(meta_text or "")
+=======
+        effective = _pick_effective_max_rounds(config, int(max_rounds))
+>>>>>>> 5ff7536 (Proofreader rounds)
 
         global _LAST_LOGGED_EFFECTIVE
         if logger is not None and _LAST_LOGGED_EFFECTIVE != effective:
@@ -146,6 +156,7 @@ def enable_configurable_proofread_rounds(
             )
             _LAST_LOGGED_EFFECTIVE = effective
 
+<<<<<<< HEAD
         proof_sys = str(prompts.get("proofread_system") or "").strip()
         proof_user_tmpl = str(prompts.get("proofread_user_template") or "").strip()
         revise_sys = str(prompts.get("revise_system") or "").strip()
@@ -230,6 +241,11 @@ def enable_configurable_proofread_rounds(
         revised_text, stats = await original(
             config=config,
             llm=llm_rec,
+=======
+        return await original(
+            config=config,
+            llm=llm,
+>>>>>>> 5ff7536 (Proofreader rounds)
             store=store,
             job_id=job_id,
             prompts=prompts,
@@ -239,6 +255,7 @@ def enable_configurable_proofread_rounds(
             sources_text=sources_text,
             max_rounds=effective,
         )
+<<<<<<< HEAD
         stats_out = dict(stats or {})
 
         # The regular loop may end immediately on PASS or after its final
@@ -453,6 +470,8 @@ def enable_configurable_proofread_rounds(
             out = dict(doc or {})
 
         return original_persist(store, out)
+=======
+>>>>>>> 5ff7536 (Proofreader rounds)
 
     summarizer_mod._proofread_and_revise_meta_with_stats = (
         _proofread_and_revise_meta_with_config
@@ -462,6 +481,12 @@ def enable_configurable_proofread_rounds(
         main_mod._proofread_and_revise_meta_with_stats = (
             _proofread_and_revise_meta_with_config
         )
+<<<<<<< HEAD
     main_mod._persist_summary_doc = _persist_summary_doc_with_proofread_snapshot
 
     _PATCHED = True
+=======
+
+    _PATCHED = True
+
+>>>>>>> 5ff7536 (Proofreader rounds)
