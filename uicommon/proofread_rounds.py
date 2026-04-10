@@ -145,7 +145,19 @@ def enable_configurable_proofread_rounds(
             _LAST_LOGGED_EFFECTIVE = effective
 
         proof_sys = str(prompts.get("proofread_system") or "").strip()
+        proof_user_tmpl = str(prompts.get("proofread_user_template") or "").strip()
         revise_sys = str(prompts.get("revise_system") or "").strip()
+        revise_user_tmpl = str(prompts.get("revise_user_template") or "").strip()
+
+        if logger is not None:
+            logger.info(
+                "Proofread prompt presence: proof_sys=%s proof_user=%s revise_sys=%s revise_user=%s package=%s",
+                int(bool(proof_sys)),
+                int(bool(proof_user_tmpl)),
+                int(bool(revise_sys)),
+                int(bool(revise_user_tmpl)),
+                str(prompts.get("_package") or ""),
+            )
 
         proofread_trace: List[Dict[str, Any]] = []
         proofread_round = 0
@@ -229,6 +241,11 @@ def enable_configurable_proofread_rounds(
                 _clip(str(stats_out.get("proofread_output") or ""), 120),
                 len(str(stats_out.get("proofread_last_feedback") or "")),
             )
+            if int(stats_out.get("proofread_enabled") or 0) == 0:
+                logger.warning(
+                    "Proofread disabled by upstream: at least one required prompt was missing/empty "
+                    "(proofread_system, proofread_user_template, revise_system, revise_user_template)."
+                )
         _PROOFREAD_SNAPSHOT.set(
             {
                 "original_summary": original_meta,
