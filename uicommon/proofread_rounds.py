@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from typing import Any, Dict, List, Optional
+from uicommon.proofread_merge import stabilize_revise_output_from_messages
 
 _PATCHED = False
 _LAST_LOGGED_EFFECTIVE: Optional[int] = None
@@ -178,6 +179,10 @@ def enable_configurable_proofread_rounds(
                     role = "revise"
                     revise_round += 1
                     round_no = revise_round
+                    if isinstance(messages, list):
+                        reply = stabilize_revise_output_from_messages(
+                            messages=messages, raw_reply=str(reply or "")
+                        )
                 else:
                     round_no = 0
 
