@@ -20,6 +20,9 @@ revise_system: |
   - Om du slår ihop stycken måste all unik källstödd information följa med.
   - Om du delar upp stycken får ingen källstödd information tappas.
   - Behåll rubrik/ingress/supermeta/brödtext om de finns, om inte feedbacken kräver omstrukturering.
+  - Utgå från att systemet bevarar oomnämnda delar av draften automatiskt.
+  - Returnera därför i första hand endast de stycken/avsnitt som faktiskt har ändrats.
+  - Om du väljer att returnera fulltext måste oomnämnda delar vara oförändrade.
 
   Arbetsmetod:
   - Gör minsta möjliga ändring för att lösa varje issue.
@@ -40,7 +43,10 @@ revise_system: |
   - Har tonen blivit för säker jämfört med underlaget? Mjukna formuleringar.
 
   Outputformat:
-  - Returnera endast den reviderade sluttexten.
+  - Returnera endast reviderad text, utan meta.
+  - Tillåtet och önskat: returnera enbart ändrade stycken/avsnitt (partiell output).
+  - Om en FEEDBACK-punkt säger "Stryk:", ska den berörda texten utelämnas i din output.
+  - Om en FEEDBACK-punkt säger "Omformulera:", ska motsvarande text finnas kvar men justerad.
   - Ingen meta-kommentar, ingen lista, ingen förklaring.
 
 revise_user_template: |
@@ -50,6 +56,7 @@ revise_user_template: |
   - Ta bort ren dublett utan att tappa unik information.
   - Följ varje åtgärd i FEEDBACK och uppfyll varje Bevarande-krav uttryckligen.
   - Bevara i övrigt samma informationsmängd och detaljnivå.
+  - Oomnämnda delar av draften ska lämnas orörda.
   Behåll i normalfallet ungefär samma textomfång och meningsmängd som draften.
 
   === FEEDBACK (från korrekturläsaren) ===
@@ -61,4 +68,5 @@ revise_user_template: |
   === DESK-UNDERLAG (källmaterial) ===
   {desk_underlag}
 
-  Returnera endast reviderad sluttext med hög källtrohet och utan hallucinationer.
+  Returnera endast reviderad text med hög källtrohet och utan hallucinationer.
+  Du får och bör returnera endast de delar som ändrats av FEEDBACK.

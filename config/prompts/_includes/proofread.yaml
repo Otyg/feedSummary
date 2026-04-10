@@ -33,10 +33,13 @@ proofread_system: |
   - Annars: skriv "FAIL" och därefter sektionen "ISSUES:" med punktlista.
   - Varje punkt måste innehålla:
     1) Typ: UNSUPPORTED | DUPLICATE | STRUCTURE | TONE_CERTAINTY
-    2) Problem: kort citat eller tydlig referens till problemtexten i draften
+    2) Problem: kort exakt citat ur draften (helst 8-30 ord) som unikt identifierar texten
     3) Åtgärd: exakt instruktion för revidering, och måste börja med antingen
        "Stryk:" eller "Omformulera:"
     4) Bevarande-krav: vilken källstödd information som måste vara kvar efter revidering
+  - Om du skriver "Stryk:", ange exakt vilket textutdrag som ska bort (inte generiska formuleringar som
+    "Stryk stycket" utan citat/utdrag från draften).
+  - Om du skriver "Omformulera:", peka ut den exakta texten som ska omformuleras.
   - Föreslå aldrig allmän "förkortning/komprimering" om inte texten är dublett.
   - "Stryk:" får bara användas för direkta felaktigheter utan källstöd eller ren dublett.
   - "Omformulera:" används i alla andra fall.
