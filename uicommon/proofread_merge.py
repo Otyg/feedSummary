@@ -45,6 +45,22 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lower())
 
 
+def _looks_like_feedback_blob(text: str) -> bool:
+    t = str(text or "").strip()
+    if not t:
+        return False
+    upper = t.upper()
+    if upper.startswith("PASS") or upper.startswith("FAIL"):
+        return True
+    if re.search(r"(?im)^\s*ISSUES\s*:\s*$", t):
+        return True
+    if re.search(r"(?im)^\s*-\s*Typ\s*:", t) and re.search(
+        r"(?im)^\s*-\s*Åtgärd\s*:", t
+    ):
+        return True
+    return False
+
+
 def _extract_delete_targets(feedback: str) -> List[str]:
     out: List[str] = []
     for line in str(feedback or "").splitlines():
@@ -88,7 +104,7 @@ def _merge_revised_with_draft(
     revised_main, revised_sources = _split_sources_appendix(revised_text)
     if not revised_main:
         revised_main = revised_text
-    if len(_norm(revised_main)) < 40:
+    if _looks_like_feedback_blob(revised_main):
         return draft_text
 
     draft_blocks = _split_blocks(draft_main)

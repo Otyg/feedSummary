@@ -187,6 +187,14 @@ def enable_configurable_proofread_rounds(
                     round_no = 0
 
                 if role in {"proofread", "revise"}:
+                    if logger is not None:
+                        preview = _clip(reply, 200).replace("\n", " ")
+                        logger.info(
+                            "Proofread trace step=%s round=%s preview=%s",
+                            role,
+                            int(round_no),
+                            preview,
+                        )
                     proofread_trace.append(
                         {
                             "round": int(round_no),
@@ -213,6 +221,14 @@ def enable_configurable_proofread_rounds(
         )
         stats_out = dict(stats or {})
         stats_out["proofread_trace"] = list(proofread_trace)
+        if logger is not None:
+            logger.info(
+                "Proofread flow done: enabled=%s rounds=%s output=%s last_feedback_len=%s",
+                int(stats_out.get("proofread_enabled") or 0),
+                int(stats_out.get("proofread_rounds") or 0),
+                _clip(str(stats_out.get("proofread_output") or ""), 120),
+                len(str(stats_out.get("proofread_last_feedback") or "")),
+            )
         _PROOFREAD_SNAPSHOT.set(
             {
                 "original_summary": original_meta,
