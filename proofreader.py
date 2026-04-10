@@ -55,6 +55,7 @@ from feedsummary_core.summarizer.batching import (
 )
 from feedsummary_core.summarizer.chat import chat_guarded
 from feedsummary_core.summarizer.summarizer import _proofread_and_revise_meta_with_stats
+from uicommon.proofread_merge import stabilize_revise_output_from_messages
 
 from uicommon import primary_llm_config
 from uicommon.bootstrap_ui import _setup_logging_if_needed
@@ -834,6 +835,9 @@ async def _run_command(args: argparse.Namespace) -> int:
                 step = "revise"
                 revise_round += 1
                 round_no = revise_round
+                out = stabilize_revise_output_from_messages(
+                    messages=messages, raw_reply=str(out or "")
+                )
 
             if step:
                 trace_rows.append(
