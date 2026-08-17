@@ -53,7 +53,9 @@
   <div class="col-12 col-lg-9">
     <div class="content border rounded p-3 summary-html">
       {# summary-blocket används inte längre eftersom webapp_viewer.py injicerar egen header i html #}
-      <h1>{{ summary.get('title') or '' }}</h1>
+      {% if summary %}
+        <h1>{{ summary.get('title') or '' }}</h1>
+      {% endif %}
       {{ html|safe }}
     </div>
   </div>

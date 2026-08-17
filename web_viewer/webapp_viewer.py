@@ -199,6 +199,22 @@ def _summary_list_item(d: Dict[str, Any]) -> Dict[str, Any]:
 def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
     text = str(a.get("text") or "")
     preview = (text[:400]).replace("\n", " ")
+    
+    # Get tags if store is available
+    tags = []
+    if APP_STORE:
+        try:
+            article_tags = APP_STORE.get_article_tags(a.get("id")) or []
+            for t in article_tags:
+                if isinstance(t, dict):
+                    tags.append({
+                        "id": t.get("id"),
+                        "name": t.get("name", ""),
+                        "category": t.get("category", "GENERAL")
+                    })
+        except Exception as e:
+            logger.debug(f"Error loading tags for article {a.get('id')}: {e}")
+    
     return {
         "id": a.get("id"),
         "title": a.get("title") or "",
@@ -207,6 +223,7 @@ def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
         "published_ts": int(a.get("published_ts") or 0),
         "fetched_at": int(a.get("fetched_at") or 0),
         "preview": preview,
+        "tags": tags,
     }
 
 
@@ -475,6 +492,21 @@ def api_article(article_id: str):
     if not isinstance(a, dict):
         abort(404)
 
+    # Add tags to the response
+    tags = []
+    try:
+        article_tags = store.get_article_tags(article_id) or []
+        for t in article_tags:
+            if isinstance(t, dict):
+                tags.append({
+                    "id": t.get("id"),
+                    "name": t.get("name", ""),
+                    "category": t.get("category", "GENERAL")
+                })
+    except Exception as e:
+        logger.debug(f"Error loading tags for article {article_id}: {e}")
+    
+    a["tags"] = tags
     return jsonify({"item": a})
 
 
@@ -647,7 +679,7 @@ def list_articles():
     articles: List[Dict[str, Any]] = []
     for a in raw:
         if isinstance(a, dict) and a.get("id"):
-            articles.append(a)
+            articles.append(_article_list_item(a))
 
     def ts(a: Dict[str, Any]) -> int:
         p = a.get("published_ts")
@@ -681,6 +713,7 @@ def view_article(article_id: str):
                 "fetched_at": 0,
                 "url": "",
                 "text": f"Fel vid get_article({article_id}): {e}",
+                "tags": [],
             },
             format_ts=format_ts,
         ), 500
@@ -699,6 +732,22 @@ def view_article(article_id: str):
             f"id: {a.get('id')}\n"
             f"keys: {keys}\n"
         )
+
+    # Add tags to the view
+    tags = []
+    try:
+        article_tags = store.get_article_tags(article_id) or []
+        for t in article_tags:
+            if isinstance(t, dict):
+                tags.append({
+                    "id": t.get("id"),
+                    "name": t.get("name", ""),
+                    "category": t.get("category", "GENERAL")
+                })
+    except Exception as e:
+        logger.debug(f"Error loading tags for article {article_id}: {e}")
+    
+    a["tags"] = tags
 
     return render_template("article.html", a=a, format_ts=format_ts)
 
@@ -735,6 +784,225 @@ def status():
             ),
             503,
         )
+
+
+# ---- Tag management API endpoints ----
+
+
+@app.route("/api/v1/tags", methods=["GET"])
+def api_get_all_tags():
+    """Get all tags."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        tags = store.get_all_tags() or []
+        return jsonify({"tags": tags}), 200
+    except Exception as e:
+        logger.error(f"Error getting all tags: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/tags", methods=["POST"])
+def api_create_tag():
+    """Create a new tag."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        data = request.get_json() or {}
+        name = data.get("name", "").strip()
+        category = data.get("category", "GENERAL").strip()
+        description = data.get("description", "").strip()
+        
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        
+        # Try to create tag
+        tag = store.create_tag(name, category, description)
+        if tag is None:
+            return jsonify({"error": "tag already exists"}), 409
+        
+        logger.info(f"[TagAPI] Created tag: {tag.get('name')} ({tag.get('id')})")
+        return jsonify({"tag": tag}), 201
+    except Exception as e:
+        logger.error(f"Error creating tag: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/article/<article_id>/tags", methods=["GET"])
+def api_get_article_tags(article_id: str):
+    """Get all tags for an article."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        tags = store.get_article_tags(article_id) or []
+        return jsonify({"tags": tags}), 200
+    except Exception as e:
+        logger.error(f"Error getting tags for article {article_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/article/<article_id>/tags", methods=["POST"])
+def api_add_tag_to_article(article_id: str):
+    """Add a tag to an article."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        data = request.get_json() or {}
+        tag_id = data.get("tag_id")
+        
+        if not tag_id:
+            return jsonify({"error": "tag_id is required"}), 400
+        
+        added = store.add_tag_to_article(article_id, int(tag_id))
+        if not added:
+            return jsonify({"error": "tag already associated with article"}), 409
+        
+        logger.info(f"[TagAPI] Added tag {tag_id} to article {article_id}")
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        logger.error(f"Error adding tag to article {article_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/article/<article_id>/tags/<int:tag_id>", methods=["DELETE"])
+def api_remove_tag_from_article(article_id: str, tag_id: int):
+    """Remove a tag from an article."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        removed = store.remove_article_tag(article_id, tag_id)
+        if not removed:
+            return jsonify({"error": "tag not associated with article"}), 404
+        
+        logger.info(f"[TagAPI] Removed tag {tag_id} from article {article_id}")
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        logger.error(f"Error removing tag from article {article_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/tags/<int:tag_id>", methods=["GET"])
+def api_get_tag(tag_id: int):
+    """Get a specific tag with usage count."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        # Get the tag
+        all_tags = store.get_all_tags() or []
+        tag = next((t for t in all_tags if t.get("id") == tag_id), None)
+        
+        if not tag:
+            return jsonify({"error": "tag not found"}), 404
+        
+        # Count how many articles use this tag
+        usage_count = 0
+        try:
+            all_articles = store.list_articles(limit=10000) or []
+            for article in all_articles:
+                if isinstance(article, dict):
+                    article_tags = store.get_article_tags(article.get("id")) or []
+                    if any(t.get("id") == tag_id for t in article_tags if isinstance(t, dict)):
+                        usage_count += 1
+        except Exception:
+            pass
+        
+        tag["usage_count"] = usage_count
+        return jsonify({"tag": tag}), 200
+    except Exception as e:
+        logger.error(f"Error getting tag {tag_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/tags/<int:tag_id>", methods=["PUT"])
+def api_update_tag(tag_id: int):
+    """Update a tag."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        data = request.get_json() or {}
+        name = data.get("name")
+        category = data.get("category")
+        description = data.get("description")
+        
+        updated_tag = store.update_tag(tag_id, name, category, description)
+        if not updated_tag:
+            return jsonify({"error": "tag not found"}), 404
+        
+        logger.info(f"[TagAPI] Updated tag {tag_id}: {updated_tag.get('name')}")
+        return jsonify({"tag": updated_tag}), 200
+    except Exception as e:
+        logger.error(f"Error updating tag {tag_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/tags/<int:tag_id>", methods=["DELETE"])
+def api_delete_tag(tag_id: int):
+    """Delete a tag."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        deleted = store.delete_tag(tag_id)
+        if not deleted:
+            return jsonify({"error": "tag not found"}), 404
+        
+        logger.info(f"[TagAPI] Deleted tag {tag_id}")
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        logger.error(f"Error deleting tag {tag_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ---- Tag management UI ----
+
+
+@app.route("/tags")
+def manage_tags():
+    """Global tag management page."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        tags = store.get_all_tags() or []
+        
+        # Count usage for each tag
+        all_articles = store.list_articles(limit=10000) or []
+        usage_counts = {}
+        for article in all_articles:
+            if isinstance(article, dict):
+                article_tags = store.get_article_tags(article.get("id")) or []
+                for tag in article_tags:
+                    if isinstance(tag, dict):
+                        tag_id = tag.get("id")
+                        usage_counts[tag_id] = usage_counts.get(tag_id, 0) + 1
+        
+        # Add usage count to each tag
+        for tag in tags:
+            tag["usage_count"] = usage_counts.get(tag.get("id"), 0)
+        
+        # Sort by name
+        tags.sort(key=lambda t: t.get("name", "").lower())
+        
+        return render_template("tags.html", tags=tags, format_ts=format_ts)
+    except Exception as e:
+        logger.error(f"Error loading tags: {e}")
+        abort(500)
 
 
 @app.route("/license")
