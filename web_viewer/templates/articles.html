@@ -2,31 +2,65 @@
 {% block body %}
 <div class="row">
   <div class="col-12">
-    <div class="d-flex justify-content-between align-items-center">
+    <div class="d-flex justify-content-between align-items-center mb-3">
       <h4>Artiklar</h4>
       <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Till summaries</a>
-      {% if error %}
-        <div class="alert alert-danger">{{ error }}</div>
-      {% endif %}
     </div>
-    <div class="table-responsive mt-2">
+    
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+    
+    {# Tag filter section #}
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="card-title">Filtrera på taggar</h6>
+        <div id="tag-filter-container" class="d-flex flex-wrap gap-2">
+          <small class="text-muted">Laddar taggar...</small>
+        </div>
+        <div class="mt-2">
+          <small class="text-muted">Valda taggar: <span id="selected-count">0</span></small>
+          <button id="clear-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa filter</button>
+        </div>
+      </div>
+    </div>
+    
+    {# Article count #}
+    <div class="mb-2">
+      <small class="text-muted">Artiklar: <span id="article-count">{{ articles|length }}</span></small>
+    </div>
+    
+    <div class="table-responsive">
       <table class="table table-sm table-striped align-middle">
         <thead>
           <tr>
             <th>Titel</th>
             <th>Källa</th>
+            <th>Taggar</th>
             <th>Publicerad</th>
             <th></th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="articles-tbody">
           {% for a in articles %}
-          <tr>
-            <td style="max-width: 520px;">
+          <tr class="article-row" data-article-id="{{ a.get('id') }}" data-tags="{{ a.get('tags')|tojson|safe }}">
+            <td style="max-width: 420px;">
               <div class="text-truncate">{{ a.get('title') or '' }}</div>
               <div class="small text-muted text-truncate">{{ a.get('url') or '' }}</div>
             </td>
             <td>{{ a.get('source') or '' }}</td>
+            <td>
+              <div class="tag-list">
+                {% for tag in a.get('tags', []) %}
+                  {% if tag is mapping %}
+                    <span class="badge {% if tag.get('category') == 'DOMAIN_ENTITY' %}bg-info{% else %}bg-secondary{% endif %} tag-badge" 
+                          data-tag-name="{{ tag.get('name') }}" style="cursor: pointer; font-size: 0.75rem;">
+                      {{ tag.get('name') }}
+                    </span>
+                  {% endif %}
+                {% endfor %}
+              </div>
+            </td>
             <td>
               {% set ts = a.get('published_ts') or a.get('fetched_at') or 0 %}
               {{ format_ts(ts) if format_ts else ts }}
@@ -39,4 +73,151 @@
     </div>
   </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const allArticles = [
+    {% for a in articles %}
+    {
+      id: "{{ a.get('id') }}",
+      tags: {{ a.get('tags', [])|tojson|safe }},
+      row: document.querySelector('tr[data-article-id="{{ a.get('id') }}"]')
+    },
+    {% endfor %}
+  ];
+  
+  let selectedTags = new Set();
+  
+  // Collect all unique tags
+  const tagsMap = new Map(); // tag_name -> tag_object
+  allArticles.forEach(article => {
+    article.tags.forEach(tag => {
+      if (!tagsMap.has(tag.name)) {
+        tagsMap.set(tag.name, tag);
+      }
+    });
+  });
+  
+  // Build tag filter buttons
+  const filterContainer = document.getElementById('tag-filter-container');
+  filterContainer.innerHTML = '';
+  
+  const tagsArray = Array.from(tagsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  
+  if (tagsArray.length === 0) {
+    filterContainer.innerHTML = '<small class="text-muted">Inga taggar hittades</small>';
+  } else {
+    tagsArray.forEach(tag => {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline-secondary tag-filter-btn';
+      btn.textContent = tag.name;
+      btn.setAttribute('data-tag-name', tag.name);
+      btn.style.cursor = 'pointer';
+      
+      btn.addEventListener('click', function() {
+        if (selectedTags.has(tag.name)) {
+          selectedTags.delete(tag.name);
+          btn.classList.remove('active', 'btn-secondary');
+          btn.classList.add('btn-outline-secondary');
+        } else {
+          selectedTags.add(tag.name);
+          btn.classList.remove('btn-outline-secondary');
+          btn.classList.add('active', 'btn-secondary');
+        }
+        updateFiltering();
+      });
+      
+      filterContainer.appendChild(btn);
+    });
+  }
+  
+  // Update selected count and visibility
+  function updateFiltering() {
+    document.getElementById('selected-count').textContent = selectedTags.size;
+    
+    if (selectedTags.size === 0) {
+      document.getElementById('clear-filters').style.display = 'none';
+    } else {
+      document.getElementById('clear-filters').style.display = 'inline-block';
+    }
+    
+    let visibleCount = 0;
+    allArticles.forEach(article => {
+      if (selectedTags.size === 0) {
+        // No filter - show all
+        article.row.style.display = '';
+        visibleCount++;
+      } else {
+        // Filter active - show only articles with selected tags
+        const hasAnyTag = article.tags.some(tag => selectedTags.has(tag.name));
+        if (hasAnyTag) {
+          article.row.style.display = '';
+          visibleCount++;
+        } else {
+          article.row.style.display = 'none';
+        }
+      }
+    });
+    
+    document.getElementById('article-count').textContent = visibleCount + ' / ' + allArticles.length;
+  }
+  
+  // Click tag badges to filter
+  document.querySelectorAll('.tag-badge').forEach(badge => {
+    badge.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const tagName = this.getAttribute('data-tag-name');
+      
+      if (selectedTags.has(tagName)) {
+        selectedTags.delete(tagName);
+      } else {
+        selectedTags.add(tagName);
+      }
+      
+      // Update button states
+      document.querySelectorAll('.tag-filter-btn').forEach(btn => {
+        if (selectedTags.has(btn.getAttribute('data-tag-name'))) {
+          btn.classList.remove('btn-outline-secondary');
+          btn.classList.add('active', 'btn-secondary');
+        } else {
+          btn.classList.remove('active', 'btn-secondary');
+          btn.classList.add('btn-outline-secondary');
+        }
+      });
+      
+      updateFiltering();
+    });
+  });
+  
+  // Clear filters button
+  document.getElementById('clear-filters').addEventListener('click', function() {
+    selectedTags.clear();
+    document.querySelectorAll('.tag-filter-btn').forEach(btn => {
+      btn.classList.remove('active', 'btn-secondary');
+      btn.classList.add('btn-outline-secondary');
+    });
+    updateFiltering();
+  });
+});
+</script>
+
+<style>
+.tag-filter-btn.active {
+  border-color: #0d6efd !important;
+  color: #fff !important;
+}
+
+.tag-badge:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+
+.article-row {
+  transition: opacity 0.2s ease;
+}
+
+.article-row:not(:last-child) {
+  border-bottom: 1px solid #dee2e6;
+}
+</style>
 {% endblock %}

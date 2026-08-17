@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row">
+  <div class="col-12">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h2>Taggar</h2>
+      <button class="btn btn-primary" onclick="showCreateForm()">Ny tagg</button>
+    </div>
+
+    {# New/Edit tag form #}
+    <div id="tag-form" class="card mb-4" style="display: none;">
+      <div class="card-body">
+        <h5 class="card-title" id="form-title">Ny tagg</h5>
+        <form id="edit-form" onsubmit="saveTag(event)">
+          <input type="hidden" id="tag-id" value="">
+          
+          <div class="mb-3">
+            <label for="tag-name" class="form-label">Namn *</label>
+            <input type="text" class="form-control" id="tag-name" required maxlength="100">
+          </div>
+          
+          <div class="mb-3">
+            <label for="tag-category" class="form-label">Kategori</label>
+            <select class="form-select" id="tag-category">
+              <option value="GENERAL" selected>Allmän</option>
+              <option value="DOMAIN_ENTITY">Domän-enhet</option>
+              <option value="PERSON">Person</option>
+              <option value="ORGANIZATION">Organisation</option>
+              <option value="LOCATION">Plats</option>
+            </select>
+          </div>
+          
+          <div class="mb-3">
+            <label for="tag-description" class="form-label">Beskrivning</label>
+            <textarea class="form-control" id="tag-description" rows="3" maxlength="500"></textarea>
+          </div>
+          
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-success">Spara</button>
+            <button type="button" class="btn btn-secondary" onclick="cancelEdit()">Avbryt</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {# Tags table #}
+    <div class="table-responsive">
+      <table class="table table-hover table-striped">
+        <thead class="table-light">
+          <tr>
+            <th>Namn</th>
+            <th>Kategori</th>
+            <th>Beskrivning</th>
+            <th class="text-center">Använd i artiklar</th>
+            <th class="text-end">Åtgärder</th>
+          </tr>
+        </thead>
+        <tbody id="tags-tbody">
+          {% for tag in tags %}
+            <tr class="tag-row" data-tag-id="{{ tag.get('id') }}">
+              <td>
+                <strong>{{ tag.get('name') }}</strong>
+              </td>
+              <td>
+                <span class="badge {% if tag.get('category') == 'DOMAIN_ENTITY' %}bg-info{% elif tag.get('category') in ['PERSON', 'ORGANIZATION', 'LOCATION'] %}bg-warning{% else %}bg-secondary{% endif %}">
+                  {{ tag.get('category') }}
+                </span>
+              </td>
+              <td class="small">{{ tag.get('description') or '—' }}</td>
+              <td class="text-center">
+                <span class="badge bg-light text-dark">{{ tag.get('usage_count', 0) }}</span>
+              </td>
+              <td class="text-end">
+                <button class="btn btn-sm btn-outline-primary" onclick="editTag({{ tag.get('id') }})">
+                  Redigera
+                </button>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteTag({{ tag.get('id') }}, {{ tag.get('name')|tojson }}, {{ tag.get('usage_count', 0) }})">
+                  Radera
+                </button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      
+      {% if not tags %}
+        <div class="alert alert-info" role="alert">
+          Inga taggar ännu. <a href="#" onclick="showCreateForm(); return false;">Skapa en ny tagg</a>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+let currentEditingTagId = null;
+
+function showCreateForm() {
+  currentEditingTagId = null;
+  document.getElementById('tag-id').value = '';
+  document.getElementById('tag-name').value = '';
+  document.getElementById('tag-category').value = 'GENERAL';
+  document.getElementById('tag-description').value = '';
+  document.getElementById('form-title').textContent = 'Ny tagg';
+  document.getElementById('tag-form').style.display = 'block';
+  document.getElementById('tag-name').focus();
+}
+
+function cancelEdit() {
+  document.getElementById('tag-form').style.display = 'none';
+  currentEditingTagId = null;
+}
+
+async function editTag(tagId) {
+  try {
+    const response = await fetch(`/api/v1/tags/${tagId}`);
+    if (!response.ok) {
+      alert('Kunde inte hämta tagg');
+      return;
+    }
+    
+    const data = await response.json();
+    const tag = data.tag;
+    
+    currentEditingTagId = tagId;
+    document.getElementById('tag-id').value = tag.id;
+    document.getElementById('tag-name').value = tag.name;
+    document.getElementById('tag-category').value = tag.category || 'GENERAL';
+    document.getElementById('tag-description').value = tag.description || '';
+    document.getElementById('form-title').textContent = `Redigera "${tag.name}"`;
+    document.getElementById('tag-form').style.display = 'block';
+    document.getElementById('tag-name').focus();
+  } catch (error) {
+    console.error('Error loading tag:', error);
+    alert('Fel vid hämtning av tagg');
+  }
+}
+
+async function saveTag(event) {
+  event.preventDefault();
+  
+  const tagId = document.getElementById('tag-id').value;
+  const name = document.getElementById('tag-name').value.trim();
+  const category = document.getElementById('tag-category').value;
+  const description = document.getElementById('tag-description').value.trim();
+  
+  if (!name) {
+    alert('Taggnamn är obligatoriskt');
+    return;
+  }
+  
+  try {
+    if (tagId) {
+      // Update existing tag
+      const response = await fetch(`/api/v1/tags/${tagId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, category, description })
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        alert('Kunde inte uppdatera tagg: ' + (error.error || 'Okänt fel'));
+        return;
+      }
+      
+      alert('Tagg uppdaterad');
+    } else {
+      // Create new tag
+      const response = await fetch('/api/v1/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, category, description })
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        if (response.status === 409) {
+          alert('En tagg med detta namn finns redan');
+        } else {
+          alert('Kunde inte skapa tagg: ' + (error.error || 'Okänt fel'));
+        }
+        return;
+      }
+      
+      alert('Tagg skapad');
+    }
+    
+    // Refresh the page
+    location.reload();
+  } catch (error) {
+    console.error('Error saving tag:', error);
+    alert('Fel vid sparande av tagg');
+  }
+}
+
+async function deleteTag(tagId, tagName, usageCount) {
+  let message = `Är du säker på att du vill radera taggen "${tagName}"?`;
+  
+  if (usageCount > 0) {
+    message += `\n\nDenna tagg används i ${usageCount} artikel${usageCount !== 1 ? 'ar' : ''}. De kommer att tas bort från artiklarna.`;
+  }
+  
+  if (!confirm(message)) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api/v1/tags/${tagId}`, {
+      method: 'DELETE'
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      alert('Kunde inte radera tagg: ' + (error.error || 'Okänt fel'));
+      return;
+    }
+    
+    alert('Tagg raderad');
+    location.reload();
+  } catch (error) {
+    console.error('Error deleting tag:', error);
+    alert('Fel vid borttagning av tagg');
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+</script>
+{% endblock %}

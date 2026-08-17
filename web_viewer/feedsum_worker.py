@@ -47,7 +47,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from feedsummary_core.summarizer.main import run_pipeline
+from feedsummary_core.summarizer.main import run_pipeline, run_fetch_and_tag, run_tag_based_summary
 from uicommon import load_config
 
 from feedsummary_core.persistence import create_store
@@ -449,6 +449,13 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
     if pp:
         overrides["prompt_package"] = pp
 
+    # Handle tags for tag-based summary
+    tags = entry.get("tags") or []
+    if isinstance(tags, list):
+        tag_names = [str(x).strip() for x in tags if str(x).strip()]
+        if tag_names:
+            overrides["tags"] = tag_names
+
     return overrides
 
 
@@ -456,6 +463,7 @@ async def _run_one(
     config_path: str, cfg: Dict[str, Any], store, job_name: str, entry: Dict[str, Any]
 ) -> str:
     overrides = _entry_to_overrides(entry)
+    schedule_type = str(entry.get("type") or "").strip().lower()
     job_id = None
     try:
         job_id = store.create_job()
@@ -466,23 +474,53 @@ async def _run_one(
             RUNNING_JOB_ID = int(job_id)
 
         log.info(
-            "Running job '%s' (id: %s) overrides=%s", job_name, str(job_id), overrides
+            "Running job '%s' (id: %s) type=%s overrides=%s", 
+            job_name, str(job_id), schedule_type, overrides
         )
 
-        summary_id = await run_pipeline(
-            config_path,
-            job_id=job_id,
-            overrides=overrides,
-            config_dict=cfg,
-        )
+        if schedule_type == "fetch_and_tag":
+            # Fetch and tag articles only, no summarization
+            result = await run_fetch_and_tag(
+                config_path,
+                job_id=job_id,
+                overrides=overrides,
+                config_dict=cfg,
+            )
+            log.info("Job '%s' OK (fetch_and_tag) fetched=%s", job_name, result)
+            return str(result or "")
+        
+        elif schedule_type == "tag_based_summary":
+            # Summarize articles with specific tags (no new fetch)
+            tags = overrides.get("tags")
+            lb = overrides.get("lookback")
+            if not tags:
+                raise ValueError(f"Schedule '{job_name}' type='tag_based_summary' requires 'tags' field")
+            
+            summary_id = await run_tag_based_summary(
+                config_path,
+                job_id=job_id,
+                tag_names=tags,
+                lookback=lb,
+                config_dict=cfg,
+            )
+            log.info("Job '%s' OK (tag_based_summary) summary_id=%s", job_name, summary_id)
+            return str(summary_id or "")
+        
+        else:
+            # Default: full pipeline (fetch + summarize + tag)
+            summary_id = await run_pipeline(
+                config_path,
+                job_id=job_id,
+                overrides=overrides,
+                config_dict=cfg,
+            )
 
-        log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
-        return str(summary_id)
+            log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
+            return str(summary_id)
 
     except Exception:
         log.exception("Job '%s' failed", job_name)
         raise
-
     finally:
         # clear running job id when pipeline finishes (success or error)
         with RUNNING_JOB_LOCK:

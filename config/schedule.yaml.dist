@@ -36,3 +36,28 @@ weekly_hybrid_cyber:
     - "Dataskydd"
     - "Sårbarheter"
   promptpackage: "weekly_hybrid_news_cyber_tech_se"
+
+ingest_cyber_continuous:
+  frequency: "quarterday"  # Runs at 00:00, 06:00, 12:00, 18:00
+  type: "fetch_and_tag"
+  categories:
+    - "Cybersecurity"
+    - "Dataskydd"
+    - "Sårbarheter"
+
+ingest_news_continuous:
+  frequency: "halfday"  # Runs at 00:00, 12:00
+  type: "fetch_and_tag"
+  categories:
+    - "Nyheter"
+    - "Teknik"
+
+summary_vulnerabilities:
+  frequency: "daily"
+  time: "08:00"
+  type: "tag_based_summary"
+  tags:
+    - "CVE"
+    - "Vulnerability"
+  lookback: "1w"
+  promptpackage: "weekly_hybrid_news_cyber_tech_se"
