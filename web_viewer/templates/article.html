@@ -20,8 +20,10 @@
             {% set tags = a.get('tags') or [] %}
             {% for tag in tags %}
               {% if tag is mapping %}
-                <span class="badge {% if tag.get('category') == 'DOMAIN_ENTITY' %}bg-info{% else %}bg-secondary{% endif %} me-1 tag-badge" 
-                      data-tag-id="{{ tag.get('id') }}" style="cursor: default; position: relative; display: inline-block; padding: 0.5em 0.75em;">
+                <span class="badge tag-category-{{ tag.get('category') }} me-1 tag-badge" 
+                      data-tag-id="{{ tag.get('id') }}" 
+                      data-category="{{ tag.get('category') }}"
+                      style="cursor: default; position: relative; display: inline-block; padding: 0.5em 0.75em;">
                   {{ tag.get('name') }}
                   <button type="button" class="btn-close btn-close-sm" 
                           onclick="removeTag({{ tag.get('id') }})" 
@@ -54,12 +56,47 @@
 <script>
 const ARTICLE_ID = "{{ a.get('id') }}";
 let allTags = [];
+window.categoriesMap = new Map(); // category_name -> {bg_color, text_color, label}
 
-// Load all tags on page load
+// Load all tags and categories on page load
 document.addEventListener('DOMContentLoaded', async function() {
+  await loadCategories();
   await loadAllTags();
   setupTagInput();
+  applyCategoriesToExistingTags();
 });
+
+async function loadCategories() {
+  try {
+    const response = await fetch('/api/v1/categories');
+    if (response.ok) {
+      const data = await response.json();
+      const categories = data.categories || [];
+      categories.forEach(cat => {
+        window.categoriesMap.set(cat.name, {
+          label: cat.label,
+          bg_color: cat.bg_color,
+          text_color: cat.text_color
+        });
+      });
+    }
+  } catch (error) {
+    console.error('Error loading categories:', error);
+  }
+}
+
+function applyCategoriesToExistingTags() {
+  // Apply category styles to badges on page load
+  document.querySelectorAll('.tag-badge').forEach(badge => {
+    const category = badge.getAttribute('data-category');
+    const categoryData = window.categoriesMap.get(category);
+    if (categoryData) {
+      badge.classList.add(categoryData.bg_color, categoryData.text_color);
+    } else {
+      badge.classList.add('bg-secondary', 'text-dark');
+    }
+  });
+}
 
 async function loadAllTags() {
   try {
@@ -198,10 +235,12 @@ async function addTag(tagId) {
 
 function addTagToDisplay(tag) {
   const tagList = document.getElementById('tag-list');
-  const badgeClass = tag.category === 'DOMAIN_ENTITY' ? 'bg-info' : 'bg-secondary';
+  const categoryData = window.categoriesMap?.get(tag.category) || {};
+  const bgColor = categoryData.bg_color || 'bg-secondary';
+  const textColor = categoryData.text_color || 'text-dark';
   
   const badgeHtml = `
-    <span class="badge ${badgeClass} me-1 tag-badge" data-tag-id="${tag.id}" 
+    <span class="badge ${bgColor} ${textColor} me-1 tag-badge" data-tag-id="${tag.id}" 
           style="cursor: default; position: relative; display: inline-block; padding: 0.5em 0.75em;">
       ${escapeHtml(tag.name)}
       <button type="button" class="btn-close btn-close-sm" 
