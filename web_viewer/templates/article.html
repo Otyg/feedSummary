@@ -34,10 +34,27 @@
             {% endfor %}
           </div>
           
-          <div class="input-group input-group-sm">
+          <div class="input-group input-group-sm mb-2">
             <input type="text" id="tag-input" class="form-control" placeholder="Lägg till befintlig tagg eller ny...">
             <button class="btn btn-outline-primary" type="button" onclick="addOrCreateTag()">Lägg till</button>
           </div>
+          
+          <button class="btn btn-sm btn-outline-info w-100 mb-2" type="button" onclick="reclassifyWithExistingTags()" id="reclassify-btn">
+            🔄 Föreslå taggar från befintliga
+          </button>
+          <div id="reclassify-suggestions" style="display: none; margin-top: 1rem; padding: 0.75rem; background-color: #f8f9fa; border-radius: 0.25rem; border-left: 3px solid #17a2b8;">
+            <div style="margin-bottom: 0.75rem;">
+              <strong>Föreslagna taggar:</strong>
+              <small id="reclassify-loading" style="display: none; margin-left: 0.5rem;">
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Hämtar förslag...
+              </small>
+            </div>
+            <div id="reclassify-suggestions-list"></div>
+            <div style="margin-top: 0.75rem; text-align: right;">
+              <button class="btn btn-sm btn-outline-secondary" type="button" onclick="closeSuggestions()">Stäng</button>
+            </div>
+          </div>
+          
           <div id="tag-suggestions" class="mt-2" style="display: none; max-height: 200px; overflow-y: auto;">
             <small class="text-muted">Förslag:</small>
             <div id="suggestions-list" class="mt-1"></div>
@@ -284,6 +301,77 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+async function reclassifyWithExistingTags() {
+  const suggestionsDiv = document.getElementById('reclassify-suggestions');
+  const loadingSpan = document.getElementById('reclassify-loading');
+  const suggestionsList = document.getElementById('reclassify-suggestions-list');
+  const btn = document.getElementById('reclassify-btn');
+  
+  // Show loading state
+  suggestionsDiv.style.display = 'block';
+  loadingSpan.style.display = 'inline';
+  suggestionsList.innerHTML = '';
+  btn.disabled = true;
+  
+  try {
+    const response = await fetch(`/api/v1/article/${ARTICLE_ID}/reclassify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_tags: 5 })
+    });
+    
+    loadingSpan.style.display = 'none';
+    
+    if (!response.ok) {
+      const error = await response.json();
+      suggestionsList.innerHTML = `<div class="alert alert-danger">Fel: ${escapeHtml(error.error || 'Okänt fel')}</div>`;
+      btn.disabled = false;
+      return;
+    }
+    
+    const result = await response.json();
+    const suggested = result.suggested_tags || [];
+    
+    if (suggested.length === 0) {
+      suggestionsList.innerHTML = `
+        <div class="alert alert-info mb-0">
+          Inga ytterligare taggar föreslogs. Artikeln har redan relevanta taggar.
+        </div>
+      `;
+    } else {
+      let html = '<div>';
+      suggested.forEach(tag => {
+        html += `
+          <div style="margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <strong>${escapeHtml(tag.name)}</strong> 
+              <small class="text-muted">[${tag.category}]</small>
+              ${tag.reasoning ? `<br><small style="color: #666;">${escapeHtml(tag.reasoning)}</small>` : ''}
+            </div>
+            <button class="btn btn-sm btn-outline-success" type="button" onclick="selectTag(${tag.id}, '${escapeHtml(tag.name)}')">
+              Lägg till
+            </button>
+          </div>
+        `;
+      });
+      html += '</div>';
+      suggestionsList.innerHTML = html;
+    }
+    
+    btn.disabled = false;
+  } catch (error) {
+    console.error('Error reclassifying:', error);
+    loadingSpan.style.display = 'none';
+    suggestionsList.innerHTML = `<div class="alert alert-danger">Fel: ${escapeHtml(error.message)}</div>`;
+    btn.disabled = false;
+  }
+}
+
+function closeSuggestions() {
+  document.getElementById('reclassify-suggestions').style.display = 'none';
+  document.getElementById('reclassify-btn').disabled = false;
 }
 </script>
 {% endblock %}

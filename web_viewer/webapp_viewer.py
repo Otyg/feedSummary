@@ -57,6 +57,9 @@ from feedsummary_core.summarizer.main import (
     _build_composed_summary_text,
     _strip_sources_appendix_from_summary,
 )
+from feedsummary_core.summarizer.tagging import TagManager
+from feedsummary_core.llm_client import create_llm_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -1582,6 +1585,78 @@ def api_remove_tag_from_article(article_id: str, tag_id: int):
         return jsonify({"success": True}), 200
     except Exception as e:
         logger.error(f"Error removing tag from article {article_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/article/<article_id>/reclassify", methods=["POST"])
+def api_reclassify_article_with_existing_tags(article_id: str):
+    """
+    Reclassify an article using only existing tags from the database.
+    
+    No new tags are created - the LLM is asked to suggest only from existing tags.
+    The LLM is instructed that it's OK to suggest no tags if none are relevant.
+    
+    Request body:
+        max_tags: Maximum number of tags to suggest (default 5)
+    
+    Response:
+        suggested_tags: List of suggested tags with 'id', 'name', 'category', 'reasoning'
+    """
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        data = request.get_json() or {}
+        max_tags = int(data.get("max_tags", 5))
+        max_tags = max(1, min(max_tags, 10))  # Limit between 1-10
+        
+        # Get article
+        article = store.get_article(article_id)
+        if not article:
+            return jsonify({"error": "article not found"}), 404
+        
+        # Get current tags on article
+        current_tags = store.get_article_tags(article_id) or []
+        
+        # Create LLM client
+        if not APP_CFG:
+            return jsonify({"error": "App configuration not available"}), 503
+        
+        llm_client = create_llm_client(APP_CFG)
+        if not llm_client:
+            return jsonify({"error": "LLM client not available"}), 503
+        
+        # Create tagger instance with the store
+        tagger = TagManager(store)
+        
+        # Run reclassification
+        import asyncio
+        suggested_tags = asyncio.run(
+            tagger.reclassify_article_with_existing_tags(
+                llm_client=llm_client,
+                article=article,
+                current_article_tags=current_tags,
+                max_tags=max_tags,
+            )
+        )
+        
+        logger.info(
+            f"[ReclassifyAPI] Article {article_id}: suggested {len(suggested_tags)} tags "
+            f"(max_tags={max_tags})"
+        )
+        
+        return jsonify({
+            "article_id": article_id,
+            "article_title": article.get("title"),
+            "current_tags": current_tags,
+            "suggested_tags": suggested_tags,
+            "suggestion_count": len(suggested_tags),
+        }), 200
+    except Exception as e:
+        logger.error(f"Error reclassifying article {article_id}: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
