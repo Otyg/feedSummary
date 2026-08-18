@@ -6,12 +6,25 @@
       <h4>Artiklar</h4>
       <a href="{{ url_for('index') }}" class="btn btn-sm btn-outline-secondary">Till summaries</a>
     </div>
-<<<<<<< HEAD
     
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
     {% endif %}
     
+    {# Category filter section #}
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="card-title">Filtrera på kategori</h6>
+        <div id="category-filter-container" class="d-flex flex-wrap gap-2">
+          <small class="text-muted">Laddar kategorier...</small>
+        </div>
+        <div class="mt-2">
+          <small class="text-muted">Valda kategorier: <span id="selected-categories-count">0</span></small>
+          <button id="clear-category-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa kategori-filter</button>
+        </div>
+      </div>
+    </div>
+
     {# Tag filter section #}
     <div class="card mb-3">
       <div class="card-body">
@@ -54,8 +67,10 @@
               <div class="tag-list">
                 {% for tag in a.get('tags', []) %}
                   {% if tag is mapping %}
-                    <span class="badge {% if tag.get('category') == 'DOMAIN_ENTITY' %}bg-info{% else %}bg-secondary{% endif %} tag-badge" 
-                          data-tag-name="{{ tag.get('name') }}" style="cursor: pointer; font-size: 0.75rem;">
+                    <span class="badge tag-badge tag-category-{{ tag.get('category') }}" 
+                          data-tag-name="{{ tag.get('name') }}" 
+                          data-category="{{ tag.get('category') }}"
+                          style="cursor: pointer; font-size: 0.75rem;">
                       {{ tag.get('name') }}
                     </span>
                   {% endif %}
@@ -76,7 +91,7 @@
 </div>
 
 <script>
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
   const allArticles = [
     {% for a in articles %}
     {
@@ -88,22 +103,110 @@ document.addEventListener('DOMContentLoaded', function() {
   ];
   
   let selectedTags = new Set();
+  let selectedCategories = new Set();
+  let categoriesMap = new Map(); // category_name -> {bg_color, text_color, label}
+  
+  // Load categories from API
+  try {
+    const response = await fetch('/api/v1/categories');
+    if (response.ok) {
+      const data = await response.json();
+      const categories = data.categories || [];
+      categories.forEach(cat => {
+        categoriesMap.set(cat.name, {
+          label: cat.label,
+          bg_color: cat.bg_color,
+          text_color: cat.text_color
+        });
+      });
+    }
+  } catch (error) {
+    console.error('Error loading categories:', error);
+  }
+  
+  // Apply category styles to badges
+  document.querySelectorAll('.tag-badge').forEach(badge => {
+    const category = badge.getAttribute('data-category');
+    const categoryData = categoriesMap.get(category);
+    if (categoryData) {
+      badge.className = `badge tag-category-${category}`;
+      badge.classList.add(categoryData.bg_color, categoryData.text_color);
+    } else {
+      // Fallback if category not found
+      badge.className = 'badge tag-category-' + category;
+      badge.classList.add('bg-secondary', 'text-dark');
+    }
+  });
+  
+  console.log('[Articles.html] allArticles count:', allArticles.length);
+  console.log('[Articles.html] First article tags:', allArticles[0]?.tags);
   
   // Collect all unique tags
   const tagsMap = new Map(); // tag_name -> tag_object
+  const categoriesSet = new Set(); // category names
+  
   allArticles.forEach(article => {
+    if (!article.tags || !Array.isArray(article.tags)) {
+      console.warn('[Articles.html] Article has invalid tags:', article.id, article.tags);
+      return;
+    }
     article.tags.forEach(tag => {
       if (!tagsMap.has(tag.name)) {
         tagsMap.set(tag.name, tag);
       }
+      if (tag.category) {
+        categoriesSet.add(tag.category);
+      }
     });
   });
+  
+  console.log('[Articles.html] tagsMap size:', tagsMap.size);
+  console.log('[Articles.html] categoriesSet size:', categoriesSet.size);
+  
+  // Build category filter buttons
+  const categoryFilterContainer = document.getElementById('category-filter-container');
+  categoryFilterContainer.innerHTML = '';
+  const categoriesArray = Array.from(categoriesSet).sort();
+  
+  if (categoriesArray.length === 0) {
+    categoryFilterContainer.innerHTML = '<small class="text-muted">Inga kategorier hittades</small>';
+  } else {
+    categoriesArray.forEach(category => {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline-secondary category-filter-btn';
+      
+      // Get label from categories map
+      const categoryData = categoriesMap.get(category);
+      const categoryLabel = categoryData ? categoryData.label : category;
+      
+      btn.textContent = categoryLabel;
+      btn.setAttribute('data-category', category);
+      btn.style.cursor = 'pointer';
+      
+      btn.addEventListener('click', function() {
+        if (selectedCategories.has(category)) {
+          selectedCategories.delete(category);
+          btn.classList.remove('active', 'btn-secondary');
+          btn.classList.add('btn-outline-secondary');
+        } else {
+          selectedCategories.add(category);
+          btn.classList.remove('btn-outline-secondary');
+          btn.classList.add('active', 'btn-secondary');
+        }
+        updateFiltering();
+      });
+      
+      categoryFilterContainer.appendChild(btn);
+    });
+  }
   
   // Build tag filter buttons
   const filterContainer = document.getElementById('tag-filter-container');
   filterContainer.innerHTML = '';
   
   const tagsArray = Array.from(tagsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  
+  console.log('[Articles.html] tagsArray length:', tagsArray.length);
   
   if (tagsArray.length === 0) {
     filterContainer.innerHTML = '<small class="text-muted">Inga taggar hittades</small>';
@@ -135,6 +238,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // Update selected count and visibility
   function updateFiltering() {
     document.getElementById('selected-count').textContent = selectedTags.size;
+    document.getElementById('selected-categories-count').textContent = selectedCategories.size;
     
     if (selectedTags.size === 0) {
       document.getElementById('clear-filters').style.display = 'none';
@@ -142,21 +246,33 @@ document.addEventListener('DOMContentLoaded', function() {
       document.getElementById('clear-filters').style.display = 'inline-block';
     }
     
+    if (selectedCategories.size === 0) {
+      document.getElementById('clear-category-filters').style.display = 'none';
+    } else {
+      document.getElementById('clear-category-filters').style.display = 'inline-block';
+    }
+    
     let visibleCount = 0;
     allArticles.forEach(article => {
-      if (selectedTags.size === 0) {
-        // No filter - show all
+      let hasMatchingTag = true;
+      let hasMatchingCategory = true;
+      
+      // Check tag filter
+      if (selectedTags.size > 0) {
+        hasMatchingTag = article.tags.some(tag => selectedTags.has(tag.name));
+      }
+      
+      // Check category filter
+      if (selectedCategories.size > 0) {
+        hasMatchingCategory = article.tags.some(tag => selectedCategories.has(tag.category));
+      }
+      
+      // Show article only if it matches both filters
+      if (hasMatchingTag && hasMatchingCategory) {
         article.row.style.display = '';
         visibleCount++;
       } else {
-        // Filter active - show only articles with selected tags
-        const hasAnyTag = article.tags.some(tag => selectedTags.has(tag.name));
-        if (hasAnyTag) {
-          article.row.style.display = '';
-          visibleCount++;
-        } else {
-          article.row.style.display = 'none';
-        }
+        article.row.style.display = 'none';
       }
     });
     
@@ -199,6 +315,16 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     updateFiltering();
   });
+  
+  // Clear category filters button
+  document.getElementById('clear-category-filters').addEventListener('click', function() {
+    selectedCategories.clear();
+    document.querySelectorAll('.category-filter-btn').forEach(btn => {
+      btn.classList.remove('active', 'btn-secondary');
+      btn.classList.add('btn-outline-secondary');
+    });
+    updateFiltering();
+  });
 });
 </script>
 
@@ -222,52 +348,3 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 </style>
 {% endblock %}
-=======
-    {% if date_tabs %}
-      <ul class="nav nav-tabs mt-3 flex-nowrap overflow-auto">
-        {% for day in date_tabs %}
-          <li class="nav-item">
-            <a
-              class="nav-link {% if day == active_date %}active{% endif %}"
-              href="{{ url_for('list_articles', date=day) }}"
-            >
-              {{ day }}
-              <span class="badge text-bg-light ms-1">{{ date_counts.get(day, 0) }}</span>
-            </a>
-          </li>
-        {% endfor %}
-      </ul>
-      <div class="table-responsive mt-2">
-        <table class="table table-sm table-striped align-middle">
-          <thead>
-            <tr>
-              <th>Titel</th>
-              <th>Källa</th>
-              <th>Publicerad</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for a in (active_articles or []) %}
-            <tr>
-              <td style="max-width: 520px;">
-                <div class="text-truncate">{{ a.get('title') or '' }}</div>
-                <div class="small text-muted text-truncate">{{ a.get('url') or '' }}</div>
-              </td>
-              <td>{{ a.get('source') or '' }}</td>
-              <td>
-                {{ format_published_ts_iso(a) if format_published_ts_iso else '' }}
-              </td>
-              <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_article', article_id=a.get('id')) }}">Öppna</a></td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% else %}
-      <div class="alert alert-secondary mt-3 mb-0">Inga artiklar hittades.</div>
-    {% endif %}
-  </div>
-</div>
-{% endblock %}
->>>>>>> 29e313a (Various fixes around articles and proofreading)

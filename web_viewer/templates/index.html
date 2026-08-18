@@ -81,13 +81,15 @@
   <div class="col-12 col-lg-9">
     <div class="content border rounded p-3 summary-html">
       {# summary-blocket används inte längre eftersom webapp_viewer.py injicerar egen header i html #}
-<<<<<<< HEAD
       {% if summary %}
         <h1>{{ summary.get('title') or '' }}</h1>
       {% endif %}
-=======
       <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">
-        <h1 class="m-0">{{ summary.get('title') or '' }}</h1>
+        {% if summary %}
+          <h1 class="m-0">{{ summary.get('title') or '' }}</h1>
+        {% else %}
+          <h1 class="m-0">—</h1>
+        {% endif %}
         {% if summary and has_proofread_audit %}
           <a
             class="btn btn-sm btn-outline-secondary"
@@ -98,7 +100,6 @@
         {% endif %}
       </div>
       <hr />
->>>>>>> ff418b2 (PRoofreader)
       {{ html|safe }}
     </div>
   </div>

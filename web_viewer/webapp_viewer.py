@@ -156,6 +156,13 @@ def init_app_state(config_path: str) -> None:
     sp = (APP_CFG.get("store") or {}).get("path")
     logger.info("Viewer config loaded: %s", APP_CONFIG_PATH)
     logger.info("Resolved store path: %s", sp)
+    
+    # Initialize default tag categories
+    try:
+        APP_STORE.initialize_default_categories()
+        logger.info("Tag categories initialized")
+    except Exception as e:
+        logger.error("Error initializing categories: %s", e)
 
 
 def _md_to_html(text: str) -> str:
@@ -1309,19 +1316,16 @@ def list_articles():
         limit = 2000
     limit = max(1, min(limit, 50000))
 
-<<<<<<< HEAD
     raw = store.list_articles(limit=limit) or []
     articles: List[Dict[str, Any]] = []
     for a in raw:
         if isinstance(a, dict) and a.get("id"):
             articles.append(_article_list_item(a))
-=======
     try:
         max_days = int(request.args.get("days", "3650"))
     except Exception:
         max_days = 3650
     max_days = max(1, min(max_days, 10000))
->>>>>>> 29e313a (Various fixes around articles and proofreading)
 
     date_rows = _list_article_dates_fast(store, max_days=max_days)
     date_tabs = [str(r.get("date") or "") for r in date_rows if r.get("date")]
@@ -1350,10 +1354,28 @@ def list_articles():
         active_articles = _list_articles_for_day_fast(
             store, date_ymd=active_date, limit=limit
         )
+        # Add tags to each article
+        for a in active_articles:
+            try:
+                article_id = a.get("id")
+                if article_id:
+                    article_tags = store.get_article_tags(article_id) or []
+                    tags = []
+                    for t in article_tags:
+                        if isinstance(t, dict):
+                            tags.append({
+                                "id": t.get("id"),
+                                "name": t.get("name", ""),
+                                "category": t.get("category", "GENERAL")
+                            })
+                    a["tags"] = tags
+            except Exception as e:
+                logger.debug(f"Error loading tags for article {a.get('id')}: {e}")
+                a["tags"] = []
 
     return render_template(
         "articles.html",
-        active_articles=active_articles,
+        articles=active_articles,
         date_tabs=date_tabs,
         date_counts=date_counts,
         active_date=active_date,
@@ -1406,6 +1428,7 @@ def view_article(article_id: str):
     tags = []
     try:
         article_tags = store.get_article_tags(article_id) or []
+        logger.info(f"[Article] Loaded {len(article_tags)} tags for article {article_id[:20]}...")
         for t in article_tags:
             if isinstance(t, dict):
                 tags.append({
@@ -1414,9 +1437,10 @@ def view_article(article_id: str):
                     "category": t.get("category", "GENERAL")
                 })
     except Exception as e:
-        logger.debug(f"Error loading tags for article {article_id}: {e}")
+        logger.error(f"Error loading tags for article {article_id}: {e}")
     
     a["tags"] = tags
+    logger.info(f"[Article] Final tags list: {tags}")
 
     return render_template("article.html", a=a, format_ts=format_ts)
 
@@ -1485,16 +1509,17 @@ def api_create_tag():
         name = data.get("name", "").strip()
         category = data.get("category", "GENERAL").strip()
         description = data.get("description", "").strip()
+        synonyms = data.get("synonyms", []) or []
         
         if not name:
             return jsonify({"error": "name is required"}), 400
         
         # Try to create tag
-        tag = store.create_tag(name, category, description)
+        tag = store.create_tag(name, category, description, synonyms)
         if tag is None:
             return jsonify({"error": "tag already exists"}), 409
         
-        logger.info(f"[TagAPI] Created tag: {tag.get('name')} ({tag.get('id')})")
+        logger.info(f"[TagAPI] Created tag: {tag.get('name')} ({tag.get('id')}) with {len(synonyms)} synonyms")
         return jsonify({"tag": tag}), 201
     except Exception as e:
         logger.error(f"Error creating tag: {e}")
@@ -1596,7 +1621,7 @@ def api_get_tag(tag_id: int):
 
 @app.route("/api/v1/tags/<int:tag_id>", methods=["PUT"])
 def api_update_tag(tag_id: int):
-    """Update a tag."""
+    """Update a tag and handle synonym migrations."""
     store = APP_STORE
     if store is None:
         abort(500)
@@ -1606,10 +1631,45 @@ def api_update_tag(tag_id: int):
         name = data.get("name")
         category = data.get("category")
         description = data.get("description")
+        new_synonyms = data.get("synonyms") or []
         
-        updated_tag = store.update_tag(tag_id, name, category, description)
+        # Get current tag to check for old synonyms
+        all_tags = store.get_all_tags() or []
+        old_tag = next((t for t in all_tags if t.get("id") == tag_id), None)
+        old_synonyms = old_tag.get("synonyms", []) if old_tag else []
+        
+        # Find newly added synonyms
+        old_synonyms_set = set(s.lower() if isinstance(s, str) else str(s).lower() for s in old_synonyms)
+        new_synonyms_set = set(s.lower() if isinstance(s, str) else str(s).lower() for s in new_synonyms)
+        added_synonyms = new_synonyms_set - old_synonyms_set
+        
+        # Update the tag
+        updated_tag = store.update_tag(tag_id, name, category, description, new_synonyms)
         if not updated_tag:
             return jsonify({"error": "tag not found"}), 404
+        
+        # Handle synonym migrations
+        if added_synonyms:
+            logger.info(f"[TagAPI] Processing {len(added_synonyms)} new synonyms for tag {tag_id}")
+            
+            # Find tags that match the new synonym names
+            synonym_tag_ids = []
+            for synonym_name in added_synonyms:
+                # Search for a tag with this name (case-insensitive)
+                matching_tag = next(
+                    (t for t in all_tags if t.get("name", "").lower() == synonym_name),
+                    None
+                )
+                if matching_tag:
+                    synonym_tag_ids.append(matching_tag.get("id"))
+                    logger.debug(f"[TagAPI] Found synonym tag: {matching_tag.get('name')} (ID: {matching_tag.get('id')})")
+            
+            # Migrate synonyms to main tag
+            if synonym_tag_ids:
+                articles_migrated, synonyms_deleted = store.migrate_synonym_to_main_tag(
+                    tag_id, synonym_tag_ids
+                )
+                logger.info(f"[TagAPI] Synonym migration complete: {articles_migrated} articles updated, {synonyms_deleted} tags deleted")
         
         logger.info(f"[TagAPI] Updated tag {tag_id}: {updated_tag.get('name')}")
         return jsonify({"tag": updated_tag}), 200
@@ -1634,6 +1694,177 @@ def api_delete_tag(tag_id: int):
         return jsonify({"success": True}), 200
     except Exception as e:
         logger.error(f"Error deleting tag {tag_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ---- Category management API ----
+
+
+@app.route("/api/v1/categories", methods=["GET"])
+def api_get_all_categories():
+    """Get all tag categories."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        categories = store.get_all_categories() or []
+        return jsonify({"categories": categories}), 200
+    except Exception as e:
+        logger.error(f"Error getting all categories: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def _assign_tags_to_category(store, tag_names, category_name):
+    """Assign a list of tags to a category by updating their category field."""
+    try:
+        all_tags = store.get_all_tags() or []
+        tag_names_set = set(tag_names)
+        tags_updated = 0
+        tags_removed = 0
+        
+        for tag in all_tags:
+            tag_name = tag.get("name")
+            tag_id = tag.get("id")
+            current_category = tag.get("category", "GENERAL")
+            
+            if tag_name in tag_names_set:
+                # This tag should be in the new category
+                if current_category != category_name:
+                    store.update_tag(tag_id, category=category_name)
+                    tags_updated += 1
+            else:
+                # This tag should NOT be in this category
+                # If it was previously in this category, move it to GENERAL
+                if current_category == category_name:
+                    store.update_tag(tag_id, category="GENERAL")
+                    tags_removed += 1
+        
+        logger.info(f"[CategoryAPI] Assigned tags to {category_name}: {tags_updated} added, {tags_removed} removed")
+    except Exception as e:
+        logger.error(f"Error assigning tags to category {category_name}: {e}")
+
+
+@app.route("/api/v1/categories", methods=["POST"])
+def api_create_category():
+    """Create a new tag category."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        data = request.get_json() or {}
+        name = data.get("name", "").strip().upper()
+        label = data.get("label", "").strip()
+        bg_color = data.get("bg_color", "bg-secondary").strip()
+        text_color = data.get("text_color", "text-dark").strip()
+        description = data.get("description", "").strip()
+        tags_to_assign = data.get("tags", [])
+        
+        if not name or not label:
+            return jsonify({"error": "name and label are required"}), 400
+        
+        category = store.create_category(name, label, bg_color, text_color, description)
+        if category is None:
+            return jsonify({"error": "category already exists"}), 409
+        
+        # Assign tags to this category
+        if tags_to_assign:
+            _assign_tags_to_category(store, tags_to_assign, name)
+        
+        logger.info(f"[CategoryAPI] Created category: {category.get('name')} ({category.get('id')}) with {len(tags_to_assign)} tags")
+        return jsonify({"category": category}), 201
+    except Exception as e:
+        logger.error(f"Error creating category: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/categories/<int:category_id>", methods=["GET"])
+def api_get_category(category_id: int):
+    """Get a category by ID."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        category = store.get_category(category_id)
+        if not category:
+            return jsonify({"error": "category not found"}), 404
+        
+        return jsonify({"category": category}), 200
+    except Exception as e:
+        logger.error(f"Error getting category {category_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/categories/<int:category_id>", methods=["PUT"])
+def api_update_category(category_id: int):
+    """Update a category."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        data = request.get_json() or {}
+        label = data.get("label")
+        bg_color = data.get("bg_color")
+        text_color = data.get("text_color")
+        description = data.get("description")
+        tags_to_assign = data.get("tags", [])
+        
+        updated = store.update_category(category_id, label, bg_color, text_color, description)
+        if not updated:
+            return jsonify({"error": "category not found"}), 404
+        
+        # Assign tags to this category
+        if tags_to_assign is not None:
+            category = store.get_category(category_id)
+            if category:
+                category_name = category.get("name")
+                _assign_tags_to_category(store, tags_to_assign, category_name)
+        
+        logger.info(f"[CategoryAPI] Updated category {category_id}")
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        logger.error(f"Error updating category {category_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/categories/<int:category_id>", methods=["DELETE"])
+def api_delete_category(category_id: int):
+    """Delete a category."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        deleted = store.delete_category(category_id)
+        if not deleted:
+            return jsonify({"error": "category not found"}), 404
+        
+        logger.info(f"[CategoryAPI] Deleted category {category_id}")
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        logger.error(f"Error deleting category {category_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/categories/<category_name>/tags", methods=["GET"])
+def api_get_tags_for_category(category_name: str):
+    """Get all tags for a specific category."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        all_tags = store.get_all_tags() or []
+        # Filter tags by category
+        category_tags = [tag for tag in all_tags if tag.get("category") == category_name]
+        # Sort by name
+        category_tags.sort(key=lambda t: t.get("name", "").lower())
+        return jsonify({"category": category_name, "tags": category_tags}), 200
+    except Exception as e:
+        logger.error(f"Error getting tags for category {category_name}: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -1671,6 +1902,38 @@ def manage_tags():
         return render_template("tags.html", tags=tags, format_ts=format_ts)
     except Exception as e:
         logger.error(f"Error loading tags: {e}")
+        abort(500)
+
+
+@app.route("/categories")
+def manage_categories():
+    """Global tag category management page."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    
+    try:
+        categories = store.get_all_categories() or []
+        
+        # Count tags in each category
+        all_tags = store.get_all_tags() or []
+        category_tag_counts = {}
+        for tag in all_tags:
+            category = tag.get("category", "GENERAL")
+            category_tag_counts[category] = category_tag_counts.get(category, 0) + 1
+        
+        # Add tag count to each category
+        for cat in categories:
+            cat_name = cat.get("name")
+            cat["tag_count"] = category_tag_counts.get(cat_name, 0)
+        
+        # Sort by name
+        categories.sort(key=lambda c: c.get("name", "").lower())
+        
+        logger.info(f"[CategoryUI] Loaded {len(categories)} categories with tag counts")
+        return render_template("categories.html", categories=categories, format_ts=format_ts)
+    except Exception as e:
+        logger.error(f"Error loading categories: {e}")
         abort(500)
 
 

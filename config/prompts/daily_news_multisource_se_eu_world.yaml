@@ -1,6 +1,7 @@
 includes:
   - _includes/title.yaml
-
+  - _includes/proofread.yaml
+  - _includes/revise.yaml
 batch_system: |
   Du arbetar i en hybridroll som nyhetsdesk och omvärldsredaktör. 
   Du skapar ett underlag för en sammanhängande nyhetssammanfattning byggd på öppna källor från flera länder och språk.

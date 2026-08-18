@@ -1,0 +1,538 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row">
+  <div class="col-12">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h2>Tagg-kategorier</h2>
+      <button class="btn btn-primary" onclick="showCreateForm()">Ny kategori</button>
+    </div>
+
+    {# New/Edit category form #}
+    <div id="category-form" class="card mb-4" style="display: none;">
+      <div class="card-body">
+        <h5 class="card-title" id="form-title">Ny kategori</h5>
+        <form id="edit-form" onsubmit="saveCategory(event)">
+          <input type="hidden" id="category-id" value="">
+          
+          <div class="mb-3">
+            <label for="category-name" class="form-label">Namn (engelska) *</label>
+            <input type="text" class="form-control" id="category-name" required maxlength="50" placeholder="t.ex. GENERAL, THREAT, LOCATION">
+            <small class="text-muted">Kommer att användas som värde i koden</small>
+          </div>
+          
+          <div class="mb-3">
+            <label for="category-label" class="form-label">Etikett (svenska) *</label>
+            <input type="text" class="form-control" id="category-label" required maxlength="100" placeholder="t.ex. Allmän, Hot, Plats">
+            <small class="text-muted">Visas i UI</small>
+          </div>
+          
+          <div class="mb-3">
+            <label for="category-bg-color" class="form-label">Bakgrundsfärg *</label>
+            <div class="input-group">
+              <select class="form-select" id="category-bg-color" required onchange="updateColorPreview()">
+                <option value="bg-primary">Primär (blå)</option>
+                <option value="bg-secondary" selected>Sekundär (grå)</option>
+                <option value="bg-success">Framgång (grön)</option>
+                <option value="bg-danger">Fara (röd)</option>
+                <option value="bg-warning">Varning (gul)</option>
+                <option value="bg-info">Info (ljusblå)</option>
+                <option value="bg-light">Ljus</option>
+                <option value="bg-dark">Mörk</option>
+              </select>
+              <span id="bg-color-preview" class="badge ms-2" style="width: 60px; height: 30px;"></span>
+            </div>
+          </div>
+          
+          <div class="mb-3">
+            <label for="category-text-color" class="form-label">Textfärg *</label>
+            <select class="form-select" id="category-text-color" required onchange="updateColorPreview()">
+              <option value="text-dark" selected>Mörk text</option>
+              <option value="text-light">Ljus text</option>
+              <option value="text-white">Vit text</option>
+            </select>
+          </div>
+          
+          <div class="mb-3">
+            <label for="category-description" class="form-label">Beskrivning</label>
+            <textarea class="form-control" id="category-description" rows="3" maxlength="500"></textarea>
+          </div>
+          
+          <div class="mb-3">
+            <label for="category-tags" class="form-label">Taggar i denna kategori</label>
+            <div id="category-tags" class="border rounded p-3" style="max-height: 300px; overflow-y: auto; background-color: #f8f9fa;">
+              <small class="text-muted">Laddar taggar...</small>
+            </div>
+          </div>
+          
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-success">Spara</button>
+            <button type="button" class="btn btn-secondary" onclick="cancelEdit()">Avbryt</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {# Color preview #}
+    <div class="mb-4">
+      <h6>Förhandsgranskning</h6>
+      <div>
+        <span id="preview-badge" class="badge" style="font-size: 1rem; padding: 0.5rem 1rem;">Exempel tagg</span>
+      </div>
+    </div>
+
+    {# Categories table #}
+    <div class="table-responsive">
+      <table class="table table-hover table-striped">
+        <thead class="table-light">
+          <tr>
+            <th>Namn</th>
+            <th>Etikett</th>
+            <th>Utseende</th>
+            <th>Beskrivning</th>
+            <th class="text-center">Taggar</th>
+            <th class="text-end">Åtgärder</th>
+          </tr>
+        </thead>
+        <tbody id="categories-tbody">
+          {% for cat in categories %}
+            <tr class="category-row" data-category-id="{{ cat.get('id') }}" data-category-name="{{ cat.get('name') }}">
+              <td>
+                <code>{{ cat.get('name') }}</code>
+              </td>
+              <td>
+                <strong>{{ cat.get('label') }}</strong>
+              </td>
+              <td>
+                <span class="badge {{ cat.get('bg_color') }} {{ cat.get('text_color') }}">
+                  {{ cat.get('label') }}
+                </span>
+              </td>
+              <td class="small">{{ cat.get('description') or '—' }}</td>
+              <td class="text-center">
+                <button class="btn btn-sm btn-outline-info" onclick='showCategoryTags({{ cat.get('id') }}, {{ cat.get('name')|tojson }})' title="Visa taggar i denna kategori">
+                  <span class="badge bg-light text-dark category-tag-count" data-category="{{ cat.get('name') }}">{{ cat.get('tag_count', 0) }}</span>
+                </button>
+              </td>
+              <td class="text-end">
+                <button class="btn btn-sm btn-outline-primary" onclick="editCategory({{ cat.get('id') }})">
+                  Redigera
+                </button>
+                <button class="btn btn-sm btn-outline-danger" onclick='deleteCategory({{ cat.get('id') }}, {{ cat.get('name')|tojson }})'>
+                  Radera
+                </button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      
+      {% if not categories %}
+        <div class="alert alert-info" role="alert">
+          Inga kategorier ännu. <a href="#" onclick="showCreateForm(); return false;">Skapa en ny kategori</a>
+        </div>
+      {% endif %}
+    </div>
+
+    {# Tags in category modal #}
+    <div id="category-tags-modal" class="modal fade" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Taggar i kategori: <span id="modal-category-name"></span></h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="category-tags-list" style="max-height: 400px; overflow-y: auto;">
+              <small class="text-muted">Laddar taggar...</small>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentEditingCategoryId = null;
+
+function showCreateForm() {
+  currentEditingCategoryId = null;
+  document.getElementById('category-id').value = '';
+  document.getElementById('edit-form').reset();
+  document.getElementById('form-title').textContent = 'Ny kategori';
+  document.getElementById('category-name').disabled = false;
+  document.getElementById('category-form').style.display = 'block';
+  document.getElementById('category-name').focus();
+  loadCategoryTagsForForm(null);
+  updateColorPreview();
+}
+
+function cancelEdit() {
+  document.getElementById('category-form').style.display = 'none';
+  currentEditingCategoryId = null;
+}
+
+async function editCategory(categoryId) {
+  try {
+    const response = await fetch(`/api/v1/categories/${categoryId}`);
+    if (!response.ok) {
+      alert('Kategorin kunde inte hämtas');
+      return;
+    }
+    
+    const data = await response.json();
+    const category = data.category;
+    
+    currentEditingCategoryId = categoryId;
+    document.getElementById('category-id').value = categoryId;
+    document.getElementById('category-name').value = category.name;
+    document.getElementById('category-name').disabled = true;
+    document.getElementById('category-label').value = category.label;
+    document.getElementById('category-bg-color').value = category.bg_color;
+    document.getElementById('category-text-color').value = category.text_color;
+    document.getElementById('category-description').value = category.description || '';
+    document.getElementById('form-title').textContent = `Redigera kategori: ${category.name}`;
+    document.getElementById('category-form').style.display = 'block';
+    loadCategoryTagsForForm(category.name);
+    updateColorPreview();
+  } catch (error) {
+    console.error('Error editing category:', error);
+    alert('Fel vid hämtning av kategori');
+  }
+}
+
+async function loadCategoryTagsForForm(categoryName) {
+  const tagContainer = document.getElementById('category-tags');
+  tagContainer.innerHTML = '<small class="text-muted">Laddar taggar...</small>';
+  
+  try {
+    const response = await fetch('/api/v1/tags');
+    if (!response.ok) {
+      tagContainer.innerHTML = '<div class="alert alert-danger alert-sm">Kunde inte ladda taggar</div>';
+      return;
+    }
+    
+    const data = await response.json();
+    const allTags = data.tags || [];
+    
+    if (allTags.length === 0) {
+      tagContainer.innerHTML = '<small class="text-muted">Inga taggar tillgängliga</small>';
+      return;
+    }
+    
+    // Group tags by current category
+    const categorizedTags = {};
+    allTags.forEach(tag => {
+      const cat = tag.category || 'GENERAL';
+      if (!categorizedTags[cat]) {
+        categorizedTags[cat] = [];
+      }
+      categorizedTags[cat].push(tag);
+    });
+    
+    // Build checkboxes
+    let html = '<div class="form-check-group">';
+    
+    // Show tags in current category first
+    if (categoryName && categorizedTags[categoryName]) {
+      html += '<div class="mb-2"><strong>Taggar i denna kategori:</strong></div>';
+      categorizedTags[categoryName].forEach(tag => {
+        html += `
+          <div class="form-check">
+            <input class="form-check-input category-tag-checkbox" type="checkbox" value="${escapeHtml(tag.name)}" id="tag-${escapeHtml(tag.name)}" data-tag-name="${escapeHtml(tag.name)}" checked>
+            <label class="form-check-label" for="tag-${escapeHtml(tag.name)}">
+              ${escapeHtml(tag.name)}
+            </label>
+          </div>
+        `;
+      });
+    }
+    
+    // Show other tags
+    if (Object.keys(categorizedTags).length > 1 || !categoryName) {
+      if (categoryName) {
+        html += '<div class="mt-3 pt-2 border-top"><strong>Taggar i andra kategorier (klicka för att flytta):</strong></div>';
+      }
+      
+      for (const cat in categorizedTags) {
+        if (cat !== categoryName) {
+          html += `<div class="text-muted small mb-1">${escapeHtml(cat)}:</div>`;
+          categorizedTags[cat].forEach(tag => {
+            html += `
+              <div class="form-check ms-2">
+                <input class="form-check-input category-tag-checkbox" type="checkbox" value="${escapeHtml(tag.name)}" id="tag-${escapeHtml(tag.name)}" data-tag-name="${escapeHtml(tag.name)}">
+                <label class="form-check-label" for="tag-${escapeHtml(tag.name)}">
+                  ${escapeHtml(tag.name)}
+                </label>
+              </div>
+            `;
+          });
+        }
+      }
+    }
+    
+    html += '</div>';
+    tagContainer.innerHTML = html;
+  } catch (error) {
+    console.error('Error loading tags for form:', error);
+    tagContainer.innerHTML = '<div class="alert alert-danger alert-sm">Fel vid hämtning av taggar</div>';
+  }
+}
+
+function updateColorPreview() {
+  const bgColor = document.getElementById('category-bg-color').value;
+  const textColor = document.getElementById('category-text-color').value;
+  const previewBadge = document.getElementById('preview-badge');
+  const previewForm = document.getElementById('category-form');
+  
+  // Update preview badge in form
+  previewBadge.className = `badge ${bgColor} ${textColor}`;
+  
+  // Also update in table if editing
+  if (currentEditingCategoryId) {
+    const row = document.querySelector(`tr[data-category-id="${currentEditingCategoryId}"]`);
+    if (row) {
+      const badge = row.querySelector('.badge');
+      if (badge) {
+        const label = document.getElementById('category-label').value;
+        badge.className = `badge ${bgColor} ${textColor}`;
+        badge.textContent = label;
+      }
+    }
+  }
+}
+
+async function saveCategory(event) {
+  event.preventDefault();
+  
+  const categoryId = document.getElementById('category-id').value;
+  const name = document.getElementById('category-name').value.trim().toUpperCase();
+  const label = document.getElementById('category-label').value.trim();
+  const bgColor = document.getElementById('category-bg-color').value;
+  const textColor = document.getElementById('category-text-color').value;
+  const description = document.getElementById('category-description').value.trim();
+  
+  if (!name || !label) {
+    alert('Namn och etikett är obligatoriska');
+    return;
+  }
+  
+  // Get selected tags
+  const selectedTags = [];
+  document.querySelectorAll('.category-tag-checkbox:checked').forEach(checkbox => {
+    selectedTags.push(checkbox.getAttribute('data-tag-name'));
+  });
+  
+  try {
+    let response;
+    if (categoryId) {
+      // Update existing
+      response = await fetch(`/api/v1/categories/${categoryId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label,
+          bg_color: bgColor,
+          text_color: textColor,
+          description,
+          tags: selectedTags
+        })
+      });
+    } else {
+      // Create new
+      response = await fetch('/api/v1/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          label,
+          bg_color: bgColor,
+          text_color: textColor,
+          description,
+          tags: selectedTags
+        })
+      });
+    }
+    
+    if (response.ok) {
+      location.reload();
+    } else {
+      const data = await response.json();
+      alert(`Fel: ${data.error || 'Okänt fel'}`);
+    }
+  } catch (error) {
+    console.error('Error saving category:', error);
+    alert('Fel vid sparning av kategori');
+  }
+}
+
+async function deleteCategory(categoryId, categoryName) {
+  if (!confirm(`Är du säker på att du vill ta bort kategorin "${categoryName}"?`)) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api/v1/categories/${categoryId}`, {
+      method: 'DELETE'
+    });
+    
+    if (response.ok) {
+      location.reload();
+    } else {
+      const data = await response.json();
+      alert(`Fel: ${data.error || 'Okänt fel'}`);
+    }
+  } catch (error) {
+    console.error('Error deleting category:', error);
+    alert('Fel vid borttagning av kategori');
+  }
+}
+
+async function showCategoryTags(categoryId, categoryName) {
+  // Ensure modal is initialized
+  const modalElement = document.getElementById('category-tags-modal');
+  if (!modalElement) {
+    console.error('Modal element not found');
+    return;
+  }
+  
+  // Get or create modal instance
+  let modal = bootstrap.Modal.getInstance(modalElement);
+  if (!modal) {
+    modal = new bootstrap.Modal(modalElement, {keyboard: true});
+  }
+  
+  document.getElementById('modal-category-name').textContent = categoryName;
+  document.getElementById('category-tags-list').innerHTML = '<small class="text-muted">Laddar taggar...</small>';
+  
+  // Show modal
+  try {
+    modal.show();
+  } catch (e) {
+    console.error('Error showing modal:', e);
+  }
+  
+  try {
+    const response = await fetch(`/api/v1/categories/${categoryName}/tags`);
+    if (!response.ok) {
+      document.getElementById('category-tags-list').innerHTML = '<div class="alert alert-danger">Kunde inte ladda taggar</div>';
+      return;
+    }
+    
+    const data = await response.json();
+    const tags = data.tags || [];
+    
+    if (tags.length === 0) {
+      document.getElementById('category-tags-list').innerHTML = '<div class="alert alert-info">Inga taggar i denna kategori</div>';
+      return;
+    }
+    
+    // Build tags list
+    let html = '<div class="list-group">';
+    tags.forEach(tag => {
+      html += `
+        <div class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <strong>${escapeHtml(tag.name)}</strong>
+            <br>
+            <small class="text-muted">${escapeHtml(tag.description || '(ingen beskrivning)')}</small>
+          </div>
+          <div>
+            <a href="/tags" class="btn btn-sm btn-outline-secondary" target="_blank" title="Redigera tagg i tag-editorn">
+              Redigera
+            </a>
+          </div>
+        </div>
+      `;
+    });
+    html += '</div>';
+    
+    // Add count to badge
+    document.querySelector(`[data-category="${categoryName}"]`).textContent = tags.length;
+    
+    document.getElementById('category-tags-list').innerHTML = html;
+  } catch (error) {
+    console.error('Error loading tags:', error);
+    document.getElementById('category-tags-list').innerHTML = '<div class="alert alert-danger">Fel vid hämtning av taggar</div>';
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Load tag counts for all categories on page load
+async function loadAllCategoryCounts() {
+  console.log('[Categories] Starting to load category tag counts');
+  
+  const categoryRows = document.querySelectorAll('.category-row');
+  console.log('[Categories] Found ' + categoryRows.length + ' category rows');
+  
+  for (const row of categoryRows) {
+    const categoryName = row.getAttribute('data-category-name');
+    console.log('[Categories] Processing category: ' + categoryName);
+    
+    if (!categoryName) {
+      console.warn('[Categories] No category name attribute on row');
+      continue;
+    }
+    
+    const badge = row.querySelector('.category-tag-count');
+    console.log('[Categories] Badge element found: ' + (badge ? 'yes' : 'no'));
+    
+    if (!badge) {
+      console.warn('[Categories] Could not find .category-tag-count in row for ' + categoryName);
+      continue;
+    }
+    
+    try {
+      console.log('[Categories] Fetching tags for: ' + categoryName);
+      const response = await fetch(`/api/v1/categories/${categoryName}/tags`);
+      
+      if (!response.ok) {
+        console.error('[Categories] API error for ' + categoryName + ': HTTP ' + response.status);
+        continue;
+      }
+      
+      const data = await response.json();
+      const tags = data.tags || [];
+      const count = tags.length;
+      
+      console.log('[Categories] Got ' + count + ' tags for ' + categoryName);
+      badge.textContent = count;
+      badge.style.display = 'inline-block';
+      console.log('[Categories] Updated badge text to: ' + badge.textContent);
+      
+    } catch (error) {
+      console.error('[Categories] Error loading tags for ' + categoryName + ': ' + error.message);
+    }
+  }
+  
+  console.log('[Categories] Finished loading all tag counts');
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  console.log('[Categories] DOMContentLoaded fired');
+  
+  updateColorPreview();
+  
+  // Load tag counts
+  loadAllCategoryCounts().catch(error => {
+    console.error('[Categories] Error in loadAllCategoryCounts:', error);
+  });
+});
+
+</script>
+
+<style>
+.category-row {
+  transition: background-color 0.2s ease;
+}
+
+.category-row:hover {
+  background-color: #f5f5f5;
+}
+</style>
+{% endblock %}

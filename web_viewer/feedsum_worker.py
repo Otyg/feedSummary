@@ -730,12 +730,9 @@ async def _run_regular_entry(
                 config_dict=cfg,
             )
 
-        _annotate_summary_with_schedule_name(
-            store=store, summary_id=str(summary_id), job_name=job_name
-        )
-
-            log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
-            return str(summary_id)
+        _annotate_summary_with_schedule_name(store=store, summary_id=str(summary_id), job_name=job_name)
+        log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
+        return str(summary_id)
 
     except Exception:
         log.exception("Job '%s' failed", job_name)
@@ -746,7 +743,7 @@ async def _run_regular_entry(
             RUNNING_JOB_ID = None
 
 
-sync def _run_composed_entry(
+async def _run_composed_entry(
     config_path: str,
     cfg: Dict[str, Any],
     store,
