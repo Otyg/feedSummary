@@ -33,9 +33,7 @@
 import argparse
 import asyncio
 from collections import deque
-from collections import deque
 import datetime as dt
-import inspect
 import inspect
 import json
 import logging
@@ -62,7 +60,6 @@ from feedsummary_core.summarizer.main import (
 )
 from uicommon import load_config
 from uicommon.proofread_rounds import enable_configurable_proofread_rounds
-from uicommon.proofread_rounds import enable_configurable_proofread_rounds
 
 from feedsummary_core.persistence import create_store
 from feedsummary_core.llm_client import create_llm_client
@@ -82,7 +79,6 @@ except Exception:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 enable_configurable_proofread_rounds(logger=log)
-enable_configurable_proofread_rounds(logger=log)
 
 TRIGGERS: Dict[str, Dict[str, Any]] = {}
 TRIGGERS_LOCK = threading.Lock()
@@ -90,40 +86,6 @@ global RUNNING_JOB_ID
 global RUNNING_JOB_LOCK
 RUNNING_JOB_ID: Optional[int] = None
 RUNNING_JOB_LOCK = threading.Lock()
-WORKER_LOG_FILE: Optional[Path] = None
-
-
-def _supports_composed_proofread() -> bool:
-    try:
-        sig = inspect.signature(compose_summary_docs)
-    except (TypeError, ValueError):
-        return False
-    return "proofread_package" in sig.parameters
-
-
-class _AsyncRunner:
-    """Runs all coroutines on one dedicated event loop thread."""
-
-    def __init__(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
-        self._ready.wait()
-
-    def _run_loop(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        self._ready.set()
-        self._loop.run_forever()
-
-    def run(self, coro):
-        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return fut.result()
-
-    def close(self) -> None:
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=5)
-        self._loop.close()
 WORKER_LOG_FILE: Optional[Path] = None
 
 
@@ -223,12 +185,10 @@ def _setup_file_logging(
     backup_count: int = 5,
 ) -> None:
     global WORKER_LOG_FILE
-    global WORKER_LOG_FILE
     lp = Path(os.path.expandvars(os.path.expanduser(log_file)))
     if not lp.is_absolute():
         lp = (Path.cwd() / lp).resolve()
     lp.parent.mkdir(parents=True, exist_ok=True)
-    WORKER_LOG_FILE = lp
     WORKER_LOG_FILE = lp
 
     level = getattr(logging, str(log_level).upper().strip(), logging.INFO)
@@ -261,22 +221,6 @@ def _setup_file_logging(
     logging.getLogger(__name__).info(
         "Logging initialized: file=%s level=%s", str(lp), logging.getLevelName(level)
     )
-
-
-def _tail_worker_log_lines(limit: int = 5) -> List[str]:
-    lp = WORKER_LOG_FILE
-    if lp is None or limit <= 0:
-        return []
-    try:
-        with lp.open("r", encoding="utf-8", errors="replace") as fh:
-            return [
-                line.rstrip("\r\n") for line in deque(fh, maxlen=limit) if line.strip()
-            ]
-    except FileNotFoundError:
-        return []
-    except Exception:
-        log.exception("Failed to read worker log tail from %s", lp)
-        return []
 
 
 def _tail_worker_log_lines(limit: int = 5) -> List[str]:
@@ -382,7 +326,6 @@ def _scheduler_settings(
     schedule_path = "schedule.yaml"
     poll_seconds = 20
     timezone = ""
-    timezone = ""
 
     sc = cfg.get("scheduler")
     if isinstance(sc, dict):
@@ -472,9 +415,6 @@ def _next_run_dt(entry: Dict[str, Any], now: dt.datetime) -> Optional[dt.datetim
     if freq == "triggered":
         return None
 
-    if freq == "triggered":
-        return None
-
     if freq == "quarterday":
         return _next_boundary(now, [0, 6, 12, 18])
 
@@ -532,12 +472,6 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
         topics = [str(x).strip() for x in cats if str(x).strip()]
         if topics:
             overrides["topics"] = topics
-
-    tags = entry.get("tags") or []
-    if isinstance(tags, list):
-        clean_tags = [str(x).strip() for x in tags if str(x).strip()]
-        if clean_tags:
-            overrides["tags"] = clean_tags
 
     tags = entry.get("tags") or []
     if isinstance(tags, list):
@@ -742,192 +676,7 @@ async def _run_regular_entry(
     store,
     job_name: str,
     entry: Dict[str, Any],
-def _parse_contents_block(
-    entry: Dict[str, Any],
-) -> Tuple[List[Dict[str, str]], Optional[str], Optional[str], Optional[str]]:
-    contents = entry.get("contents") or []
-    if not isinstance(contents, list) or not contents:
-        return [], None, None, None
-
-    jobs: List[Dict[str, str]] = []
-    proofread_pkg: Optional[str] = None
-    title_pkg: Optional[str] = None
-    ingress_pkg: Optional[str] = None
-
-    for i, item in enumerate(contents):
-        if not isinstance(item, dict):
-            raise ValueError(f"contents[{i}] måste vara ett objekt")
-
-        sched = str(item.get("schedule") or "").strip()
-        proofread = str(item.get("proofread") or "").strip()
-        title = str(item.get("title") or "").strip()
-        ingress = str(item.get("ingress") or "").strip()
-
-        if sched:
-            jobs.append({"schedule": sched})
-            continue
-
-        if proofread:
-            if proofread_pkg is not None:
-                raise ValueError("Bara en proofread-post får finnas i contents")
-            proofread_pkg = proofread
-            continue
-
-        if title:
-            if title_pkg is not None:
-                raise ValueError("Bara en title-post får finnas i contents")
-            title_pkg = title
-            continue
-
-        if ingress:
-            if ingress_pkg is not None:
-                raise ValueError("Bara en ingress-post får finnas i contents")
-            ingress_pkg = ingress
-            continue
-
-        raise ValueError(
-            f"contents[{i}] måste innehålla schedule, proofread, title eller ingress"
-        )
-
-    if not jobs:
-        raise ValueError("contents måste innehålla minst ett schedule-jobb")
-
-    return jobs, proofread_pkg, title_pkg, ingress_pkg
-
-
-def _store_composed_proofread_original(
-    *,
-    store,
-    final_summary_id: str,
-    job_name: str,
-    proofread_package: str,
-) -> None:
-    """
-    Persist pre-proofread composed text in the same summary_doc, so original vs
-    published can be compared later.
-    """
-    sid = str(final_summary_id or "").strip()
-    if not sid:
-        return
-
-    final_doc = store.get_summary_doc(sid)
-    if not isinstance(final_doc, dict):
-        return
-
-    sections = final_doc.get("sections") or []
-    if not isinstance(sections, list) or not sections:
-        return
-
-    loaded_sections: List[Dict[str, Any]] = []
-    for s in sections:
-        if not isinstance(s, dict):
-            continue
-        sec_id = str(s.get("summary_id") or "").strip()
-        if not sec_id:
-            continue
-        sec_doc = store.get_summary_doc(sec_id)
-        if not isinstance(sec_doc, dict):
-            continue
-        sec_summary = _strip_sources_appendix_from_summary(
-            str(sec_doc.get("summary") or "")
-        )
-        heading = (
-            str(s.get("tag") or "").strip()
-            or str(s.get("schedule") or "").strip()
-            or str(s.get("promptpackage") or "").strip()
-        )
-        loaded_sections.append({"tag": heading, "summary": sec_summary})
-
-    if not loaded_sections:
-        return
-
-    original_composed = _build_composed_summary_text(
-        sections=loaded_sections,
-        ingress=None,
-    )
-
-    published_summary = str(final_doc.get("summary") or "")
-    published_wo_sources = _strip_sources_appendix_from_summary(published_summary)
-    now_ts = int(time.time())
-
-    existing_original = str(final_doc.get("proofread_original_summary") or "").strip()
-    original_to_store = existing_original or str(original_composed or "")
-
-    final_doc["proofread_original_summary"] = original_to_store
-    final_doc["proofread_published_summary"] = published_summary
-    final_doc["proofread_revised_summary"] = str(published_wo_sources or "")
-
-    meta = final_doc.get("meta") or {}
-    if not isinstance(meta, dict):
-        meta = {}
-    meta["proofread_original_summary"] = original_to_store
-    final_doc["meta"] = meta
-
-    audit_entry = {
-        "created_at": now_ts,
-        "job_name": str(job_name or ""),
-        "proofread_package": str(proofread_package or ""),
-        "original_summary": original_to_store,
-        "revised_summary": str(published_wo_sources or ""),
-        "published_summary": published_summary,
-    }
-    pa = final_doc.get("proofread_audit") or {}
-    if not isinstance(pa, dict):
-        pa = {}
-    history = pa.get("history") or []
-    if not isinstance(history, list):
-        history = []
-    history.append(audit_entry)
-    history = history[-20:]
-    final_doc["proofread_audit"] = {"latest": audit_entry, "history": history}
-
-    store.save_summary_doc(final_doc)
-
-
-def _annotate_summary_with_schedule_name(
-    *, store, summary_id: str, job_name: str
-) -> None:
-    sid = str(summary_id or "").strip()
-    jn = str(job_name or "").strip()
-    if not sid or not jn:
-        return
-    schema_name = jn.split("::")[-1].strip() or jn
-    try:
-        doc = store.get_summary_doc(sid)
-        if not isinstance(doc, dict):
-            return
-        out = dict(doc)
-
-        sel = out.get("selection") if isinstance(out.get("selection"), dict) else {}
-        sel = dict(sel)
-        if not str(sel.get("name") or "").strip():
-            sel["name"] = schema_name
-        out["selection"] = sel
-
-        meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
-        meta = dict(meta)
-        meta["schedule_name"] = schema_name
-        meta["job_name"] = jn
-        out["meta"] = meta
-
-        store.save_summary_doc(out)
-    except Exception:
-        log.exception(
-            "Could not annotate summary_doc %s with schedule name from job '%s'",
-            sid,
-            jn,
-        )
-
-
-async def _run_regular_entry(
-    config_path: str,
-    cfg: Dict[str, Any],
-    store,
-    job_name: str,
-    entry: Dict[str, Any],
 ) -> str:
-    global RUNNING_JOB_ID
-
     global RUNNING_JOB_ID
 
     overrides = _entry_to_overrides(entry)
@@ -1173,185 +922,6 @@ async def _run_one(
     )
 
 
-async def _run_composed_entry(
-    config_path: str,
-    cfg: Dict[str, Any],
-    store,
-    schedule_path: str,
-    job_name: str,
-    entry: Dict[str, Any],
-    ancestry: Optional[List[str]] = None,
-) -> str:
-    global RUNNING_JOB_ID
-
-    jobs, proofread_pkg, title_pkg, ingress_pkg = _parse_contents_block(entry)
-    schedule = _read_schedule_yaml(schedule_path)
-
-    parent_job_id = store.create_job()
-
-    try:
-        with RUNNING_JOB_LOCK:
-            RUNNING_JOB_ID = int(parent_job_id)
-
-        store.update_job(
-            parent_job_id,
-            status="running",
-            started_at=int(time.time()),
-            message=f"Startar composed-jobb '{job_name}'...",
-        )
-
-        section_results: List[Dict[str, str]] = []
-
-        for idx, spec in enumerate(jobs, start=1):
-            child_name = str(spec["schedule"]).strip()
-            child_entry = schedule.get(child_name)
-            if not isinstance(child_entry, dict):
-                raise KeyError(f"Schedule '{child_name}' hittades inte")
-
-            child_contents = child_entry.get("contents")
-            child_is_composed = isinstance(child_contents, list) and bool(child_contents)
-            freq = str(child_entry.get("frequency") or "").strip().lower()
-            if not child_is_composed and freq != "triggered":
-                raise ValueError(
-                    f"Schedule '{child_name}' måste ha frequency: triggered"
-                )
-
-            store.update_job(
-                parent_job_id,
-                message=f"Kör deljobb {idx}/{len(jobs)}: {child_name}...",
-            )
-
-            summary_id = await _run_one(
-                config_path=config_path,
-                cfg=cfg,
-                store=store,
-                schedule_path=schedule_path,
-                job_name=f"{job_name}::{child_name}",
-                entry=child_entry,
-                ancestry=ancestry,
-            )
-
-            child_pp = str(child_entry.get("promptpackage") or "").strip()
-
-            section_results.append(
-                {
-                    "schedule": child_name,
-                    "promptpackage": child_pp,
-                    "summary_id": str(summary_id),
-                }
-            )
-
-        store.update_job(
-            parent_job_id,
-            message="Sammanfogar delresultat...",
-        )
-
-        if proofread_pkg and not _supports_composed_proofread():
-            raise RuntimeError(
-                "Installerad feedsummary_core saknar stöd för proofread_package i "
-                "compose_summary_docs. Uppgradera till minst 1.10.0."
-            )
-
-        llm = create_llm_client(cfg)
-        final_summary_id = await compose_summary_docs(
-            config=cfg,
-            store=store,
-            llm=llm,
-            job_id=parent_job_id,
-            name=job_name,
-            sections=section_results,
-            proofread_package=proofread_pkg,
-            ingress_package=ingress_pkg,
-            title_package=title_pkg,
-        )
-
-        if proofread_pkg:
-            try:
-                _store_composed_proofread_original(
-                    store=store,
-                    final_summary_id=str(final_summary_id),
-                    job_name=job_name,
-                    proofread_package=proofread_pkg,
-                )
-                log.info(
-                    "Stored original composed summary for proofread-composed doc: %s",
-                    str(final_summary_id),
-                )
-            except Exception:
-                log.exception(
-                    "Failed to store original composed summary for summary_id=%s",
-                    str(final_summary_id),
-                )
-
-        _annotate_summary_with_schedule_name(
-            store=store, summary_id=str(final_summary_id), job_name=job_name
-        )
-
-        store.update_job(
-            parent_job_id,
-            status="done",
-            finished_at=int(time.time()),
-            message=f"Klart: composed-jobb '{job_name}' färdigt.",
-            summary_id=str(final_summary_id),
-        )
-        return str(final_summary_id)
-
-    except Exception as e:
-        try:
-            store.update_job(
-                parent_job_id,
-                status="failed",
-                finished_at=int(time.time()),
-                message=f"Fel: {e}",
-            )
-        except Exception:
-            pass
-        log.exception("Composed job '%s' failed", job_name)
-        raise
-
-    finally:
-        with RUNNING_JOB_LOCK:
-            RUNNING_JOB_ID = None
-
-
-async def _run_one(
-    config_path: str,
-    cfg: Dict[str, Any],
-    store,
-    schedule_path: str,
-    job_name: str,
-    entry: Dict[str, Any],
-    ancestry: Optional[List[str]] = None,
-) -> str:
-    lineage = list(ancestry or [])
-    node = str(job_name or "").split("::")[-1].strip()
-    if node:
-        if node in lineage:
-            cycle = " -> ".join(lineage + [node])
-            raise ValueError(f"Cykel i schedule contents: {cycle}")
-        lineage.append(node)
-
-    contents = entry.get("contents")
-    if isinstance(contents, list) and contents:
-        return await _run_composed_entry(
-            config_path=config_path,
-            cfg=cfg,
-            store=store,
-            schedule_path=schedule_path,
-            job_name=job_name,
-            entry=entry,
-            ancestry=lineage,
-        )
-
-    return await _run_regular_entry(
-        config_path=config_path,
-        cfg=cfg,
-        store=store,
-        job_name=job_name,
-        entry=entry,
-    )
-
-
 def _cleanup_policy(cfg: Dict[str, Any]) -> "CleanupPolicy":
     d = cfg.get("cleanup") if isinstance(cfg, dict) else None
     d = d if isinstance(d, dict) else {}
@@ -1394,18 +964,15 @@ def _trigger_create(
     kind: str, name: str, overrides: Dict[str, Any], job_id: Optional[int] = None
 ) -> Dict[str, Any]:
     tid = f"{kind}_{uuid.uuid4().hex}"
-    tid = f"{kind}_{uuid.uuid4().hex}"
     now = int(time.time())
     obj = {
         "id": tid,
-        "kind": kind,
         "kind": kind,
         "name": name,
         "job_id": job_id,
         "created_at": now,
         "started_at": None,
         "finished_at": None,
-        "status": "queued",
         "status": "queued",
         "overrides": overrides,
         "summary_id": None,
@@ -1447,13 +1014,7 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
 
             log_tail = _tail_worker_log_lines(5)
 
-            log_tail = _tail_worker_log_lines(5)
-
             if rid is None:
-                self._send_json(
-                    200,
-                    {"running_job_id": None, "job": None, "last_log_lines": log_tail},
-                )
                 self._send_json(
                     200,
                     {"running_job_id": None, "job": None, "last_log_lines": log_tail},
@@ -1486,14 +1047,6 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
                         "last_log_lines": log_tail,
                     },
                 )
-                self._send_json(
-                    200,
-                    {
-                        "running_job_id": int(rid),
-                        "job": job,
-                        "last_log_lines": log_tail,
-                    },
-                )
                 return
             except Exception as e:
                 self._send_json(
@@ -1501,7 +1054,6 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
                     {
                         "error": "job_lookup_failed",
                         "running_job_id": int(rid),
-                        "last_log_lines": log_tail,
                         "last_log_lines": log_tail,
                         "detail": str(e),
                     },
@@ -1548,7 +1100,6 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(500, {"error": "resume_failed", "detail": str(e)})
             return
-
 
         if self.path != "/trigger":
             self._send_json(404, {"error": "not_found"})
@@ -1654,20 +1205,10 @@ def main() -> int:
     store_cfg = cfg.get("store") or {}
     store = create_store(store_cfg)
     async_runner = _AsyncRunner()
-    async_runner = _AsyncRunner()
 
     pol = _cleanup_policy(cfg)
 
     if args.cleanup_once:
-        try:
-            if not getattr(pol, "enabled", True):
-                log.info("cleanup disabled (cleanup.enabled=false).")
-                return 0
-            store.run_cleanup(pol)  # type: ignore[attr-defined]
-            log.info("cleanup: run_cleanup executed (cleanup-once).")
-            return 0
-        finally:
-            async_runner.close()
         try:
             if not getattr(pol, "enabled", True):
                 log.info("cleanup disabled (cleanup.enabled=false).")
@@ -1713,14 +1254,6 @@ def main() -> int:
             nr = _next_run_dt(entry, now0)
             if nr:
                 next_runs[str(name)] = nr
-            if not isinstance(entry, dict):
-                continue
-            freq = str(entry.get("frequency") or "").strip().lower()
-            if freq == "triggered":
-                continue
-            nr = _next_run_dt(entry, now0)
-            if nr:
-                next_runs[str(name)] = nr
         if next_runs:
             log.info(
                 "Initial next runs: %s",
@@ -1745,8 +1278,6 @@ def main() -> int:
         def _runner():
             _trigger_update(tid, status="running", started_at=int(time.time()))
             try:
-                summary_id = async_runner.run(
-                    _run_one(config_path, cfg, store, schedule_path, str(name), entry)
                 summary_id = async_runner.run(
                     _run_one(config_path, cfg, store, schedule_path, str(name), entry)
                 )
@@ -1782,14 +1313,12 @@ def main() -> int:
 
         def _runner():
             global RUNNING_JOB_ID
-            global RUNNING_JOB_ID
             _trigger_update(tid, status="running", started_at=int(time.time()))
             try:
                 with RUNNING_JOB_LOCK:
                     RUNNING_JOB_ID = jid
 
                 llm = create_llm_client(cfg)
-                summary_id = async_runner.run(
                 summary_id = async_runner.run(
                     run_resume_job(
                         config=cfg,
@@ -1824,7 +1353,6 @@ def main() -> int:
         }
 
     _control = _start_worker_control_server(
-    _control = _start_worker_control_server(
         cfg,
         trigger_async=trigger_async,
         resume_async=resume_async,
@@ -1834,9 +1362,6 @@ def main() -> int:
     try:
         while True:
             now = _now(tz)
-    try:
-        while True:
-            now = _now(tz)
 
             if getattr(pol, "enabled", True):
                 every = max(1, int(getattr(pol, "run_every_minutes", 60))) * 60
@@ -1847,18 +1372,7 @@ def main() -> int:
                     except Exception as e:
                         log.exception("cleanup: run_cleanup failed: %s", e)
                     last_cleanup_ts = time.time()
-            if getattr(pol, "enabled", True):
-                every = max(1, int(getattr(pol, "run_every_minutes", 60))) * 60
-                if (time.time() - last_cleanup_ts) >= every:
-                    try:
-                        store.run_cleanup(pol)  # type: ignore[attr-defined]
-                        log.info("cleanup: run_cleanup executed")
-                    except Exception as e:
-                        log.exception("cleanup: run_cleanup failed: %s", e)
-                    last_cleanup_ts = time.time()
 
-            if enabled:
-                schedule = _read_schedule_yaml(schedule_path)
             if enabled:
                 schedule = _read_schedule_yaml(schedule_path)
 
@@ -1873,24 +1387,7 @@ def main() -> int:
                         nr = _next_run_dt(entry, now)
                         if nr:
                             next_runs[jn] = nr
-                for name, entry in schedule.items():
-                    if not isinstance(entry, dict):
-                        continue
-                    freq = str(entry.get("frequency") or "").strip().lower()
-                    if freq == "triggered":
-                        continue
-                    jn = str(name)
-                    if jn not in next_runs:
-                        nr = _next_run_dt(entry, now)
-                        if nr:
-                            next_runs[jn] = nr
 
-                for name, entry in schedule.items():
-                    if not isinstance(entry, dict):
-                        continue
-                    freq = str(entry.get("frequency") or "").strip().lower()
-                    if freq == "triggered":
-                        continue
                 for name, entry in schedule.items():
                     if not isinstance(entry, dict):
                         continue
@@ -1906,28 +1403,10 @@ def main() -> int:
                             next_runs[jn] = nr
                         else:
                             continue
-                    jn = str(name)
-                    nr = next_runs.get(jn)
-                    if not nr:
-                        nr = _next_run_dt(entry, now)
-                        if nr:
-                            next_runs[jn] = nr
-                        else:
-                            continue
 
                     if now < nr:
                         continue
-                    if now < nr:
-                        continue
 
-                    late_by = (now - nr).total_seconds()
-                    if late_by > grace:
-                        log.warning(
-                            "Job '%s' late by %.1fs (grace=%ss) - running anyway",
-                            jn,
-                            late_by,
-                            grace,
-                        )
                     late_by = (now - nr).total_seconds()
                     if late_by > grace:
                         log.warning(
@@ -1940,16 +1419,7 @@ def main() -> int:
                     stamp = now.strftime("%Y%m%d%H%M")
                     if last_run_stamp.get(jn) == stamp:
                         continue
-                    stamp = now.strftime("%Y%m%d%H%M")
-                    if last_run_stamp.get(jn) == stamp:
-                        continue
 
-                    try:
-                        async_runner.run(
-                            _run_one(config_path, cfg, store, schedule_path, jn, entry)
-                        )
-                    except Exception as e:
-                        log.exception("Job '%s' FAILED: %s", jn, e)
                     try:
                         async_runner.run(
                             _run_one(config_path, cfg, store, schedule_path, jn, entry)
@@ -1958,11 +1428,7 @@ def main() -> int:
                         log.exception("Job '%s' FAILED: %s", jn, e)
 
                     last_run_stamp[jn] = stamp
-                    last_run_stamp[jn] = stamp
 
-                    nn = _next_run_dt(entry, now + dt.timedelta(seconds=1))
-                    if nn:
-                        next_runs[jn] = nn
                     nn = _next_run_dt(entry, now + dt.timedelta(seconds=1))
                     if nn:
                         next_runs[jn] = nn
@@ -1970,13 +1436,7 @@ def main() -> int:
             if args.once:
                 log.info("--once: exiting after one scan.")
                 return 0
-            if args.once:
-                log.info("--once: exiting after one scan.")
-                return 0
 
-            time.sleep(max(1, int(poll_seconds)))
-    finally:
-        async_runner.close()
             time.sleep(max(1, int(poll_seconds)))
     finally:
         async_runner.close()
