@@ -10,6 +10,27 @@
     {% if error %}
       <div class="alert alert-danger">{{ error }}</div>
     {% endif %}
+
+    {% if date_tabs %}
+      <ul class="nav nav-tabs mb-3 flex-nowrap overflow-auto">
+        <li class="nav-item">
+          <a class="nav-link {% if not active_date %}active{% endif %}"
+             href="{{ url_for('list_articles') }}">
+            Alla
+            <span class="badge text-bg-light ms-1">{{ total_article_count }}</span>
+          </a>
+        </li>
+        {% for day in date_tabs %}
+          <li class="nav-item">
+            <a class="nav-link {% if day == active_date %}active{% endif %}"
+               href="{{ url_for('list_articles', date=day) }}">
+              {{ day }}
+              <span class="badge text-bg-light ms-1">{{ date_counts.get(day, 0) }}</span>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
     
     {# Category filter section #}
     <div class="card mb-3">
@@ -27,8 +48,8 @@
 
     {# Tag filter section #}
     <div class="card mb-3">
-      <div class="card-body">
-        <h6 class="card-title">Filtrera på taggar</h6>
+      <details>
+        <summary class="card-title">Filtrera på taggar</summary>
         <div id="tag-filter-container" class="d-flex flex-wrap gap-2">
           <small class="text-muted">Laddar taggar...</small>
         </div>
@@ -36,12 +57,15 @@
           <small class="text-muted">Valda taggar: <span id="selected-count">0</span></small>
           <button id="clear-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa filter</button>
         </div>
-      </div>
+      </details>
     </div>
     
     {# Article count #}
     <div class="mb-2">
-      <small class="text-muted">Artiklar: <span id="article-count">{{ articles|length }}</span></small>
+      <small class="text-muted">
+        Artiklar: <span id="article-count">{{ articles|length }}</span>
+        {% if active_date %}av {{ total_article_count }}{% endif %}
+      </small>
     </div>
     
     <div class="table-responsive">
@@ -208,35 +232,63 @@ document.addEventListener('DOMContentLoaded', async function() {
   
   console.log('[Articles.html] tagsArray length:', tagsArray.length);
   
-  if (tagsArray.length === 0) {
-    filterContainer.innerHTML = '<small class="text-muted">Inga taggar hittades</small>';
-  } else {
-    tagsArray.forEach(tag => {
-      const btn = document.createElement('button');
-      btn.className = 'btn btn-sm btn-outline-secondary tag-filter-btn';
-      btn.textContent = tag.name;
-      btn.setAttribute('data-tag-name', tag.name);
-      btn.style.cursor = 'pointer';
-      
-      btn.addEventListener('click', function() {
-        if (selectedTags.has(tag.name)) {
-          selectedTags.delete(tag.name);
-          btn.classList.remove('active', 'btn-secondary');
-          btn.classList.add('btn-outline-secondary');
-        } else {
-          selectedTags.add(tag.name);
-          btn.classList.remove('btn-outline-secondary');
-          btn.classList.add('active', 'btn-secondary');
-        }
-        updateFiltering();
-      });
-      
-      filterContainer.appendChild(btn);
+  tagsArray.forEach(tag => {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm btn-outline-secondary tag-filter-btn';
+    btn.textContent = tag.name;
+    btn.setAttribute('data-tag-name', tag.name);
+    btn.setAttribute('data-category', tag.category || 'GENERAL');
+    btn.style.cursor = 'pointer';
+
+    btn.addEventListener('click', function() {
+      if (selectedTags.has(tag.name)) {
+        selectedTags.delete(tag.name);
+        btn.classList.remove('active', 'btn-secondary');
+        btn.classList.add('btn-outline-secondary');
+      } else {
+        selectedTags.add(tag.name);
+        btn.classList.remove('btn-outline-secondary');
+        btn.classList.add('active', 'btn-secondary');
+      }
+      updateFiltering();
     });
+
+    filterContainer.appendChild(btn);
+  });
+
+  const noMatchingTagsMessage = document.createElement('small');
+  noMatchingTagsMessage.className = 'text-muted';
+  noMatchingTagsMessage.textContent = tagsArray.length === 0
+    ? 'Inga taggar hittades'
+    : 'Inga taggar i valda kategorier';
+  noMatchingTagsMessage.style.display = 'none';
+  filterContainer.appendChild(noMatchingTagsMessage);
+
+  function updateTagFilterVisibility() {
+    let visibleTags = 0;
+
+    document.querySelectorAll('.tag-filter-btn').forEach(btn => {
+      const category = btn.getAttribute('data-category');
+      const isVisible = selectedCategories.size === 0 || selectedCategories.has(category);
+      btn.style.display = isVisible ? '' : 'none';
+
+      if (isVisible) {
+        visibleTags++;
+        return;
+      }
+
+      // A hidden tag must not keep filtering articles invisibly.
+      selectedTags.delete(btn.getAttribute('data-tag-name'));
+      btn.classList.remove('active', 'btn-secondary');
+      btn.classList.add('btn-outline-secondary');
+    });
+
+    noMatchingTagsMessage.style.display = visibleTags === 0 ? '' : 'none';
   }
   
   // Update selected count and visibility
   function updateFiltering() {
+    updateTagFilterVisibility();
     document.getElementById('selected-count').textContent = selectedTags.size;
     document.getElementById('selected-categories-count').textContent = selectedCategories.size;
     
@@ -325,6 +377,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     });
     updateFiltering();
   });
+
+  updateFiltering();
 });
 </script>
 

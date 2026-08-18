@@ -1319,11 +1319,6 @@ def list_articles():
         limit = 2000
     limit = max(1, min(limit, 50000))
 
-    raw = store.list_articles(limit=limit) or []
-    articles: List[Dict[str, Any]] = []
-    for a in raw:
-        if isinstance(a, dict) and a.get("id"):
-            articles.append(_article_list_item(a))
     try:
         max_days = int(request.args.get("days", "3650"))
     except Exception:
@@ -1349,8 +1344,6 @@ def list_articles():
 
     requested_date = str(request.args.get("date") or "").strip()
     active_date = requested_date if requested_date in date_counts else ""
-    if not active_date and date_tabs:
-        active_date = date_tabs[0]
 
     active_articles: List[Dict[str, Any]] = []
     if active_date:
@@ -1375,12 +1368,20 @@ def list_articles():
             except Exception as e:
                 logger.debug(f"Error loading tags for article {a.get('id')}: {e}")
                 a["tags"] = []
+    else:
+        raw = store.list_articles(limit=limit) or []
+        for a in raw:
+            if isinstance(a, dict) and a.get("id"):
+                active_articles.append(_article_list_item(a))
+
+    active_articles.sort(key=_article_published_ts, reverse=True)
 
     return render_template(
         "articles.html",
         articles=active_articles,
         date_tabs=date_tabs,
         date_counts=date_counts,
+        total_article_count=len(active_articles) if not active_date else sum(date_counts.values()),
         active_date=active_date,
         format_published_ts_iso=_format_published_ts_iso,
         format_ts=format_ts,
