@@ -579,6 +579,8 @@ def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
         "url": a.get("url") or "",
         "published_ts": int(_coerce_positive_ts(a.get("published_ts"))),
         "fetched_at": int(_coerce_positive_ts(a.get("fetched_at"))),
+        "published_ts": int(_coerce_positive_ts(a.get("published_ts"))),
+        "fetched_at": int(_coerce_positive_ts(a.get("fetched_at"))),
         "preview": preview,
         "tags": tags,
     }
@@ -938,6 +940,12 @@ def api_summaries():
     docs = _filter_summaries_by_topics(docs, selected_topics)
     docs = docs[:limit]
 
+    return jsonify(
+        {
+            "items": [_summary_list_item(d) for d in docs],
+            "active_topics": selected_topics,
+        }
+    )
     return jsonify(
         {
             "items": [_summary_list_item(d) for d in docs],
