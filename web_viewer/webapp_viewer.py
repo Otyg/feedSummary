@@ -59,6 +59,12 @@ from feedsummary_core.summarizer.main import (
 )
 from feedsummary_core.summarizer.tagging import TagManager
 from feedsummary_core.llm_client import create_llm_client
+from feedsummary_core.prompts.loader import (
+    DEFAULT_PROMPTS_PATH,
+    list_prompt_packages,
+    load_prompt_package,
+    resolve_prompt_root,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -446,7 +452,9 @@ def _schedule_signature_from_entry(entry: Dict[str, Any]) -> tuple:
     freq = str(entry.get("frequency") or "").strip().lower()
     lb = str(entry.get("lookback") or "").strip()
     if not lb:
-        if freq == "daily":
+        if freq == "hourly":
+            lb = "1h"
+        elif freq == "daily":
             lb = "1d"
         elif freq == "weekly":
             lb = "1w"
@@ -764,12 +772,20 @@ def _load_yaml_file(path: str) -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
 
+def _resolve_prompt_root(cfg: Dict[str, Any]) -> Path:
+    prompt_cfg = cfg.get("prompts") or {}
+    raw_path = DEFAULT_PROMPTS_PATH
+    if isinstance(prompt_cfg, dict) and prompt_cfg.get("path"):
+        raw_path = str(prompt_cfg["path"])
+    return resolve_prompt_root(raw_path, base_config_path=APP_CONFIG_PATH or "config.yaml")
+
+
 def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Read-only UI options for clients.
     - sources: feed/source names
     - topics: unique topic tags across feeds (if configured)
-    - prompt_packages: keys in prompts.yaml
+    - prompt_packages: package filenames in the configured prompt root
     """
     out = {"sources": [], "topics": [], "prompt_packages": []}
 
@@ -805,28 +821,18 @@ def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
                         if t:
                             topics.append(t)
 
-    # ---- Prompts: prompt packages ----
-    prompts_path = None
-    if isinstance(cfg.get("prompts"), dict) and cfg["prompts"].get("path"):
-        prompts_path = str(cfg["prompts"]["path"])
-    else:
-        prompts_path = str(
-            (
-                Path(APP_CONFIG_PATH).resolve().parent / "config" / "prompts.yaml"
-            ).resolve()
-        )
-
-    prompts = _load_yaml_file(prompts_path)
-    if isinstance(prompts, dict):
-        out["prompt_packages"] = sorted(
-            [k for k in prompts.keys() if isinstance(k, str)]
-        )
+    # ---- Prompts: directory-based packages (legacy single files also work) ----
+    prompts_path = _resolve_prompt_root(cfg)
+    try:
+        out["prompt_packages"] = list_prompt_packages(prompts_path)
+    except (FileNotFoundError, ValueError):
+        out["prompt_packages"] = []
 
     out["sources"] = sorted(list(dict.fromkeys(sources)))
     out["topics"] = sorted(list(dict.fromkeys(topics)))
 
     out["feeds_path"] = feeds_path
-    out["prompts_path"] = prompts_path
+    out["prompts_path"] = str(prompts_path)
     return out
 
 
@@ -1052,46 +1058,36 @@ def api_page_license():
 @app.route("/api/v1/prompt/<name>")
 def api_prompt_package(name: str):
     """
-    Return the YAML content for a single prompt package from prompts.yaml.
+    Return the YAML content for one package from the configured prompt root.
     Read-only.
     """
     pkg = str(name or "").strip()
     if not pkg:
         abort(404)
 
-    # Reuse the same prompts path logic as /api/ui_options
-    prompts_path = None
-    if isinstance(APP_CFG.get("prompts"), dict) and APP_CFG["prompts"].get("path"):
-        prompts_path = str(APP_CFG["prompts"]["path"])
-    else:
-        prompts_path = str(
-            (
-                Path(APP_CONFIG_PATH).resolve().parent / "config" / "prompts.yaml"
-            ).resolve()
-        )
-
-    p = Path(prompts_path)
-    if not p.exists():
+    prompts_path = _resolve_prompt_root(APP_CFG)
+    if not prompts_path.exists():
         return jsonify(
-            {"error": "prompts_yaml_not_found", "prompts_path": prompts_path}
+            {"error": "prompt_path_not_found", "prompts_path": str(prompts_path)}
         ), 404
 
-    prompts = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    if not isinstance(prompts, dict) or pkg not in prompts:
+    try:
+        item = load_prompt_package(prompts_path, pkg)
+    except KeyError:
         return jsonify(
-            {"error": "prompt_not_found", "name": pkg, "prompts_path": prompts_path}
+            {"error": "prompt_not_found", "name": pkg, "prompts_path": str(prompts_path)}
         ), 404
 
     # Dump only that package as YAML (nice for display/copy)
-    one = {pkg: prompts[pkg]}
+    one = {pkg: item}
     yaml_text = yaml.safe_dump(one, sort_keys=False, allow_unicode=True)
 
     return jsonify(
         {
             "name": pkg,
-            "prompts_path": prompts_path,
+            "prompts_path": str(prompts_path),
             "yaml": yaml_text,
-            "item": prompts[pkg],  # also return as JSON if you want programmatic use
+            "item": item,  # also return as JSON if you want programmatic use
         }
     )
 
@@ -1501,6 +1497,84 @@ def api_get_all_tags():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/v1/tags/categories", methods=["PUT"])
+def api_update_tag_categories():
+    """Update the category for multiple tags in one validated request."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    try:
+        data = request.get_json(silent=True) or {}
+        changes = data.get("changes")
+        if not isinstance(changes, list):
+            return jsonify({"error": "changes must be a list"}), 400
+
+        categories = store.get_all_categories() or []
+        category_names = {
+            str(category.get("name") or "").strip()
+            for category in categories
+            if isinstance(category, dict) and str(category.get("name") or "").strip()
+        }
+        tags_by_id = {
+            int(tag["id"]): tag
+            for tag in (store.get_all_tags() or [])
+            if isinstance(tag, dict) and tag.get("id") is not None
+        }
+
+        validated = []
+        seen_tag_ids = set()
+        for index, change in enumerate(changes):
+            if not isinstance(change, dict):
+                return jsonify({"error": f"changes[{index}] must be an object"}), 400
+
+            try:
+                tag_id = int(change.get("tag_id"))
+            except (TypeError, ValueError):
+                return jsonify({"error": f"changes[{index}].tag_id is invalid"}), 400
+
+            category = str(change.get("category") or "").strip()
+            if tag_id in seen_tag_ids:
+                return jsonify({"error": f"duplicate tag_id: {tag_id}"}), 400
+            if tag_id not in tags_by_id:
+                return jsonify({"error": f"tag not found: {tag_id}"}), 404
+            if category not in category_names:
+                return jsonify({"error": f"category not found: {category}"}), 400
+
+            seen_tag_ids.add(tag_id)
+            if str(tags_by_id[tag_id].get("category") or "GENERAL") != category:
+                validated.append((tag_id, category))
+
+        updated_tags = []
+        for tag_id, category in validated:
+            updated = store.update_tag(tag_id, category=category)
+            if not updated:
+                logger.error(
+                    "[TagCategoryAPI] Failed after %s updates while updating tag %s",
+                    len(updated_tags),
+                    tag_id,
+                )
+                return jsonify(
+                    {
+                        "error": f"could not update tag: {tag_id}",
+                        "updated_tag_ids": [tag["id"] for tag in updated_tags],
+                    }
+                ), 500
+            updated_tags.append(updated)
+
+        logger.info("[TagCategoryAPI] Updated categories for %s tags", len(updated_tags))
+        return jsonify(
+            {
+                "success": True,
+                "updated_count": len(updated_tags),
+                "tags": updated_tags,
+            }
+        ), 200
+    except Exception as e:
+        logger.error(f"Error updating tag categories: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/v1/tags", methods=["POST"])
 def api_create_tag():
     """Create a new tag."""
@@ -1707,7 +1781,7 @@ def api_update_tag(tag_id: int):
         name = data.get("name")
         category = data.get("category")
         description = data.get("description")
-        new_synonyms = data.get("synonyms") or []
+        new_synonyms = data.get("synonyms") if "synonyms" in data else None
         
         # Get current tag to check for old synonyms
         all_tags = store.get_all_tags() or []
@@ -1716,7 +1790,14 @@ def api_update_tag(tag_id: int):
         
         # Find newly added synonyms
         old_synonyms_set = set(s.lower() if isinstance(s, str) else str(s).lower() for s in old_synonyms)
-        new_synonyms_set = set(s.lower() if isinstance(s, str) else str(s).lower() for s in new_synonyms)
+        new_synonyms_set = (
+            set(
+                s.lower() if isinstance(s, str) else str(s).lower()
+                for s in new_synonyms
+            )
+            if new_synonyms is not None
+            else old_synonyms_set
+        )
         added_synonyms = new_synonyms_set - old_synonyms_set
         
         # Update the tag
@@ -2010,6 +2091,51 @@ def manage_categories():
         return render_template("categories.html", categories=categories, format_ts=format_ts)
     except Exception as e:
         logger.error(f"Error loading categories: {e}")
+        abort(500)
+
+
+@app.route("/tag-categories")
+def categorize_tags():
+    """Bulk editor for assigning tags to categories."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    try:
+        categories = store.get_all_categories() or []
+        categories.sort(
+            key=lambda category: (
+                str(category.get("label") or "").lower(),
+                str(category.get("name") or "").lower(),
+            )
+        )
+
+        requested_category = str(request.args.get("category") or "").strip()
+        category_names = {str(category.get("name") or "") for category in categories}
+        if requested_category in category_names:
+            selected_category = requested_category
+        elif "GENERAL" in category_names:
+            selected_category = "GENERAL"
+        else:
+            selected_category = (
+                str(categories[0].get("name") or "") if categories else ""
+            )
+
+        tags = [
+            tag
+            for tag in (store.get_all_tags() or [])
+            if str(tag.get("category") or "GENERAL") == selected_category
+        ]
+        tags.sort(key=lambda tag: str(tag.get("name") or "").lower())
+
+        return render_template(
+            "tag_categories.html",
+            categories=categories,
+            selected_category=selected_category,
+            tags=tags,
+        )
+    except Exception as e:
+        logger.error(f"Error loading tag category editor: {e}")
         abort(500)
 
 

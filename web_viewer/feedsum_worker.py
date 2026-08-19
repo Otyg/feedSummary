@@ -448,6 +448,9 @@ def _next_run_dt(entry: Dict[str, Any], now: dt.datetime) -> Optional[dt.datetim
     if freq == "triggered":
         return None
 
+    if freq == "hourly":
+        return _next_boundary(now, list(range(24)))
+
     if freq == "quarterday":
         return _next_boundary(now, [0, 6, 12, 18])
 
@@ -491,7 +494,9 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
         overrides["lookback"] = lb
     else:
         freq = str(entry.get("frequency") or "").strip().lower()
-        if freq == "daily":
+        if freq == "hourly":
+            overrides["lookback"] = "1h"
+        elif freq == "daily":
             overrides["lookback"] = "1d"
         elif freq == "weekly":
             overrides["lookback"] = "1w"
@@ -749,6 +754,7 @@ async def _run_regular_entry(
                 job_id=job_id,
                 tag_names=tags,
                 lookback=lb,
+                prompt_package=overrides.get("prompt_package"),
                 config_dict=cfg,
             )
             log.info("Job '%s' OK (tag_based_summary) summary_id=%s", job_name, summary_id)

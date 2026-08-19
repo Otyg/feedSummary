@@ -402,7 +402,7 @@ class MainWindow(QMainWindow):
             self.prompts_view.setHtml(
                 "<h3>Prompt packages (read-only)</h3>"
                 f"<p><b>Antal:</b> {len(pkgs)}</p>"
-                f"<p><b>prompts.yaml:</b> <code>{prompts_path}</code><br/>"
+                f"<p><b>Promptrot:</b> <code>{prompts_path}</code><br/>"
                 f"<b>feeds.yaml:</b> <code>{feeds_path}</code></p>"
                 "<p>Klicka på ett paket i listan för att visa YAML-innehållet.</p>"
             )
@@ -431,7 +431,7 @@ class MainWindow(QMainWindow):
 
             html = (
                 f"<h3>{name}</h3>"
-                f"<div class='text-muted'><b>prompts.yaml:</b> <code>{prompts_path}</code></div>"
+                f"<div class='text-muted'><b>Promptrot:</b> <code>{prompts_path}</code></div>"
                 "<hr/>"
                 f"<pre style='white-space: pre-wrap;'>{yaml_text}</pre>"
             )
