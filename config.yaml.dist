@@ -20,10 +20,21 @@ batching:
   max_articles_per_batch: 15
   max_chars_per_batch: 9000
   article_clip_chars: 3500
+  similarity_enabled: true
+  similarity_threshold: 0.78
+  embedding_text_chars: 2000
+  embedding_max_concurrency: 4
   meta_batch_clip_chars: 1500
   meta_sources_clip_chars: 100
   retry_user_clip_chars: 9000
   topic_max_workers: 4
+tagging:
+  similarity_consistency:
+    enabled: true
+    similarity_threshold: 0.78
+    embedding_text_chars: 2000
+    embedding_max_concurrency: 4
+    max_shared_tags: 1
 cleanup:
   enabled: true
   run_every_minutes: 60
@@ -63,6 +74,7 @@ llm:
 llm_fallback:
   provider: ollama_local
   model: qwen2.5:7b
+  embedding_model: embeddinggemma:latest
   base_url: http://localhost:11434
   max_rps: 1
   timeout_s: 6000
