@@ -49,6 +49,13 @@ daily_summaries:
     - title: "daily_news_title"
     - ingress: "daily_super_meta"
 
+ingest_news_hourly:
+  frequency: "hourly"  # Runs at the start of every hour
+  type: "fetch_and_tag"
+  categories:
+    - "Nyheter"
+    - "Teknik"
+
 ingest_cyber_continuous:
   frequency: "quarterday"  # Runs at 00:00, 06:00, 12:00, 18:00
   type: "fetch_and_tag"

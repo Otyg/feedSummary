@@ -88,7 +88,7 @@ Knappen **Refresh** öppnar en modal där du väljer:
 - styr vilka RSS-items som hämtas och vilka artiklar som väljs till sammanfattningen.
 
 2) **Prompt-paket**
-- väljer ett promptpaket ur `config/prompts.yaml`
+- väljer ett promptpaket ur katalogen `config/prompts/`
 - valet gäller *per körning* (UI skickar override)
 
 3) **Ämnen (topics)** (om dina feeds har `topics`)
@@ -288,26 +288,25 @@ Filter per feed baserat på RSS-entry tags/kategorier:
 
 ---
 
-### `config/prompts.yaml`
-Innehåller prompt-paket (”packages”). Varje package är en nyckel i YAML och innehåller fyra fält:
+### `config/prompts/`
+Innehåller prompt-paket (”packages”). Varje paket ligger i en egen YAML-fil, där filnamnet utan ändelsen är paketnamnet, och innehåller fyra fält:
 
 - `batch_system`
 - `batch_user_template`
 - `meta_system`
 - `meta_user_template`
 
-Exempelstruktur:
+Exempel, `config/prompts/MyPackage.yaml`:
 
 ```yaml
-MyPackage:
-  batch_system: |
-    ...
-  batch_user_template: |
-    ... {articles_corpus} ...
-  meta_system: |
-    ...
-  meta_user_template: |
-    ... {batch_summaries} ...
+batch_system: |
+  ...
+batch_user_template: |
+  ... {articles_corpus} ...
+meta_system: |
+  ...
+meta_user_template: |
+  ... {batch_summaries} ...
 ```
 
 Vanliga placeholders:
@@ -317,8 +316,8 @@ Vanliga placeholders:
 I `config.yaml` väljer du default/selected:
 ```yaml
 prompts:
-  path: "config/prompts.yaml"
-  default_package: "SecurityAnalyst"
+  path: "config/prompts"
+  default_package: "daily_cyber_multisource_se_eu_world_mod"
   selected: ""   # tom => default; webapp kan override per körning
 ```
 
