@@ -323,6 +323,29 @@ prompts:
 
 ---
 
+## Granska befintliga taggkopplingar
+
+`audit_article_tags.py` använder projektets konfiguration, store och LLM-klient för att
+kontrollera valda taggar på de lagrade artiklar som har dem. Standardläget är read-only:
+
+```bash
+.venv/bin/python audit_article_tags.py ray comfast --output tag-audit.json
+```
+
+Granska rapporten och kör därefter vid behov med `--remove-invalid` för att ta bort de
+taggkopplingar som LLM-bedömningen markerar som irrelevanta:
+
+```bash
+.venv/bin/python audit_article_tags.py ray comfast \
+  --output tag-audit-after-cleanup.json \
+  --remove-invalid
+```
+
+Använd `--limit 10` för en mindre provkörning. `--config` kan ange en annan konfiguration;
+annars används `FEEDSUMMARY_CONFIG` eller `./config.yaml`.
+
+---
+
 ## Tips & felsökning
 
 - Om inga artiklar kommer med:
