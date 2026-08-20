@@ -1,0 +1,6 @@
+# Domänspecifika regler för extraktion av artikeltext.
+# Domäner normaliseras så att exempelvis www.theregister.com matchar
+# theregister.com. Andra subdomäner matchas inte automatiskt.
+domains:
+  theregister.com:
+    content_xpath: "//main/article/section[1]"

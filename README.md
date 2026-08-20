@@ -189,11 +189,14 @@ ingest:
   lookback: 1d
   max_items_per_feed: 100
   article_timeout_s: 20
+  extraction:
+    path: "config/extraction.yaml"
 ```
 
 - `lookback`: hur långt bak RSS-items tas med.
 - `max_items_per_feed`: safety cap per feed.
 - `article_timeout_s`: timeout när en artikel hämtas.
+- `extraction.path`: valfri YAML-fil med domänspecifika extraktionsregler.
 
 #### `batching`
 Batch- och meta-budgets:
@@ -286,6 +289,24 @@ Filter per feed baserat på RSS-entry tags/kategorier:
   category_include: ["Inrikes", "Utrikes"]
 ```
 
+### `config/extraction.yaml`
+
+Kan begränsa Trafilatura till ett särskilt HTML-element för domäner där den
+generella brödtextextraktionen tar med oönskat innehåll:
+
+```yaml
+domains:
+  theregister.com:
+    content_xpath: "//main/article/section[1]"
+```
+
+Domännamn matchas exakt, bortsett från att `www.` normaliseras bort. Om XPath-
+selektorn är ogiltig, inte ger någon träff eller fragmentet inte ger någon text,
+loggas en varning och Trafilatura körs på hela sidan. Följande valfria
+Trafilatura-inställningar kan också anges per domän: `include_comments`,
+`include_tables`, `include_links`, `include_images`, `favor_precision`,
+`favor_recall`, `deduplicate`, `target_language` och `prune_xpath`.
+
 ---
 
 ### `config/prompts/`
@@ -326,23 +347,36 @@ prompts:
 ## Granska befintliga taggkopplingar
 
 `audit_article_tags.py` använder projektets konfiguration, store och LLM-klient för att
-kontrollera valda taggar på de lagrade artiklar som har dem. Standardläget är read-only:
+kontrollera samtliga befintliga taggkopplingar automatiskt. Helt okopplade taggposter
+listas också i rapporten. Standardläget är read-only och kräver inga taggnamn:
 
 ```bash
-.venv/bin/python audit_article_tags.py ray comfast --output tag-audit.json
+.venv/bin/python audit_article_tags.py --output tag-audit.json
 ```
 
 Granska rapporten och kör därefter vid behov med `--remove-invalid` för att ta bort de
-taggkopplingar som LLM-bedömningen markerar som irrelevanta:
+taggkopplingar som LLM-bedömningen markerar som irrelevanta. Efter kopplingssaneringen
+tas även taggposter som helt saknar artikelkoppling bort:
 
 ```bash
-.venv/bin/python audit_article_tags.py ray comfast \
-  --output tag-audit-after-cleanup.json \
+.venv/bin/python audit_article_tags.py \
+  --input-report tag-audit.json \
+  --output tag-audit-cleanup.json \
   --remove-invalid
 ```
 
+Med `--input-report` återanvänds den tidigare rapportens bedömningar och inga nya
+LLM-anrop görs. Rapportens artikel-ID, tagg-ID och taggnamn verifieras mot den aktuella
+databasen före varje borttagning.
+
+Auditbedömningen tar hänsyn till taggens konfigurerade synonymer och till överordnade
+geografiska begrepp, exempelvis `Europe` för en artikel vars centrala plats är ett
+europeiskt land. Rapporten anger `match_type` och `matched_term`. Vid applicering av en
+äldre rapport utan synonympolicyn hoppas taggar med synonymer över för säkerhets skull.
+
 Använd `--limit 10` för en mindre provkörning. `--config` kan ange en annan konfiguration;
-annars används `FEEDSUMMARY_CONFIG` eller `./config.yaml`.
+annars används `FEEDSUMMARY_CONFIG` eller `./config.yaml`. Taggnamn kan fortfarande anges
+som positionella argument om bara ett urval ska granskas, exempelvis `ray comfast`.
 
 ---
 

@@ -208,6 +208,7 @@ __marimo__/
 
 config.yaml
 config/*.yaml
+!config/extraction.yaml
 .vscode/
 .idea/
 .venv*

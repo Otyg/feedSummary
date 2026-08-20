@@ -16,6 +16,8 @@ ingest:
   lookback: 1d
   max_items_per_feed: 100
   article_timeout_s: 20
+  extraction:
+    path: "config/extraction.yaml"
 batching:
   max_articles_per_batch: 15
   max_chars_per_batch: 9000
