@@ -36,3 +36,72 @@ weekly_hybrid_cyber:
     - "Dataskydd"
     - "Sårbarheter"
   promptpackage: "weekly_hybrid_news_cyber_tech_se"
+daily_summaries:
+  frequency: "daily"
+  time: "06:00"
+  lookback: "1d"
+  contents:
+    - schedule: "Inrikes"
+    - schedule: "Utrikes"
+    - schedule: "Tech"
+    - schedule: "Cybersec"
+    - proofread: "daily_hybrid_news_cyber_tech_se"
+    - title: "daily_news_title"
+    - ingress: "daily_super_meta"
+
+ingest_news_hourly:
+  frequency: "hourly"  # Runs at the start of every hour
+  type: "fetch_and_tag"
+  categories:
+    - "Nyheter"
+    - "Teknik"
+
+ingest_cyber_continuous:
+  frequency: "quarterday"  # Runs at 00:00, 06:00, 12:00, 18:00
+  type: "fetch_and_tag"
+  categories:
+    - "Cybersecurity"
+    - "Dataskydd"
+    - "Sårbarheter"
+
+ingest_news_continuous:
+  frequency: "halfday"  # Runs at 00:00, 12:00
+  type: "fetch_and_tag"
+  categories:
+    - "Nyheter"
+    - "Teknik"
+
+summary_vulnerabilities:
+  frequency: "daily"
+  time: "08:00"
+  type: "tag_based_summary"
+  tags:
+    - "CVE"
+    - "Vulnerability"
+  lookback: "1w"
+  promptpackage: "weekly_hybrid_news_cyber_tech_se"
+Inrikes:
+  frequency: "triggered"
+  lookback: "1d"
+  categories:
+    - "Sverige"
+  promptpackage: "daily_news_multisource_se_eu_world"
+Utrikes:
+  frequency: "triggered"
+  lookback: "1d"
+  categories:
+    - "Utrikes"
+  promptpackage: "daily_news_multisource_se_eu_world"
+Tech:
+  frequency: "triggered"
+  lookback: "1d"
+  categories:
+    - "Teknik"
+  promptpackage: "daily_tech_multisource_se_eu_world"
+Cybersec:
+  frequency: "triggered"
+  lookback: "1d"
+  categories:
+    - "Cybersecurity"
+    - "Dataskydd"
+  promptpackage: "daily_cyber_multisource_se_eu_world"

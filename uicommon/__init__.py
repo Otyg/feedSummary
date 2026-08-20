@@ -47,7 +47,7 @@ from feedsummary_core.prompts.loader import (
 )
 from feedsummary_core.summarizer.helpers import load_feeds_into_config
 
-__version__ = "3.5.0"
+__version__ = "3.5.1"
 
 
 # ----------------------------
@@ -65,6 +65,25 @@ def load_config(config_path: str) -> Dict[str, Any]:
 
 def get_store(cfg: Dict[str, Any]) -> NewsStore:
     return create_store(cfg.get("store", {}))
+
+
+def llm_configs(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Return LLM configs in normalized list form.
+
+    Supports both the newer list-based config and the older dict form.
+    """
+    raw = cfg.get("llm")
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    if isinstance(raw, dict):
+        return [raw]
+    return []
+
+
+def primary_llm_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    configs = llm_configs(cfg)
+    return configs[0] if configs else {}
 
 
 # ----------------------------

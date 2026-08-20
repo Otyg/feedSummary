@@ -269,7 +269,7 @@ def _ensure_user_config_from_template(app_dir: Path) -> Path:
         "ingest:\n"
         "  lookback: 24h\n"
         "prompts:\n"
-        "  path: config/prompts.yaml\n"
+        "  path: config/prompts\n"
     )
     if _safe_write_text(user_cfg, minimal):
         _LOGGER.warning(

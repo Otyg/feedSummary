@@ -88,7 +88,7 @@ Knappen **Refresh** öppnar en modal där du väljer:
 - styr vilka RSS-items som hämtas och vilka artiklar som väljs till sammanfattningen.
 
 2) **Prompt-paket**
-- väljer ett promptpaket ur `config/prompts.yaml`
+- väljer ett promptpaket ur katalogen `config/prompts/`
 - valet gäller *per körning* (UI skickar override)
 
 3) **Ämnen (topics)** (om dina feeds har `topics`)
@@ -213,40 +213,39 @@ batching:
 - `article_clip_chars`: klipper varje artikeltext.
 - `meta_*`: styr hur mycket som får plats i meta-steget.
 
-#### `llm` och `llm_fallback`
-Primary LLM och fallback:
+#### `llm`
+LLM-konfiguration anges som en lista där första posten är primary och efterföljande poster används som fallback i den ordning `feedsummary_core` förväntar sig:
 
 ```yaml
 llm:
-  provider: ollama_cloud
-  host: https://ollama.com
-  model: gemma3:27b-cloud
-  api_key: CHANGE-ME
-  context_window_tokens: 24576
-  max_output_tokens: 500
-  prompt_safety_margin: 1600
-  token_chars_per_token: 2.4
-  prompt_too_long_max_attempts: 6
-  prompt_too_long_structural_threshold_tokens: 1200
-  quota:
-    preflight: true
-    min_interval_seconds: 2
+  - provider: ollama_cloud
+    host: https://ollama.com
+    model: gemma3:27b-cloud
+    api_key: CHANGE-ME
+    context_window_tokens: 24576
+    max_output_tokens: 500
+    prompt_safety_margin: 1600
+    token_chars_per_token: 2.4
+    prompt_too_long_max_attempts: 6
+    prompt_too_long_structural_threshold_tokens: 1200
+    quota:
+      preflight: true
+      min_interval_seconds: 2
 
-llm_fallback:
-  provider: ollama_local
-  model: gemma3:1b
-  base_url: http://localhost:11434
-  max_rps: 1
-  timeout_s: 6000
-  sock_read_timeout_s: 360
-  max_retries: 3
-  retry_backoff_s: 2.0
-  context_window_tokens: 24576
-  max_output_tokens: 500
-  prompt_safety_margin: 1600
-  token_chars_per_token: 2.4
-  prompt_too_long_max_attempts: 6
-  prompt_too_long_structural_threshold_tokens: 1200
+  - provider: ollama_local
+    model: gemma3:1b
+    base_url: http://localhost:11434
+    max_rps: 1
+    timeout_s: 6000
+    sock_read_timeout_s: 360
+    max_retries: 3
+    retry_backoff_s: 2.0
+    context_window_tokens: 24576
+    max_output_tokens: 500
+    prompt_safety_margin: 1600
+    token_chars_per_token: 2.4
+    prompt_too_long_max_attempts: 6
+    prompt_too_long_structural_threshold_tokens: 1200
 ```
 
 Viktiga begrepp:
@@ -289,26 +288,25 @@ Filter per feed baserat på RSS-entry tags/kategorier:
 
 ---
 
-### `config/prompts.yaml`
-Innehåller prompt-paket (”packages”). Varje package är en nyckel i YAML och innehåller fyra fält:
+### `config/prompts/`
+Innehåller prompt-paket (”packages”). Varje paket ligger i en egen YAML-fil, där filnamnet utan ändelsen är paketnamnet, och innehåller fyra fält:
 
 - `batch_system`
 - `batch_user_template`
 - `meta_system`
 - `meta_user_template`
 
-Exempelstruktur:
+Exempel, `config/prompts/MyPackage.yaml`:
 
 ```yaml
-MyPackage:
-  batch_system: |
-    ...
-  batch_user_template: |
-    ... {articles_corpus} ...
-  meta_system: |
-    ...
-  meta_user_template: |
-    ... {batch_summaries} ...
+batch_system: |
+  ...
+batch_user_template: |
+  ... {articles_corpus} ...
+meta_system: |
+  ...
+meta_user_template: |
+  ... {batch_summaries} ...
 ```
 
 Vanliga placeholders:
@@ -318,8 +316,8 @@ Vanliga placeholders:
 I `config.yaml` väljer du default/selected:
 ```yaml
 prompts:
-  path: "config/prompts.yaml"
-  default_package: "SecurityAnalyst"
+  path: "config/prompts"
+  default_package: "daily_cyber_multisource_se_eu_world_mod"
   selected: ""   # tom => default; webapp kan override per körning
 ```
 
@@ -333,8 +331,8 @@ prompts:
 - Om LLM klagar på för lång prompt:
   - minska `batching.max_chars_per_batch`
   - minska `batching.article_clip_chars`
-  - öka `llm.context_window_tokens` (om modellen stödjer)
-  - eller minska `llm.max_output_tokens` och/eller öka `prompt_safety_margin`
+  - öka `context_window_tokens` för den aktiva posten i `llm` (om modellen stödjer)
+  - eller minska `max_output_tokens` och/eller öka `prompt_safety_margin`
 - Om UI visar “Status-anslutning bröts”:
   - refresh-sidan reloadas normalt när jobbet blir `done`
   - annars kontrollera serverloggar

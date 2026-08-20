@@ -1,0 +1,433 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row">
+  <div class="col-12">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h2>Taggar</h2>
+      <button class="btn btn-primary" onclick="showCreateForm()">Ny tagg</button>
+    </div>
+
+    {# New/Edit tag form #}
+    <div id="tag-form" class="card mb-4" style="display: none;">
+      <div class="card-body">
+        <h5 class="card-title" id="form-title">Ny tagg</h5>
+        <form id="edit-form" onsubmit="saveTag(event)">
+          <input type="hidden" id="tag-id" value="">
+          
+          <div class="mb-3">
+            <label for="tag-name" class="form-label">Namn *</label>
+            <input type="text" class="form-control" id="tag-name" required maxlength="100">
+          </div>
+          
+          <div class="mb-3">
+            <label for="tag-category" class="form-label">Kategori</label>
+            <select class="form-select" id="tag-category">
+              {# Populated by JavaScript #}
+            </select>
+          </div>
+          
+          <div class="mb-3">
+            <label for="tag-description" class="form-label">Beskrivning</label>
+            <textarea class="form-control" id="tag-description" rows="3" maxlength="500"></textarea>
+          </div>
+          
+          <div class="mb-3">
+            <label class="form-label">Synonymer</label>
+            <div id="tag-synonyms-container" class="border rounded p-3 bg-light" style="max-height: 300px; overflow-y: auto;">
+              <small class="text-muted d-block mb-2">Välj befintliga taggar som ska vara synonymer för denna tagg</small>
+              <div id="tag-synonyms-checkboxes">
+                <!-- Populated by JavaScript -->
+              </div>
+            </div>
+          </div>
+          
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-success">Spara</button>
+            <button type="button" class="btn btn-secondary" onclick="cancelEdit()">Avbryt</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {# Tags table #}
+    <div class="table-responsive">
+      <table class="table table-hover table-striped">
+        <thead class="table-light">
+          <tr>
+            <th>Namn</th>
+            <th>Kategori</th>
+            <th>Beskrivning</th>
+            <th class="text-center">Använd i artiklar</th>
+            <th class="text-end">Åtgärder</th>
+          </tr>
+        </thead>
+        <tbody id="tags-tbody">
+          {% for tag in tags %}
+            <tr class="tag-row" data-tag-id="{{ tag.get('id') }}">
+              <td>
+                <strong>{{ tag.get('name') }}</strong>
+              </td>
+              <td>
+                <span class="badge category-badge" 
+                      data-category="{{ tag.get('category') }}"
+                      data-tag-id="{{ tag.get('id') }}">
+                  {{ tag.get('category') }}
+                </span>
+              </td>
+              <td class="small">{{ tag.get('description') or '—' }}</td>
+              <td class="text-center">
+                <span class="badge bg-light text-dark">{{ tag.get('usage_count', 0) }}</span>
+              </td>
+              <td class="text-end">
+                <button class="btn btn-sm btn-outline-primary" onclick="editTag({{ tag.get('id') }})">
+                  Redigera
+                </button>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteTag({{ tag.get('id') }}, {{ tag.get('name')|tojson }}, {{ tag.get('usage_count', 0) }})">
+                  Radera
+                </button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      
+      {% if not tags %}
+        <div class="alert alert-info" role="alert">
+          Inga taggar ännu. <a href="#" onclick="showCreateForm(); return false;">Skapa en ny tagg</a>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+let currentEditingTagId = null;
+let categoriesMap = {}; // name -> {id, name, label, bg_color, text_color}
+
+async function loadSynonymTagsForForm(currentTagName, currentSynonyms) {
+  try {
+    const response = await fetch('/api/v1/tags');
+    if (!response.ok) {
+      console.error('Could not load tags');
+      return;
+    }
+    
+    const data = await response.json();
+    const allTags = data.tags || [];
+    
+    // Group tags by category
+    const tagsByCategory = {};
+    allTags.forEach(tag => {
+      const category = tag.category || 'GENERAL';
+      if (!tagsByCategory[category]) {
+        tagsByCategory[category] = [];
+      }
+      // Don't include the current tag being edited as a synonym option
+      if (tag.name !== currentTagName) {
+        tagsByCategory[category].push(tag);
+      }
+    });
+    
+    // Render checkboxes grouped by category
+    const container = document.getElementById('tag-synonyms-checkboxes');
+    container.innerHTML = '';
+    
+    // Add warning box about synonym behavior
+    const warningBox = document.createElement('div');
+    warningBox.className = 'alert alert-info small mb-3';
+    warningBox.innerHTML = `
+      <strong>⚠️ Obs:</strong> Taggar du väljer som synonymer kommer att:<br>
+      • Tas bort från databasen<br>
+      • Ersättas med denna huvudtagg i alla artiklar
+    `;
+    container.appendChild(warningBox);
+    
+    // Sort categories for consistent display
+    const sortedCategories = Object.keys(tagsByCategory).sort();
+    
+    sortedCategories.forEach(category => {
+      const tags = tagsByCategory[category];
+      
+      // Add category header
+      const categoryHeader = document.createElement('div');
+      categoryHeader.className = 'fw-bold text-muted small mt-2 mb-1';
+      categoryHeader.textContent = category;
+      container.appendChild(categoryHeader);
+      
+      // Add checkboxes for tags in this category
+      tags.forEach(tag => {
+        const isChecked = currentSynonyms.includes(tag.name);
+        
+        const checkboxDiv = document.createElement('div');
+        checkboxDiv.className = 'form-check';
+        
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'tag-synonym-checkbox';
+        checkbox.id = `syn-tag-${tag.id}`;
+        checkbox.value = tag.name;
+        checkbox.checked = isChecked;
+        checkbox.dataset.tagId = tag.id;
+        checkbox.dataset.tagName = tag.name;
+        
+        const label = document.createElement('label');
+        label.className = 'form-check-label small';
+        label.htmlFor = `syn-tag-${tag.id}`;
+        label.textContent = tag.name;
+        
+        checkboxDiv.appendChild(checkbox);
+        checkboxDiv.appendChild(label);
+        container.appendChild(checkboxDiv);
+      });
+    });
+    
+    // If no tags available
+    if (sortedCategories.length === 0) {
+      const msg = document.createElement('small');
+      msg.className = 'text-muted';
+      msg.textContent = 'Inga taggar tillgängliga';
+      container.appendChild(msg);
+    }
+  } catch (error) {
+    console.error('Error loading synonym tags:', error);
+  }
+}
+
+async function loadCategories() {
+  try {
+    const response = await fetch('/api/v1/categories');
+    if (!response.ok) {
+      console.error('Could not load categories');
+      return;
+    }
+    
+    const data = await response.json();
+    const categories = data.categories || [];
+    
+    // Store categories in map
+    categoriesMap = {};
+    categories.forEach(cat => {
+      categoriesMap[cat.name] = cat;
+    });
+    
+    // Populate select
+    const select = document.getElementById('tag-category');
+    select.innerHTML = '';
+    categories.forEach(cat => {
+      const option = document.createElement('option');
+      option.value = cat.name;
+      option.textContent = cat.label;
+      if (cat.name === 'GENERAL') {
+        option.selected = true;
+      }
+      select.appendChild(option);
+    });
+    
+    // Apply colors to existing category badges in the table
+    document.querySelectorAll('.category-badge').forEach(badge => {
+      const category = badge.getAttribute('data-category');
+      const categoryData = categoriesMap[category];
+      if (categoryData) {
+        badge.className = `badge ${categoryData.bg_color} ${categoryData.text_color}`;
+        badge.textContent = categoryData.label;
+      } else {
+        badge.className = 'badge bg-secondary text-dark';
+      }
+    });
+  } catch (error) {
+    console.error('Error loading categories:', error);
+  }
+}
+
+async function showCreateForm() {
+  currentEditingTagId = null;
+  document.getElementById('tag-id').value = '';
+  document.getElementById('tag-name').value = '';
+  // Set to first available category or GENERAL
+  const firstOption = document.querySelector('#tag-category option');
+  if (firstOption) {
+    document.getElementById('tag-category').value = firstOption.value;
+  }
+  document.getElementById('tag-description').value = '';
+  document.getElementById('form-title').textContent = 'Ny tagg';
+  document.getElementById('tag-form').style.display = 'block';
+  await loadSynonymTagsForForm(null, []);
+  document.getElementById('tag-name').focus();
+}
+
+function cancelEdit() {
+  document.getElementById('tag-form').style.display = 'none';
+  currentEditingTagId = null;
+}
+
+async function editTag(tagId) {
+  try {
+    const response = await fetch(`/api/v1/tags/${tagId}`);
+    if (!response.ok) {
+      alert('Kunde inte hämta tagg');
+      return;
+    }
+    
+    const data = await response.json();
+    const tag = data.tag;
+    
+    currentEditingTagId = tagId;
+    document.getElementById('tag-id').value = tag.id;
+    document.getElementById('tag-name').value = tag.name;
+    document.getElementById('tag-category').value = tag.category || 'GENERAL';
+    document.getElementById('tag-description').value = tag.description || '';
+    const synonyms = tag.synonyms || [];
+    document.getElementById('form-title').textContent = `Redigera "${tag.name}"`;
+    document.getElementById('tag-form').style.display = 'block';
+    
+    // Store original synonyms for comparison during save
+    document.getElementById('tag-form').dataset.originalSynonyms = JSON.stringify(synonyms);
+    
+    // Load and render synonym tags with current synonyms selected
+    await loadSynonymTagsForForm(tag.name, synonyms);
+    
+    document.getElementById('tag-name').focus();
+  } catch (error) {
+    console.error('Error loading tag:', error);
+    alert('Fel vid hämtning av tagg');
+  }
+}
+
+async function saveTag(event) {
+  event.preventDefault();
+  
+  const tagId = document.getElementById('tag-id').value;
+  const name = document.getElementById('tag-name').value.trim();
+  const category = document.getElementById('tag-category').value;
+  const description = document.getElementById('tag-description').value.trim();
+  
+  // Collect selected synonym checkboxes
+  const synonymCheckboxes = document.querySelectorAll('.tag-synonym-checkbox:checked');
+  const synonyms = Array.from(synonymCheckboxes).map(cb => cb.value);
+  
+  if (!name) {
+    alert('Taggnamn är obligatoriskt');
+    return;
+  }
+  
+  // Check for newly added synonyms that should trigger migration
+  let newlyAddedSynonyms = [];
+  if (tagId) {
+    const originalSynonyms = JSON.parse(document.getElementById('tag-form').dataset.originalSynonyms || '[]');
+    const originalSet = new Set(originalSynonyms.map(s => s.toLowerCase()));
+    const newSet = new Set(synonyms.map(s => s.toLowerCase()));
+    
+    for (const syn of newSet) {
+      if (!originalSet.has(syn)) {
+        newlyAddedSynonyms.push(syn);
+      }
+    }
+  }
+  
+  // If new synonyms added, confirm the migration action
+  if (newlyAddedSynonyms.length > 0) {
+    const confirming = confirm(
+      `Du är på väg att göra följande taggar till synonymer:\n\n` +
+      newlyAddedSynonyms.join(', ') +
+      `\n\n⚠️ Dessa taggar kommer att:\n` +
+      `• Tas bort från databasen\n` +
+      `• Ersättas med "${name}" i alla artiklar\n\n` +
+      `Vill du fortsätta?`
+    );
+    
+    if (!confirming) {
+      return;
+    }
+  }
+  
+  try {
+    if (tagId) {
+      // Update existing tag
+      const response = await fetch(`/api/v1/tags/${tagId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, category, description, synonyms })
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        alert('Kunde inte uppdatera tagg: ' + (error.error || 'Okänt fel'));
+        return;
+      }
+      
+      if (newlyAddedSynonyms.length > 0) {
+        alert(`Tagg uppdaterad och ${newlyAddedSynonyms.length} synonym-tagg(ar) migrerad`);
+      } else {
+        alert('Tagg uppdaterad');
+      }
+    } else {
+      // Create new tag
+      const response = await fetch('/api/v1/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, category, description, synonyms })
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        if (response.status === 409) {
+          alert('En tagg med detta namn finns redan');
+        } else {
+          alert('Kunde inte skapa tagg: ' + (error.error || 'Okänt fel'));
+        }
+        return;
+      }
+      
+      alert('Tagg skapad');
+    }
+    
+    // Refresh the page
+    location.reload();
+  } catch (error) {
+    console.error('Error saving tag:', error);
+    alert('Fel vid sparande av tagg');
+  }
+}
+
+async function deleteTag(tagId, tagName, usageCount) {
+  let message = `Är du säker på att du vill radera taggen "${tagName}"?`;
+  
+  if (usageCount > 0) {
+    message += `\n\nDenna tagg används i ${usageCount} artikel${usageCount !== 1 ? 'ar' : ''}. De kommer att tas bort från artiklarna.`;
+  }
+  
+  if (!confirm(message)) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api/v1/tags/${tagId}`, {
+      method: 'DELETE'
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      alert('Kunde inte radera tagg: ' + (error.error || 'Okänt fel'));
+      return;
+    }
+    
+    alert('Tagg raderad');
+    location.reload();
+  } catch (error) {
+    console.error('Error deleting tag:', error);
+    alert('Fel vid borttagning av tagg');
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Load categories when page loads
+document.addEventListener('DOMContentLoaded', function() {
+  loadCategories();
+});
+</script>
+{% endblock %}
