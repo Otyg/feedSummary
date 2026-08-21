@@ -65,6 +65,7 @@ from feedsummary_core.prompts.loader import (
     load_prompt_package,
     resolve_prompt_root,
 )
+from uicommon.proofread_rounds import _strip_proofread_feedback_from_summary
 
 
 logger = logging.getLogger(__name__)
@@ -1188,12 +1189,24 @@ def view_summary(summary_id: str):
     if not isinstance(sdoc, dict):
         abort(404)
 
+    # Only render the published summary here. Proofread snapshots and reports
+    # belong to the separate audit page and must never leak into the article.
     summary_text = str(
-        sdoc.get("proofread_revised_summary")
-        or sdoc.get("proofread_published_summary")
-        or sdoc.get("summary")
-        or ""
+        sdoc.get("summary") or sdoc.get("proofread_published_summary") or ""
     ).strip()
+    summary_text = _strip_proofread_feedback_from_summary(
+        summary_text,
+        {
+            "proofread_output": str(sdoc.get("proofread_output") or ""),
+            "proofread_last_feedback": str(
+                ((sdoc.get("proofread_audit") or {}).get("latest") or {}).get(
+                    "proofread_last_feedback"
+                )
+                if isinstance(sdoc.get("proofread_audit"), dict)
+                else ""
+            ),
+        },
+    )
     if not summary_text:
         keys = ", ".join(sorted(list(sdoc.keys())))
         summary_text = (

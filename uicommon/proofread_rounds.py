@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
 import re
 import time
@@ -28,7 +29,8 @@ def _strip_proofread_feedback_from_summary(
     # Remove exact injected feedback blobs when present.
     for key in ("proofread_last_feedback", "proofread_output"):
         blob = str(stats.get(key) or "").strip()
-        if len(blob) < 40:
+        is_structured_report = blob.startswith("{") and '"status"' in blob
+        if len(blob) < 40 and not is_structured_report:
             continue
         if blob in text:
             text = text.replace(blob, "").strip()
@@ -183,11 +185,17 @@ def enable_configurable_proofread_rounds(
                 except Exception:
                     sys_msg = ""
 
-                if proof_sys and sys_msg == proof_sys:
+                # feedsummary_core appends a JSON schema to both system prompts.
+                # Match that runtime form as well as the unmodified prompt.
+                if proof_sys and (
+                    sys_msg == proof_sys or sys_msg.startswith(proof_sys + "\n\n")
+                ):
                     role = "proofread"
                     proofread_round += 1
                     round_no = proofread_round
-                elif revise_sys and sys_msg == revise_sys:
+                elif revise_sys and (
+                    sys_msg == revise_sys or sys_msg.startswith(revise_sys + "\n\n")
+                ):
                     role = "revise"
                     revise_round += 1
                     round_no = revise_round
@@ -232,6 +240,116 @@ def enable_configurable_proofread_rounds(
             max_rounds=effective,
         )
         stats_out = dict(stats or {})
+
+        # The regular loop may end immediately on PASS or after its final
+        # revision.  Always audit the text that will actually be published with
+        # one last proofread, and never revise from this final report.
+        if int(stats_out.get("proofread_enabled") or 0):
+            llm_cfg = summarizer_mod._primary_llm_cfg(config)
+            max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
+            max_out = int(llm_cfg.get("max_output_tokens", 700))
+            margin = int(llm_cfg.get("prompt_safety_margin", 1024))
+            chars_per_token = float(llm_cfg.get("token_chars_per_token", 2.4))
+            batching = config.get("batching", {}) or {}
+            configured_budget = int(batching.get("proofread_budget_tokens") or 0)
+            budget_tokens = (
+                configured_budget
+                if configured_budget > 0
+                else max(512, max_ctx - max_out - margin)
+            )
+            proofread_min_cov = max(
+                0.1,
+                min(1.0, float(batching.get("proofread_min_draft_coverage") or 0.8)),
+            )
+            prompts_runtime = dict(prompts)
+            prompts_runtime["_runtime"] = {
+                "proofread_min_draft_coverage": proofread_min_cov,
+                "revise_min_draft_coverage": max(
+                    0.1,
+                    min(1.0, float(batching.get("revise_min_draft_coverage") or 1.0)),
+                ),
+            }
+            desk_parts = []
+            for idx, txt in batch_summaries:
+                batch_text = str(txt or "").strip()
+                if batch_text:
+                    desk_parts.append(f"--- BATCH {idx} ---\n{batch_text}")
+            desk_underlag = (
+                "\n\n".join(desk_parts).strip()
+                + "\n\n--- KÄLLOR (lista) ---\n"
+                + str(sources_text or "")
+            ).strip()
+            final_user, final_budget = summarizer_mod._budgeted_proofread_user(
+                prompts=prompts_runtime,
+                draft_summary=str(revised_text or ""),
+                desk_underlag=desk_underlag,
+                feedback=str(stats_out.get("proofread_last_feedback") or ""),
+                lookback=lookback,
+                budget_tokens=budget_tokens,
+                chars_per_token=chars_per_token,
+            )
+            final_proof_sys = (
+                proof_sys.strip()
+                + "\n\nDu MASTE svara med JSON (inga forklaringar utanfor JSON). "
+                + 'Schema: {"status":"PASS|REVISE","issues":[{"issue_id":"...",'
+                + '"type":"...","target_quote":"...","action":"...",'
+                + '"preserve_requirement":"..."}]}. Anvand issue_id for varje issue.'
+            )
+            if logger is not None:
+                logger.info(
+                    "Kör avslutande proofread (%s/%s) utan revise",
+                    effective + 1,
+                    effective + 1,
+                )
+            final_raw = await llm_rec.chat(
+                [
+                    {"role": "system", "content": final_proof_sys},
+                    {"role": "user", "content": final_user},
+                ],
+                temperature=0.2,
+            )
+            final_parsed = summarizer_mod._parse_proofread_feedback(
+                str(final_raw or "").strip()
+            )
+            final_status = str(final_parsed.get("status") or "REVISE").upper()
+            final_issues = final_parsed.get("issues") or []
+            if not isinstance(final_issues, list):
+                final_issues = []
+            final_report = json.dumps(
+                {"status": final_status, "issues": final_issues},
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+            stats_out["proofread_output"] = final_report
+            stats_out["proofread_feedback"] = final_report
+            stats_out["proofread_last_feedback"] = final_report
+            stats_out["proofread_final_output"] = final_report
+            metrics = list(stats_out.get("proofread_round_metrics") or [])
+            metrics.append(
+                {
+                    "round": int(proofread_round),
+                    "proofread_input_est_tokens": int(
+                        final_budget.get("est_tokens") or 0
+                    ),
+                    "proofread_draft_coverage": float(
+                        final_budget.get("draft_coverage") or 0.0
+                    ),
+                    "proofread_draft_included_chars": int(
+                        final_budget.get("draft_included_chars") or 0
+                    ),
+                    "proofread_draft_total_chars": int(
+                        final_budget.get("draft_total_chars") or 0
+                    ),
+                    "proofread_feedback_structured": int(
+                        bool(final_parsed.get("is_structured"))
+                    ),
+                    "proofread_status": final_status,
+                    "final_audit_only": 1,
+                }
+            )
+            stats_out["proofread_round_metrics"] = metrics
+
+        stats_out["proofread_rounds"] = int(proofread_round)
         stats_out["proofread_trace"] = list(proofread_trace)
         if logger is not None:
             logger.info(
