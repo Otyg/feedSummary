@@ -2,24 +2,47 @@
 {% block body %}
 <div class="row">
   <div class="col-12">
+    {% set active_topics = active_topics or [] %}
+    {% set available_topics = available_topics or [] %}
     <h4>Summaries</h4>
-    <p><a href="{{ url_for('index') }}">Till senaste</a></p>
-    <div class="list-group">
-      {% for s in summaries %}
-        {% set sid = (s.get('id') or '') %}
-        {% set stitle = (s.get('title') or '') %}
-        {% set created = s.get('created') or 0 %}
-        {% set topics_label = (s.get('_viewer_topics_label') or '') %}
-        <a class="list-group-item list-group-item-action" href="{{ url_for('view_summary', summary_id=sid) }}">
-          {{ stitle if stitle else sid }}
-          —
-          {{ format_ts(created) if format_ts else created }}
-          {% if topics_label %}
-            · {{ topics_label }}
-          {% endif %}
-        </a>
-      {% endfor %}
-    </div>
+    <p><a href="{{ url_for('index', topic=active_topics) }}">Till senaste</a></p>
+    {% if available_topics %}
+      <form method="get" action="{{ url_for('list_summaries') }}" class="mb-3">
+        <div class="small text-muted mb-1"><strong>Filter topic</strong></div>
+        <div class="border rounded p-2 mb-2" style="max-height: 180px; overflow:auto;">
+          {% for t in available_topics %}
+            <label class="d-block small">
+              <input type="checkbox" name="topic" value="{{ t }}" {% if t in active_topics %}checked{% endif %}>
+              {{ t }}
+            </label>
+          {% endfor %}
+        </div>
+        <div class="d-flex gap-2">
+          <button type="submit" class="btn btn-sm btn-primary">Filtrera</button>
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('list_summaries') }}">Rensa</a>
+        </div>
+      </form>
+    {% endif %}
+    {% if summaries %}
+      <div class="list-group">
+        {% for s in summaries %}
+          {% set sid = (s.get('id') or '') %}
+          {% set stitle = (s.get('title') or '') %}
+          {% set created = s.get('created') or 0 %}
+          {% set topics_label = (s.get('_viewer_topics_label') or '') %}
+          <a class="list-group-item list-group-item-action" href="{{ url_for('view_summary', summary_id=sid, topic=active_topics) }}">
+            {{ stitle if stitle else sid }}
+            —
+            {{ format_ts(created) if format_ts else created }}
+            {% if topics_label %}
+              · {{ topics_label }}
+            {% endif %}
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="text-muted">Inga summaries matchar valt filter.</div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import logging
 import time
 from pathlib import Path
@@ -54,13 +55,138 @@ from feedsummary_core.summarizer.batching import (
 )
 from feedsummary_core.summarizer.chat import chat_guarded
 from feedsummary_core.summarizer.summarizer import _proofread_and_revise_meta_with_stats
+from uicommon.proofread_merge import stabilize_revise_output_from_messages
 
+from uicommon import primary_llm_config
 from uicommon.bootstrap_ui import _setup_logging_if_needed
 
 log = logging.getLogger(__name__)
 _setup_logging_if_needed()
 
 SCHEMA_VERSION = 1
+
+
+class _DryRunLLM:
+    """
+    Test-double for LLM calls that validates payload presence without sending
+    network requests.
+    """
+
+    def __init__(
+        self,
+        *,
+        batch_system: str,
+        proofread_system: str,
+        revise_system: str,
+    ) -> None:
+        self._batch_system = (batch_system or "").strip()
+        self._proofread_system = (proofread_system or "").strip()
+        self._revise_system = (revise_system or "").strip()
+        self.batch_calls = 0
+        self.proofread_calls = 0
+        self.revise_calls = 0
+
+    async def chat(
+        self, messages: List[Dict[str, str]], *, temperature: float = 0.2
+    ) -> str:
+        if not messages:
+            raise RuntimeError("Dry-run validation failed: messages list is empty")
+
+        nonempty_contents = [str(m.get("content") or "").strip() for m in messages]
+        if not any(nonempty_contents):
+            raise RuntimeError(
+                "Dry-run validation failed: no message in request had non-empty content"
+            )
+
+        system_content = str((messages[0] or {}).get("content") or "").strip()
+        user_content = str((messages[-1] or {}).get("content") or "").strip()
+        if not user_content:
+            raise RuntimeError("Dry-run validation failed: user message is empty")
+
+        if system_content and system_content == self._batch_system:
+            self.batch_calls += 1
+            return f"[DRY-RUN] batch_ok_{self.batch_calls}"
+
+        if system_content and system_content == self._proofread_system:
+            self.proofread_calls += 1
+            # First proofread call returns FAIL so revise-step is exercised.
+            if self.proofread_calls == 1:
+                return "FAIL\nISSUES:\n- Dry-run: verifierar revise-steget."
+            return "PASS"
+
+        if system_content and system_content == self._revise_system:
+            self.revise_calls += 1
+            return "[DRY-RUN] revised_summary_ok"
+
+        # Unknown phase still returns a non-empty string after payload validation.
+        return "[DRY-RUN] generic_ok"
+
+
+def _missing_prompt_keys(prompts: Dict[str, Any], keys: List[str]) -> List[str]:
+    missing: List[str] = []
+    for k in keys:
+        if not str(prompts.get(k) or "").strip():
+            missing.append(k)
+    return missing
+
+
+def _read_optional_text_file(path: str) -> str:
+    p = Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"Prompt file not found: {p}")
+    return p.read_text(encoding="utf-8").strip()
+
+
+def _first_nonempty_str(*values: Any) -> str:
+    for v in values:
+        s = str(v or "").strip()
+        if s:
+            return s
+    return ""
+
+
+def _extract_prompt_package_from_summary_doc(doc: Dict[str, Any]) -> str:
+    # Newer summary-doc shape
+    selection = doc.get("selection") or {}
+    prompts = doc.get("prompts") or {}
+    if isinstance(selection, dict) and isinstance(prompts, dict):
+        s = _first_nonempty_str(
+            selection.get("prompt_package"),
+            prompts.get("_package"),
+            prompts.get("prompt_package"),
+        )
+        if s:
+            return s
+
+    # Older/alternate shapes
+    top = _first_nonempty_str(doc.get("prompt_package"))
+    if top:
+        return top
+
+    # Legacy compatibility: doc_json may be dict or JSON string
+    dj = doc.get("doc_json")
+    dj_obj: Dict[str, Any] = {}
+    if isinstance(dj, dict):
+        dj_obj = dj
+    elif isinstance(dj, str):
+        try:
+            parsed = json.loads(dj)
+            if isinstance(parsed, dict):
+                dj_obj = parsed
+        except Exception:
+            dj_obj = {}
+
+    if dj_obj:
+        dj_sel = dj_obj.get("selection") or {}
+        dj_prompts = dj_obj.get("prompts") or {}
+        return _first_nonempty_str(
+            dj_obj.get("prompt_package"),
+            (dj_sel.get("prompt_package") if isinstance(dj_sel, dict) else ""),
+            (dj_prompts.get("_package") if isinstance(dj_prompts, dict) else ""),
+            (dj_prompts.get("prompt_package") if isinstance(dj_prompts, dict) else ""),
+        )
+
+    return ""
 
 
 def _load_yaml(path: str) -> Dict[str, Any]:
@@ -101,6 +227,57 @@ def _hash_text(s: str) -> str:
 def _hash_prompts_subset(prompts: Dict[str, str], keys: List[str]) -> str:
     blob = "\n\n".join([f"=={k}==\n{prompts.get(k, '')}" for k in keys])
     return _hash_text(blob)
+
+
+def _update_summary_doc_audit(
+    *,
+    summary_doc: Dict[str, Any],
+    original_summary: str,
+    revised_summary: str,
+    proofread_output: str,
+    proofread_trace: List[Dict[str, Any]],
+    proofread_rounds: int,
+    proofread_last_feedback: str,
+    prompt_package: str,
+    run_revision: int,
+) -> Dict[str, Any]:
+    """
+    Store original vs revised snapshots in summary_doc so they can be compared
+    later in the primary DB.
+    """
+    out = dict(summary_doc or {})
+    now_ts = int(time.time())
+
+    # Simple top-level fields for easy ad-hoc checks.
+    out["proofread_original_summary"] = str(original_summary or "")
+    out["proofread_revised_summary"] = str(revised_summary or "")
+
+    entry = {
+        "created_at": now_ts,
+        "run_revision": int(run_revision),
+        "prompt_package": str(prompt_package or ""),
+        "original_summary": str(original_summary or ""),
+        "revised_summary": str(revised_summary or ""),
+        "proofread_output": str(proofread_output or ""),
+        "proofread_rounds": int(proofread_rounds or 0),
+        "proofread_last_feedback": str(proofread_last_feedback or ""),
+        "proofread_trace": list(proofread_trace or []),
+    }
+
+    pa = out.get("proofread_audit") or {}
+    if not isinstance(pa, dict):
+        pa = {}
+    history = pa.get("history") or []
+    if not isinstance(history, list):
+        history = []
+    history.append(entry)
+    history = history[-20:]
+
+    out["proofread_audit"] = {
+        "latest": entry,
+        "history": history,
+    }
+    return out
 
 
 def _open_run_db(path: str) -> TinyDB:
@@ -163,7 +340,7 @@ async def _build_batch_output_from_articles(
     max_n = int(batching.get("max_articles_per_batch", 10))
     article_clip_chars = int(batching.get("article_clip_chars", 6000))
 
-    llm_cfg = cfg.get("llm") or {}
+    llm_cfg = primary_llm_config(cfg)
     max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
     max_out = int(llm_cfg.get("max_output_tokens", 700))
     margin = int(llm_cfg.get("prompt_safety_margin", 1024))
@@ -418,17 +595,14 @@ def _show_run(
 async def _run_command(args: argparse.Namespace) -> int:
     cfg = _load_yaml(args.config)
 
-    if args.prompt_package:
-        p = cfg.get("prompts")
-        if not isinstance(p, dict):
-            p = {}
-            cfg["prompts"] = p
-        p["selected"] = str(args.prompt_package)
-
     store_cfg = _get_store_cfg(cfg)
+    if args.sqlite_db:
+        sqlite_db = str(Path(args.sqlite_db).expanduser())
+        store_cfg["provider"] = "sqlite"
+        store_cfg["path"] = sqlite_db
+        log.info(f"Using SQLite DB override from CLI: {sqlite_db}")
+
     store: NewsStore = create_store(store_cfg)
-    llm = create_llm_client(cfg)
-    prompts = load_prompts(cfg)
 
     run_db = _open_run_db(args.run_db)
     runs_table = run_db.table("runs")
@@ -459,6 +633,74 @@ async def _run_command(args: argparse.Namespace) -> int:
         log.error(f"summary_doc {original_summary_id} has no 'sources' list")
         return 3
 
+    # Resolve effective prompt package:
+    # 1) --prompt-package (explicit override)
+    # 2) package persisted in summary_doc
+    # 3) config default behavior
+    selected_pkg = str(args.prompt_package or "").strip()
+    if not selected_pkg:
+        selected_pkg = _extract_prompt_package_from_summary_doc(doc)
+        if selected_pkg:
+            log.info(
+                "Using prompt package from summary_doc %s: %s",
+                original_summary_id,
+                selected_pkg,
+            )
+
+    if selected_pkg:
+        p = cfg.get("prompts")
+        if not isinstance(p, dict):
+            p = {}
+            cfg["prompts"] = p
+        p["selected"] = selected_pkg
+
+    prompts = load_prompts(cfg)
+    proofread_keys = [
+        "proofread_system",
+        "proofread_user_template",
+        "revise_system",
+        "revise_user_template",
+    ]
+
+    # Optional fallback package for proofread/revise prompts only.
+    if args.proofread_package:
+        fallback_prompts = load_prompts(cfg, package=str(args.proofread_package))
+        filled = []
+        for k in proofread_keys:
+            if not str(prompts.get(k) or "").strip():
+                v = str(fallback_prompts.get(k) or "").strip()
+                if v:
+                    prompts[k] = v
+                    filled.append(k)
+        if filled:
+            log.info(
+                "Filled missing proofread/revise prompts from --proofread-package '%s': %s",
+                str(args.proofread_package),
+                ", ".join(filled),
+            )
+
+    # Optional per-key file overrides (highest precedence).
+    file_overrides = {
+        "proofread_system": str(args.proofread_system_file or "").strip(),
+        "proofread_user_template": str(args.proofread_user_template_file or "").strip(),
+        "revise_system": str(args.revise_system_file or "").strip(),
+        "revise_user_template": str(args.revise_user_template_file or "").strip(),
+    }
+    for key, file_path in file_overrides.items():
+        if file_path:
+            prompts[key] = _read_optional_text_file(file_path)
+            log.info("Using %s override from file: %s", key, file_path)
+
+    if args.dry_run:
+        llm: LLMClient = _DryRunLLM(
+            batch_system=str(prompts.get("batch_system") or ""),
+            proofread_system=str(prompts.get("proofread_system") or ""),
+            revise_system=str(prompts.get("revise_system") or ""),
+        )  # type: ignore[assignment]
+        log.info("Dry-run mode enabled: no external LLM requests will be made.")
+    else:
+        llm = create_llm_client(cfg)
+
     lookback_label = _derive_lookback_label(cfg, doc)
     log.info(
         f"Selected summary_doc {original_summary_id} (lookback label: {lookback_label})"
@@ -466,6 +708,19 @@ async def _run_command(args: argparse.Namespace) -> int:
 
     latest_run = _get_latest_run_for_summary(run_db, original_summary_id)
     reuse_batch = (latest_run is not None) and (not args.rebuild_batch)
+
+    # Proofread/revise prompts are always required.
+    missing_pr = _missing_prompt_keys(prompts, proofread_keys)
+    if missing_pr:
+        log.error(
+            "Selected prompt package '%s' is missing required proofread/revise prompts: %s",
+            str(prompts.get("_package") or ""),
+            ", ".join(missing_pr),
+        )
+        log.error(
+            "Choose a package that includes proofread+revise prompts (or add includes for _includes/proofread.yaml and _includes/revise.yaml)."
+        )
+        return 2
 
     batch_output: List[Dict[str, Any]] = []
     if reuse_batch:
@@ -482,6 +737,20 @@ async def _run_command(args: argparse.Namespace) -> int:
             )
 
     if not reuse_batch:
+        missing_batch = _missing_prompt_keys(
+            prompts, ["batch_system", "batch_user_template"]
+        )
+        if missing_batch:
+            log.error(
+                "Selected prompt package '%s' is missing required batch prompts for rebuild: %s",
+                str(prompts.get("_package") or ""),
+                ", ".join(missing_batch),
+            )
+            log.error(
+                "Either run without --rebuild-batch to reuse cached batch_output, or use a package with batch prompts."
+            )
+            return 2
+
         articles = store.get_articles_by_ids(sources)
         if not articles:
             log.error("Could not load any articles for summary_doc sources.")
@@ -497,6 +766,19 @@ async def _run_command(args: argparse.Namespace) -> int:
             articles=articles,
             store=store,
         )
+
+        if args.dry_run:
+            empty_batches = [
+                str(b.get("batch_index") or "?")
+                for b in (batch_output or [])
+                if not str(b.get("text") or "").strip()
+            ]
+            if empty_batches:
+                log.error(
+                    "Dry-run validation failed: empty batch output text for batch indices: %s",
+                    ", ".join(empty_batches),
+                )
+                return 2
 
     sources_text = ""
     if (
@@ -525,9 +807,53 @@ async def _run_command(args: argparse.Namespace) -> int:
     log.info(
         f"Proofreading summary_doc {original_summary_id} (max_rounds={int(args.max_rounds)})"
     )
+    proof_sys = str(prompts.get("proofread_system") or "").strip()
+    revise_sys = str(prompts.get("revise_system") or "").strip()
+    trace_rows: List[Dict[str, Any]] = []
+    proof_round = 0
+    revise_round = 0
+
+    class _TraceLLM:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def chat(self, messages: List[Dict[str, str]], *, temperature: float = 0.2) -> str:
+            nonlocal proof_round, revise_round
+            out = await self._inner.chat(messages, temperature=temperature)
+
+            sys_msg = str((messages[0] or {}).get("content") or "").strip() if messages else ""
+            step = ""
+            round_no = 0
+            if proof_sys and sys_msg == proof_sys:
+                step = "proofread"
+                proof_round += 1
+                round_no = proof_round
+            elif revise_sys and sys_msg == revise_sys:
+                step = "revise"
+                revise_round += 1
+                round_no = revise_round
+                out = stabilize_revise_output_from_messages(
+                    messages=messages, raw_reply=str(out or "")
+                )
+
+            if step:
+                trace_rows.append(
+                    {
+                        "at": int(time.time()),
+                        "step": step,
+                        "round": int(round_no),
+                        "output": clip_text(str(out or ""), 16000),
+                    }
+                )
+            return out
+
+    llm_for_proofread = _TraceLLM(llm)
     revised, pr_stats = await _proofread_and_revise_meta_with_stats(
         config=cfg,
-        llm=llm,
+        llm=llm_for_proofread,
         store=store,
         job_id=None,
         prompts=prompts,
@@ -537,6 +863,9 @@ async def _run_command(args: argparse.Namespace) -> int:
         sources_text=sources_text,
         max_rounds=int(args.max_rounds),
     )
+    pr_stats = dict(pr_stats or {})
+    if trace_rows and not isinstance(pr_stats.get("proofread_trace"), list):
+        pr_stats["proofread_trace"] = trace_rows
 
     proof_out = (
         pr_stats.get("proofread_output")
@@ -568,6 +897,9 @@ async def _run_command(args: argparse.Namespace) -> int:
         "sources_text": sources_text,
         "corrected_summary": corrected_summary,
         "proofread_output": proof_out,
+        "proofread_rounds": int(pr_stats.get("proofread_rounds") or 0),
+        "proofread_last_feedback": str(pr_stats.get("proofread_last_feedback") or ""),
+        "proofread_trace": list(pr_stats.get("proofread_trace") or []),
         "prompts": {
             "prompt_package": str(prompts.get("_package") or ""),
             "proofread_system": str(prompts.get("proofread_system") or ""),
@@ -591,7 +923,59 @@ async def _run_command(args: argparse.Namespace) -> int:
             prompts.get("batch_user_template") or ""
         )
 
+    if args.dry_run:
+        dry_llm = llm  # keep type narrow for runtime attribute checks
+        batch_calls = int(getattr(dry_llm, "batch_calls", 0))
+        proofread_calls = int(getattr(dry_llm, "proofread_calls", 0))
+        revise_calls = int(getattr(dry_llm, "revise_calls", 0))
+
+        if not reuse_batch and batch_calls < 1:
+            log.error("Dry-run validation failed: batch step sent no LLM request.")
+            return 2
+        if int(args.max_rounds) > 0 and proofread_calls < 1:
+            log.error("Dry-run validation failed: proofread step sent no LLM request.")
+            return 2
+        if int(args.max_rounds) > 0 and revise_calls < 1:
+            log.error("Dry-run validation failed: revise step sent no LLM request.")
+            return 2
+
+        log.info("\n" + "=" * 90)
+        log.info("DRY-RUN OK")
+        log.info(f"LLM batch calls: {batch_calls}")
+        log.info(f"LLM proofread calls: {proofread_calls}")
+        log.info(f"LLM revise calls: {revise_calls}")
+        log.info(f"BATCH_OUTPUT mode: {'REUSED' if reuse_batch else 'REBUILT'}")
+        log.info("=" * 90 + "\n")
+        run_db.close()
+        return 0
+
     inserted_id = runs_table.insert(run_doc)
+
+    if args.store_original_in_summary_doc:
+        try:
+            doc_to_save = _update_summary_doc_audit(
+                summary_doc=doc,
+                original_summary=original_summary,
+                revised_summary=corrected_summary,
+                proofread_output=proof_out,
+                proofread_trace=list(pr_stats.get("proofread_trace") or []),
+                proofread_rounds=int(pr_stats.get("proofread_rounds") or 0),
+                proofread_last_feedback=str(
+                    pr_stats.get("proofread_last_feedback") or ""
+                ),
+                prompt_package=str(prompts.get("_package") or ""),
+                run_revision=run_revision,
+            )
+            saved_sid = store.save_summary_doc(doc_to_save)
+            log.info(
+                "Updated summary_doc %s with proofread original/revised snapshots.",
+                str(saved_sid),
+            )
+        except Exception as e:
+            log.warning(
+                "Could not update summary_doc with proofread snapshots: %s",
+                str(e),
+            )
 
     log.info("\n" + "=" * 90)
     log.info(f"RUN_DB: {args.run_db}")
@@ -640,6 +1024,11 @@ def main() -> int:
         help="Run proofread+revise and store a run record (reuses batch_output on reruns)",
     )
     runp.add_argument("--config", required=True, help="Path to config.yaml")
+    runp.add_argument(
+        "--sqlite-db",
+        default="",
+        help="Override source DB for this run (forces store.provider=sqlite and sets store.path)",
+    )
 
     grp = runp.add_mutually_exclusive_group(required=True)
     grp.add_argument(
@@ -653,6 +1042,31 @@ def main() -> int:
 
     runp.add_argument(
         "--prompt-package", default="", help="Override prompts.selected for this run"
+    )
+    runp.add_argument(
+        "--proofread-package",
+        default="",
+        help="Fallback prompt package for missing proofread/revise prompts",
+    )
+    runp.add_argument(
+        "--proofread-system-file",
+        default="",
+        help="Read proofread_system prompt from file (overrides package)",
+    )
+    runp.add_argument(
+        "--proofread-user-template-file",
+        default="",
+        help="Read proofread_user_template prompt from file (overrides package)",
+    )
+    runp.add_argument(
+        "--revise-system-file",
+        default="",
+        help="Read revise_system prompt from file (overrides package)",
+    )
+    runp.add_argument(
+        "--revise-user-template-file",
+        default="",
+        help="Read revise_user_template prompt from file (overrides package)",
     )
     runp.add_argument(
         "--max-rounds", type=int, default=4, help="Max proofread critique rounds"
@@ -673,6 +1087,17 @@ def main() -> int:
         "--store-batch-prompts",
         action="store_true",
         help="Also store batch_system + batch_user_template in run DB (can be large).",
+    )
+    runp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate that each executed LLM step has non-empty payloads without sending external requests",
+    )
+    runp.add_argument(
+        "--store-original-in-summary-doc",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Store original + revised summary snapshots in summary_doc for DB-side comparisons",
     )
 
     # list

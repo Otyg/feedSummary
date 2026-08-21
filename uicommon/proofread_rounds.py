@@ -1,0 +1,467 @@
+from __future__ import annotations
+
+import contextvars
+import json
+import logging
+import re
+import time
+from typing import Any, Dict, List, Optional
+from uicommon.proofread_merge import stabilize_revise_output_from_messages
+
+_PATCHED = False
+_LAST_LOGGED_EFFECTIVE: Optional[int] = None
+_PROOFREAD_SNAPSHOT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
+    contextvars.ContextVar("proofread_snapshot", default=None)
+)
+
+
+def _clip(s: Any, max_len: int = 12000) -> str:
+    t = str(s or "")
+    return t if len(t) <= max_len else (t[: max_len - 3] + "...")
+
+
+def _strip_proofread_feedback_from_summary(
+    summary_text: str, proofread_stats: Optional[Dict[str, Any]]
+) -> str:
+    text = str(summary_text or "")
+    stats = proofread_stats if isinstance(proofread_stats, dict) else {}
+
+    # Remove exact injected feedback blobs when present.
+    for key in ("proofread_last_feedback", "proofread_output"):
+        blob = str(stats.get(key) or "").strip()
+        is_structured_report = blob.startswith("{") and '"status"' in blob
+        if len(blob) < 40 and not is_structured_report:
+            continue
+        if blob in text:
+            text = text.replace(blob, "").strip()
+
+    # Remove orphan PASS/FAIL lines right before sources appendix.
+    text = re.sub(
+        r"\n{2,}(?:PASS|FAIL)\s*\n{2,}(?=##\s*Källor\b)",
+        "\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Remove injected PASS/FAIL + optional ISSUES block before sources appendix.
+    text = re.sub(
+        r"\n{2,}(?:PASS|FAIL)\s*(?:\n+[\s\S]*?)?(?=\n##\s*Källor\b)",
+        "\n\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Normalize excessive blank lines left after stripping.
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    return text.strip()
+
+
+def _pick_effective_max_rounds(config: Dict[str, Any], fallback: int) -> int:
+    try:
+        batching = config.get("batching") or {}
+        if not isinstance(batching, dict):
+            return int(fallback)
+        raw = batching.get("proofread_max_rounds")
+        if raw is None or str(raw).strip() == "":
+            return int(fallback)
+        parsed = int(raw)
+        if parsed <= 0:
+            return int(fallback)
+        return parsed
+    except Exception:
+        return int(fallback)
+
+
+def _should_override_rounds(callsite_max_rounds: int) -> bool:
+    """
+    Only override regular pipeline rounds.
+    feedsummary_core regular flow calls with 4; composed flow calls with 1.
+    """
+    try:
+        return int(callsite_max_rounds) >= 2
+    except Exception:
+        return False
+
+
+def enable_configurable_proofread_rounds(
+    *, logger: Optional[logging.Logger] = None
+) -> None:
+    """
+    Allow regular pipeline runs to override proofread/revise rounds via:
+      batching.proofread_max_rounds
+
+    feedsummary_core currently hardcodes max_rounds in call sites; this wraps the
+    shared helper and replaces the passed-in value with config when set.
+    """
+
+    global _PATCHED
+    global _LAST_LOGGED_EFFECTIVE
+
+    if _PATCHED:
+        return
+
+    try:
+        from feedsummary_core.summarizer import main as main_mod
+        from feedsummary_core.summarizer import summarizer as summarizer_mod
+    except Exception:
+        return
+
+    original = getattr(summarizer_mod, "_proofread_and_revise_meta_with_stats", None)
+    if original is None:
+        return
+
+    if getattr(original, "__name__", "") == "_proofread_and_revise_meta_with_config":
+        _PATCHED = True
+        return
+
+    original_persist = getattr(main_mod, "_persist_summary_doc", None)
+    if not callable(original_persist):
+        return
+
+    async def _proofread_and_revise_meta_with_config(
+        *,
+        config: Dict[str, Any],
+        llm: Any,
+        store: Any,
+        job_id: Any,
+        prompts: Dict[str, Any],
+        lookback: str,
+        meta_text: str,
+        batch_summaries: Any,
+        sources_text: str,
+        max_rounds: int = 1,
+    ):
+        callsite_rounds = int(max_rounds)
+        effective = (
+            _pick_effective_max_rounds(config, callsite_rounds)
+            if _should_override_rounds(callsite_rounds)
+            else callsite_rounds
+        )
+        original_meta = str(meta_text or "")
+
+        global _LAST_LOGGED_EFFECTIVE
+        if logger is not None and _LAST_LOGGED_EFFECTIVE != effective:
+            logger.info(
+                "Proofread rounds configured: requested=%s effective=%s (batching.proofread_max_rounds)",
+                int(max_rounds),
+                effective,
+            )
+            _LAST_LOGGED_EFFECTIVE = effective
+
+        proof_sys = str(prompts.get("proofread_system") or "").strip()
+        proof_user_tmpl = str(prompts.get("proofread_user_template") or "").strip()
+        revise_sys = str(prompts.get("revise_system") or "").strip()
+        revise_user_tmpl = str(prompts.get("revise_user_template") or "").strip()
+
+        if logger is not None:
+            logger.info(
+                "Proofread prompt presence: proof_sys=%s proof_user=%s revise_sys=%s revise_user=%s package=%s",
+                int(bool(proof_sys)),
+                int(bool(proof_user_tmpl)),
+                int(bool(revise_sys)),
+                int(bool(revise_user_tmpl)),
+                str(prompts.get("_package") or ""),
+            )
+
+        proofread_trace: List[Dict[str, Any]] = []
+        proofread_round = 0
+        revise_round = 0
+
+        class _LLMRecorder:
+            def __init__(self, inner: Any):
+                self._inner = inner
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._inner, name)
+
+            async def chat(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+                nonlocal proofread_round, revise_round
+                reply = await self._inner.chat(messages, *args, **kwargs)
+
+                role = "other"
+                sys_msg = ""
+                try:
+                    if isinstance(messages, list) and messages:
+                        first = messages[0] if isinstance(messages[0], dict) else {}
+                        sys_msg = str(first.get("content") or "").strip()
+                except Exception:
+                    sys_msg = ""
+
+                # feedsummary_core appends a JSON schema to both system prompts.
+                # Match that runtime form as well as the unmodified prompt.
+                if proof_sys and (
+                    sys_msg == proof_sys or sys_msg.startswith(proof_sys + "\n\n")
+                ):
+                    role = "proofread"
+                    proofread_round += 1
+                    round_no = proofread_round
+                elif revise_sys and (
+                    sys_msg == revise_sys or sys_msg.startswith(revise_sys + "\n\n")
+                ):
+                    role = "revise"
+                    revise_round += 1
+                    round_no = revise_round
+                    if isinstance(messages, list):
+                        reply = stabilize_revise_output_from_messages(
+                            messages=messages, raw_reply=str(reply or "")
+                        )
+                else:
+                    round_no = 0
+
+                if role in {"proofread", "revise"}:
+                    if logger is not None:
+                        preview = _clip(reply, 200).replace("\n", " ")
+                        logger.info(
+                            "Proofread trace step=%s round=%s preview=%s",
+                            role,
+                            int(round_no),
+                            preview,
+                        )
+                    proofread_trace.append(
+                        {
+                            "round": int(round_no),
+                            "step": role,
+                            "at": int(time.time()),
+                            "output": _clip(reply, 16000),
+                        }
+                    )
+                return reply
+
+        llm_rec = _LLMRecorder(llm)
+
+        revised_text, stats = await original(
+            config=config,
+            llm=llm_rec,
+            store=store,
+            job_id=job_id,
+            prompts=prompts,
+            lookback=lookback,
+            meta_text=meta_text,
+            batch_summaries=batch_summaries,
+            sources_text=sources_text,
+            max_rounds=effective,
+        )
+        stats_out = dict(stats or {})
+
+        # The regular loop may end immediately on PASS or after its final
+        # revision.  Always audit the text that will actually be published with
+        # one last proofread, and never revise from this final report.
+        if int(stats_out.get("proofread_enabled") or 0):
+            llm_cfg = summarizer_mod._primary_llm_cfg(config)
+            max_ctx = int(llm_cfg.get("context_window_tokens", 32768))
+            max_out = int(llm_cfg.get("max_output_tokens", 700))
+            margin = int(llm_cfg.get("prompt_safety_margin", 1024))
+            chars_per_token = float(llm_cfg.get("token_chars_per_token", 2.4))
+            batching = config.get("batching", {}) or {}
+            configured_budget = int(batching.get("proofread_budget_tokens") or 0)
+            budget_tokens = (
+                configured_budget
+                if configured_budget > 0
+                else max(512, max_ctx - max_out - margin)
+            )
+            proofread_min_cov = max(
+                0.1,
+                min(1.0, float(batching.get("proofread_min_draft_coverage") or 0.8)),
+            )
+            prompts_runtime = dict(prompts)
+            prompts_runtime["_runtime"] = {
+                "proofread_min_draft_coverage": proofread_min_cov,
+                "revise_min_draft_coverage": max(
+                    0.1,
+                    min(1.0, float(batching.get("revise_min_draft_coverage") or 1.0)),
+                ),
+            }
+            desk_parts = []
+            for idx, txt in batch_summaries:
+                batch_text = str(txt or "").strip()
+                if batch_text:
+                    desk_parts.append(f"--- BATCH {idx} ---\n{batch_text}")
+            desk_underlag = (
+                "\n\n".join(desk_parts).strip()
+                + "\n\n--- KÄLLOR (lista) ---\n"
+                + str(sources_text or "")
+            ).strip()
+            final_user, final_budget = summarizer_mod._budgeted_proofread_user(
+                prompts=prompts_runtime,
+                draft_summary=str(revised_text or ""),
+                desk_underlag=desk_underlag,
+                feedback=str(stats_out.get("proofread_last_feedback") or ""),
+                lookback=lookback,
+                budget_tokens=budget_tokens,
+                chars_per_token=chars_per_token,
+            )
+            final_proof_sys = (
+                proof_sys.strip()
+                + "\n\nDu MASTE svara med JSON (inga forklaringar utanfor JSON). "
+                + 'Schema: {"status":"PASS|REVISE","issues":[{"issue_id":"...",'
+                + '"type":"...","target_quote":"...","action":"...",'
+                + '"preserve_requirement":"..."}]}. Anvand issue_id for varje issue.'
+            )
+            if logger is not None:
+                logger.info(
+                    "Kör avslutande proofread (%s/%s) utan revise",
+                    effective + 1,
+                    effective + 1,
+                )
+            final_raw = await llm_rec.chat(
+                [
+                    {"role": "system", "content": final_proof_sys},
+                    {"role": "user", "content": final_user},
+                ],
+                temperature=0.2,
+            )
+            final_parsed = summarizer_mod._parse_proofread_feedback(
+                str(final_raw or "").strip()
+            )
+            final_status = str(final_parsed.get("status") or "REVISE").upper()
+            final_issues = final_parsed.get("issues") or []
+            if not isinstance(final_issues, list):
+                final_issues = []
+            final_report = json.dumps(
+                {"status": final_status, "issues": final_issues},
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+            stats_out["proofread_output"] = final_report
+            stats_out["proofread_feedback"] = final_report
+            stats_out["proofread_last_feedback"] = final_report
+            stats_out["proofread_final_output"] = final_report
+            metrics = list(stats_out.get("proofread_round_metrics") or [])
+            metrics.append(
+                {
+                    "round": int(proofread_round),
+                    "proofread_input_est_tokens": int(
+                        final_budget.get("est_tokens") or 0
+                    ),
+                    "proofread_draft_coverage": float(
+                        final_budget.get("draft_coverage") or 0.0
+                    ),
+                    "proofread_draft_included_chars": int(
+                        final_budget.get("draft_included_chars") or 0
+                    ),
+                    "proofread_draft_total_chars": int(
+                        final_budget.get("draft_total_chars") or 0
+                    ),
+                    "proofread_feedback_structured": int(
+                        bool(final_parsed.get("is_structured"))
+                    ),
+                    "proofread_status": final_status,
+                    "final_audit_only": 1,
+                }
+            )
+            stats_out["proofread_round_metrics"] = metrics
+
+        stats_out["proofread_rounds"] = int(proofread_round)
+        stats_out["proofread_trace"] = list(proofread_trace)
+        if logger is not None:
+            logger.info(
+                "Proofread flow done: enabled=%s rounds=%s output=%s last_feedback_len=%s",
+                int(stats_out.get("proofread_enabled") or 0),
+                int(stats_out.get("proofread_rounds") or 0),
+                _clip(str(stats_out.get("proofread_output") or ""), 120),
+                len(str(stats_out.get("proofread_last_feedback") or "")),
+            )
+            if int(stats_out.get("proofread_enabled") or 0) == 0:
+                logger.warning(
+                    "Proofread disabled by upstream: at least one required prompt was missing/empty "
+                    "(proofread_system, proofread_user_template, revise_system, revise_user_template)."
+                )
+        _PROOFREAD_SNAPSHOT.set(
+            {
+                "original_summary": original_meta,
+                "revised_summary": str(revised_text or ""),
+                "proofread_stats": stats_out,
+            }
+        )
+        return revised_text, stats_out
+
+    def _persist_summary_doc_with_proofread_snapshot(store: Any, doc: Dict[str, Any]) -> Any:
+        snapshot = _PROOFREAD_SNAPSHOT.get()
+        _PROOFREAD_SNAPSHOT.set(None)
+
+        out = dict(doc or {})
+        try:
+            if isinstance(snapshot, dict):
+                original_summary = str(snapshot.get("original_summary") or "").strip()
+                revised_summary = str(snapshot.get("revised_summary") or "").strip()
+                if original_summary and revised_summary:
+                    existing_original = str(
+                        out.get("proofread_original_summary") or ""
+                    ).strip()
+                    existing_revised = str(
+                        out.get("proofread_revised_summary") or ""
+                    ).strip()
+
+                    if not existing_original:
+                        out["proofread_original_summary"] = original_summary
+                    if not existing_revised:
+                        out["proofread_revised_summary"] = revised_summary
+
+                    audit_entry = {
+                        "created_at": int(time.time()),
+                        "prompt_package": str(
+                            (out.get("prompts") or {}).get("_package")
+                            or (out.get("selection") or {}).get("prompt_package")
+                            or ""
+                        ),
+                        "original_summary": str(
+                            out.get("proofread_original_summary") or original_summary
+                        ),
+                        "revised_summary": str(
+                            out.get("proofread_revised_summary") or revised_summary
+                        ),
+                        "proofread_output": str(
+                            (snapshot.get("proofread_stats") or {}).get(
+                                "proofread_output"
+                            )
+                            or ""
+                        ),
+                        "proofread_last_feedback": str(
+                            (snapshot.get("proofread_stats") or {}).get(
+                                "proofread_last_feedback"
+                            )
+                            or ""
+                        ),
+                        "proofread_rounds": int(
+                            (snapshot.get("proofread_stats") or {}).get(
+                                "proofread_rounds"
+                            )
+                            or 0
+                        ),
+                        "proofread_trace": (
+                            (snapshot.get("proofread_stats") or {}).get(
+                                "proofread_trace"
+                            )
+                            or []
+                        ),
+                    }
+                    pa = out.get("proofread_audit") or {}
+                    if not isinstance(pa, dict):
+                        pa = {}
+                    history = pa.get("history") or []
+                    if not isinstance(history, list):
+                        history = []
+                    history.append(audit_entry)
+                    out["proofread_audit"] = {"latest": audit_entry, "history": history[-20:]}
+
+                if str(out.get("summary") or "").strip():
+                    out["summary"] = _strip_proofread_feedback_from_summary(
+                        str(out.get("summary") or ""),
+                        snapshot.get("proofread_stats")
+                        if isinstance(snapshot.get("proofread_stats"), dict)
+                        else {},
+                    )
+        except Exception:
+            out = dict(doc or {})
+
+        return original_persist(store, out)
+
+    summarizer_mod._proofread_and_revise_meta_with_stats = (
+        _proofread_and_revise_meta_with_config
+    )
+
+    if hasattr(main_mod, "_proofread_and_revise_meta_with_stats"):
+        main_mod._proofread_and_revise_meta_with_stats = (
+            _proofread_and_revise_meta_with_config
+        )
+    main_mod._persist_summary_doc = _persist_summary_doc_with_proofread_snapshot
+
+    _PATCHED = True

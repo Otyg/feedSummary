@@ -7,8 +7,8 @@ checkpointing:
   enabled: true
   dir: data/checkpoints
 prompts:
-  path: "config/prompts.yaml"
-  default_package: "SecurityAnalyst"
+  path: "config/prompts"
+  default_package: "daily_hybrid_news_cyber_tech_se"
   selected: ""   # (tom => använd default; webapp sätter override per körning)
 feeds:
   path: "config/feeds.yaml"
@@ -20,10 +20,22 @@ batching:
   max_articles_per_batch: 15
   max_chars_per_batch: 9000
   article_clip_chars: 3500
+  similarity_enabled: true
+  similarity_threshold: 0.78
+  embedding_text_chars: 2000
+  embedding_max_concurrency: 4
   meta_batch_clip_chars: 1500
   meta_sources_clip_chars: 100
   retry_user_clip_chars: 9000
+  proofread_max_rounds: 4
   topic_max_workers: 4
+tagging:
+  similarity_consistency:
+    enabled: true
+    similarity_threshold: 0.78
+    embedding_text_chars: 2000
+    embedding_max_concurrency: 4
+    max_shared_tags: 1
 cleanup:
   enabled: true
   run_every_minutes: 60
@@ -47,31 +59,30 @@ worker_api:
   host: "127.0.0.1"
   port: 8799
 llm:
-  provider: ollama_cloud
-  host: https://ollama.com
-  model: gemma3:27b-cloud
-  api_key: CHANGE-ME-CHANGE-ME
-  context_window_tokens: 24576
-  max_output_tokens: 500
-  prompt_safety_margin: 1600
-  token_chars_per_token: 2.4
-  prompt_too_long_max_attempts: 6
-  prompt_too_long_structural_threshold_tokens: 1200
-  quota:
-    preflight: true
-    min_interval_seconds: 2
-llm_fallback:
-  provider: ollama_local
-  model: qwen2.5:7b
-  base_url: http://localhost:11434
-  max_rps: 1
-  timeout_s: 6000
-  sock_read_timeout_s: 360
-  max_retries: 3
-  retry_backoff_s: 2.0
-  context_window_tokens: 8192
-  max_output_tokens: 500
-  prompt_safety_margin: 1600
-  token_chars_per_token: 2.4
-  prompt_too_long_max_attempts: 6
-  prompt_too_long_structural_threshold_tokens: 1200
+  - provider: ollama_cloud
+    host: https://ollama.com
+    model: gemma3:27b-cloud
+    api_key: CHANGE-ME-CHANGE-ME
+    context_window_tokens: 24576
+    max_output_tokens: 500
+    prompt_safety_margin: 1600
+    token_chars_per_token: 2.4
+    prompt_too_long_max_attempts: 6
+    prompt_too_long_structural_threshold_tokens: 1200
+    quota:
+      preflight: true
+      min_interval_seconds: 2
+  - provider: ollama_local
+    model: qwen2.5:7b
+    base_url: http://localhost:11434
+    max_rps: 1
+    timeout_s: 6000
+    sock_read_timeout_s: 360
+    max_retries: 3
+    retry_backoff_s: 2.0
+    context_window_tokens: 8192
+    max_output_tokens: 500
+    prompt_safety_margin: 1600
+    token_chars_per_token: 2.4
+    prompt_too_long_max_attempts: 6
+    prompt_too_long_structural_threshold_tokens: 1200
