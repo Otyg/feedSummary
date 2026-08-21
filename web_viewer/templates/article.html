@@ -33,6 +33,21 @@
               {% endif %}
             {% endfor %}
           </div>
+
+          {% set tags_with_motivering = tags|selectattr('motivering')|list %}
+          <details id="tag-motiveringar" class="mb-3" {% if not tags_with_motivering %}hidden{% endif %}>
+            <summary class="small text-primary" style="cursor: pointer;">
+              Visa motiveringar (<span id="tag-motiveringar-count">{{ tags_with_motivering|length }}</span>)
+            </summary>
+            <div id="tag-motiveringar-list" class="mt-2 ps-3 border-start">
+              {% for tag in tags_with_motivering %}
+                <div class="small mb-2 tag-motivering" data-tag-id="{{ tag.get('id') }}">
+                  <strong>{{ tag.get('name') }}:</strong>
+                  <span>{{ tag.get('motivering') }}</span>
+                </div>
+              {% endfor %}
+            </div>
+          </details>
           
           <div class="input-group input-group-sm mb-2">
             <input type="text" id="tag-input" class="form-control" placeholder="Lägg till befintlig tagg eller ny...">
@@ -290,6 +305,15 @@ async function removeTag(tagId) {
     const badge = document.querySelector(`[data-tag-id="${tagId}"]`);
     if (badge) {
       badge.remove();
+    }
+    const motivering = document.querySelector(`.tag-motivering[data-tag-id="${tagId}"]`);
+    if (motivering) {
+      motivering.remove();
+      const remaining = document.querySelectorAll('.tag-motivering').length;
+      document.getElementById('tag-motiveringar-count').textContent = remaining;
+      if (remaining === 0) {
+        document.getElementById('tag-motiveringar').hidden = true;
+      }
     }
   } catch (error) {
     console.error('Error removing tag:', error);

@@ -658,6 +658,136 @@ def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _tag_id_key(value: Any) -> str:
+    """Normalize tag identifiers so SQL, MongoDB and TinyDB values match."""
+    try:
+        return str(int(value))
+    except (TypeError, ValueError):
+        return str(value or "").strip()
+
+
+def _tag_motivering(tag: Dict[str, Any]) -> str:
+    """Return an association explanation using current and legacy field names."""
+    for field in ("motivering", "reasoning"):
+        value = str(tag.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _article_tag_motiveringar(store: Any, article_id: str) -> Dict[str, str]:
+    """Read tag explanations from the article-tag relation.
+
+    Older feedsummary-core versions persist ``motivering`` on the relation but
+    omit it from ``get_article_tags``. These small, read-only backend fallbacks
+    keep the viewer useful until all supported store versions expose the field.
+    """
+    article_id = str(article_id or "").strip()
+    if not article_id:
+        return {}
+
+    def collect(rows: Any) -> Dict[str, str]:
+        found: Dict[str, str] = {}
+        for row in rows if rows is not None else ():
+            if not isinstance(row, dict):
+                try:
+                    row = dict(row)
+                except (TypeError, ValueError):
+                    continue
+            tag_id = _tag_id_key(row.get("tag_id") or row.get("id"))
+            motivering = _tag_motivering(row)
+            if tag_id and motivering:
+                found[tag_id] = motivering
+        return found
+
+    # MongoDBStore exposes the database as ``db``.
+    db = getattr(store, "db", None)
+    if db is not None:
+        try:
+            collection = getattr(db, "article_tags", None)
+            if collection is not None:
+                return collect(collection.find({"article_id": article_id}))
+        except Exception as exc:
+            logger.debug(
+                "Could not load MongoDB tag explanations for %s: %s",
+                article_id,
+                exc,
+            )
+
+    # SqliteStore exposes its connection factory as ``_connect``.
+    connect = getattr(store, "_connect", None)
+    if callable(connect):
+        con = None
+        try:
+            con = connect()
+            columns = {
+                str(row[1])
+                for row in con.execute("PRAGMA table_info(article_tags)").fetchall()
+            }
+            explanation_field = next(
+                (field for field in ("motivering", "reasoning") if field in columns),
+                None,
+            )
+            if explanation_field:
+                rows = con.execute(
+                    f"SELECT tag_id, {explanation_field} AS motivering "
+                    "FROM article_tags WHERE article_id = ?",
+                    (article_id,),
+                ).fetchall()
+                return collect(rows)
+        except Exception as exc:
+            logger.debug(
+                "Could not load SQLite tag explanations for %s: %s",
+                article_id,
+                exc,
+            )
+        finally:
+            if con is not None:
+                con.close()
+
+    # TinyDbStore exposes its database factory as ``_db``.
+    db_factory = getattr(store, "_db", None)
+    if callable(db_factory):
+        tiny_db = None
+        try:
+            tiny_db = db_factory()
+            rows = tiny_db.table("article_tags").all()
+            return collect(
+                row
+                for row in rows
+                if str(row.get("article_id") or "").strip() == article_id
+            )
+        except Exception as exc:
+            logger.debug(
+                "Could not load TinyDB tag explanations for %s: %s",
+                article_id,
+                exc,
+            )
+        finally:
+            if tiny_db is not None:
+                tiny_db.close()
+
+    return {}
+
+
+def _article_tags_with_motiveringar(store: Any, article_id: str) -> List[Dict[str, Any]]:
+    """Return article tags enriched with an optional ``motivering`` field."""
+    article_tags = store.get_article_tags(article_id) or []
+    motiveringar = _article_tag_motiveringar(store, article_id)
+    tags: List[Dict[str, Any]] = []
+    for tag in article_tags:
+        if not isinstance(tag, dict):
+            continue
+        item = dict(tag)
+        motivering = _tag_motivering(item) or motiveringar.get(
+            _tag_id_key(item.get("id")), ""
+        )
+        if motivering:
+            item["motivering"] = motivering
+        tags.append(item)
+    return tags
+
+
 def _coerce_positive_ts(v: Any) -> float:
     """
     Coerce timestamps to positive Unix seconds.
@@ -1096,13 +1226,14 @@ def api_article(article_id: str):
     # Add tags to the response
     tags = []
     try:
-        article_tags = store.get_article_tags(article_id) or []
+        article_tags = _article_tags_with_motiveringar(store, article_id)
         for t in article_tags:
             if isinstance(t, dict):
                 tags.append({
                     "id": t.get("id"),
                     "name": t.get("name", ""),
-                    "category": t.get("category", "GENERAL")
+                    "category": t.get("category", "GENERAL"),
+                    "motivering": _tag_motivering(t),
                 })
     except Exception as e:
         logger.debug(f"Error loading tags for article {article_id}: {e}")
@@ -1507,14 +1638,15 @@ def view_article(article_id: str):
     # Add tags to the view
     tags = []
     try:
-        article_tags = store.get_article_tags(article_id) or []
+        article_tags = _article_tags_with_motiveringar(store, article_id)
         logger.info(f"[Article] Loaded {len(article_tags)} tags for article {article_id[:20]}...")
         for t in article_tags:
             if isinstance(t, dict):
                 tags.append({
                     "id": t.get("id"),
                     "name": t.get("name", ""),
-                    "category": t.get("category", "GENERAL")
+                    "category": t.get("category", "GENERAL"),
+                    "motivering": _tag_motivering(t),
                 })
     except Exception as e:
         logger.error(f"Error loading tags for article {article_id}: {e}")
@@ -1692,7 +1824,7 @@ def api_get_article_tags(article_id: str):
         abort(500)
     
     try:
-        tags = store.get_article_tags(article_id) or []
+        tags = _article_tags_with_motiveringar(store, article_id)
         return jsonify({"tags": tags}), 200
     except Exception as e:
         logger.error(f"Error getting tags for article {article_id}: {e}")
