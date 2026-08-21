@@ -60,6 +60,7 @@ from feedsummary_core.summarizer.main import (
 )
 from uicommon import load_config
 from uicommon.proofread_rounds import enable_configurable_proofread_rounds
+from uicommon.summary_tags import tag_summary_doc_safe
 
 from feedsummary_core.persistence import create_store
 from feedsummary_core.llm_client import create_llm_client
@@ -710,6 +711,35 @@ def _annotate_summary_with_schedule_name(
         )
 
 
+async def _tag_created_summary(
+    *, store, cfg: Dict[str, Any], summary_id: str, llm=None
+) -> None:
+    sid = str(summary_id or "").strip()
+    if not sid:
+        return
+    owns_llm = llm is None
+    tag_llm = llm or create_llm_client(cfg)
+    try:
+        tags = await tag_summary_doc_safe(
+            store=store,
+            llm_client=tag_llm,
+            config=cfg,
+            summary_id=sid,
+            logger=log,
+        )
+    finally:
+        if owns_llm:
+            close = getattr(tag_llm, "aclose", None)
+            if callable(close):
+                await close()
+    log.info(
+        "Tagged summary_doc %s with %d tags: %s",
+        sid,
+        len(tags),
+        ", ".join(str(tag.get("name") or "") for tag in tags),
+    )
+
+
 async def _run_regular_entry(
     config_path: str,
     cfg: Dict[str, Any],
@@ -760,7 +790,6 @@ async def _run_regular_entry(
                 config_dict=cfg,
             )
             log.info("Job '%s' OK (tag_based_summary) summary_id=%s", job_name, summary_id)
-            return str(summary_id or "")
         
         else:
             # Default: full pipeline (fetch + summarize + tag)
@@ -771,9 +800,13 @@ async def _run_regular_entry(
                 config_dict=cfg,
             )
 
-        _annotate_summary_with_schedule_name(store=store, summary_id=str(summary_id), job_name=job_name)
+        sid = str(summary_id or "")
+        _annotate_summary_with_schedule_name(
+            store=store, summary_id=sid, job_name=job_name
+        )
+        await _tag_created_summary(store=store, cfg=cfg, summary_id=sid)
         log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
-        return str(summary_id)
+        return sid
 
     except Exception:
         log.exception("Job '%s' failed", job_name)
@@ -896,6 +929,12 @@ async def _run_composed_entry(
 
         _annotate_summary_with_schedule_name(
             store=store, summary_id=str(final_summary_id), job_name=job_name
+        )
+        await _tag_created_summary(
+            store=store,
+            cfg=cfg,
+            summary_id=str(final_summary_id),
+            llm=llm,
         )
 
         store.update_job(
@@ -1366,6 +1405,14 @@ def main() -> int:
                         store=store,
                         llm=llm,
                         job_id=jid,
+                    )
+                )
+                async_runner.run(
+                    _tag_created_summary(
+                        store=store,
+                        cfg=cfg,
+                        summary_id=str(summary_id),
+                        llm=llm,
                     )
                 )
                 _trigger_update(

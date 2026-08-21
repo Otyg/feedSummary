@@ -95,6 +95,17 @@
           </a>
         {% endif %}
       </div>
+      {% if summary and summary.get('_viewer_tags') %}
+        <div class="d-flex align-items-center flex-wrap gap-1 mt-2" aria-label="Taggar">
+          <span class="small text-muted me-1">Taggar:</span>
+          {% for tag in summary.get('_viewer_tags') %}
+            <span
+              class="badge {{ tag.get('bg_color') }} {{ tag.get('text_color') }}"
+              title="{{ tag.get('category') }}"
+            >{{ tag.get('name') }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
       <hr />
       {{ html|safe }}
     </div>

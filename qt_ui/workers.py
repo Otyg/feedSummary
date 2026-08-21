@@ -44,8 +44,9 @@ from feedsummary_core.summarizer.prompt_replay import (
     rerun_summary_from_existing,
 )
 
-from uicommon import primary_llm_config
+from uicommon import get_store, primary_llm_config
 from uicommon.proofread_rounds import enable_configurable_proofread_rounds
+from uicommon.summary_tags import tag_summary_doc_safe
 from uicommon.bootstrap_ui import resolve_config_path
 from qt_ui.interactive_llm import InteractiveLLMClient, LLMFailureContext
 from feedsummary_core.llm_client import create_llm_client
@@ -53,6 +54,39 @@ from feedsummary_core.llm_client import create_llm_client
 RUNTIME = resolve_config_path()
 CONFIG_PATH = str(RUNTIME.config_path)
 enable_configurable_proofread_rounds()
+
+
+async def _run_pipeline_and_tag_summary(*, cfg, overrides, job_id, llm):
+    summary_id = await run_pipeline(
+        CONFIG_PATH,
+        job_id=job_id,
+        overrides=overrides,
+        config_dict=cfg,
+        llm=llm,
+    )
+    await tag_summary_doc_safe(
+        store=get_store(cfg),
+        llm_client=llm,
+        config=cfg,
+        summary_id=str(summary_id or ""),
+    )
+    return summary_id
+
+
+async def _run_resume_and_tag_summary(*, cfg, store, llm, job_id):
+    summary_id = await run_resume_job(
+        config=cfg,
+        store=store,
+        llm=llm,
+        job_id=job_id,
+    )
+    await tag_summary_doc_safe(
+        store=store,
+        llm_client=llm,
+        config=cfg,
+        summary_id=str(summary_id or ""),
+    )
+    return summary_id
 
 
 class _DecisionBox:
@@ -129,15 +163,11 @@ class PipelineWorker(QThread):
             )
 
             summary_id = asyncio.run(
-                run_pipeline(
-                    CONFIG_PATH,
-                    job_id=self.job_id,
+                _run_pipeline_and_tag_summary(
+                    cfg=self.cfg,
                     overrides=self.overrides,
-                    config_dict=self.cfg,
+                    job_id=self.job_id,
                     llm=llm,
-                    # NOTE: run_pipeline already creates its own llm in your code.
-                    # For minimal change, we rely on llmClient wrapping inside create_llm_client usage
-                    # in run_pipeline; if you want full injection, we can add an optional llm param.
                 )
             )
             self.done.emit((summary_id, self.job_id))
@@ -205,8 +235,8 @@ class ResumeWorker(QThread):
             )
 
             summary_id = asyncio.run(
-                run_resume_job(
-                    config=self.cfg,
+                _run_resume_and_tag_summary(
+                    cfg=self.cfg,
                     store=self.store,
                     llm=llm,
                     job_id=self.job_id,

@@ -348,6 +348,54 @@ def _enrich_summary_view_model(d: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
+def _summary_tags_for_view(store, summary_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Resolve stored summary tags against current tag/category metadata."""
+    stored_tags = summary_doc.get("tags") or []
+    if not isinstance(stored_tags, list):
+        return []
+
+    try:
+        tags_by_id = {
+            tag.get("id"): tag
+            for tag in (store.get_all_tags() or [])
+            if isinstance(tag, dict) and tag.get("id") is not None
+        }
+    except Exception:
+        tags_by_id = {}
+
+    try:
+        categories = {
+            str(category.get("name") or "GENERAL"): category
+            for category in (store.get_all_categories() or [])
+            if isinstance(category, dict)
+        }
+    except Exception:
+        categories = {}
+
+    out: List[Dict[str, Any]] = []
+    for stored in stored_tags:
+        if not isinstance(stored, dict):
+            continue
+        current = tags_by_id.get(stored.get("id")) or stored
+        name = str(current.get("name") or stored.get("name") or "").strip()
+        if not name:
+            continue
+        category_name = str(
+            current.get("category") or stored.get("category") or "GENERAL"
+        ).strip() or "GENERAL"
+        category = categories.get(category_name) or {}
+        out.append(
+            {
+                "id": current.get("id") or stored.get("id"),
+                "name": name,
+                "category": category_name,
+                "bg_color": str(category.get("bg_color") or "bg-secondary"),
+                "text_color": str(category.get("text_color") or "text-dark"),
+            }
+        )
+    return sorted(out, key=lambda tag: str(tag.get("name") or "").lower())
+
+
 def _list_enriched_summaries(store) -> List[Dict[str, Any]]:
     docs = store.list_summary_docs() or []
     docs = [d for d in docs if isinstance(d, dict)]
@@ -1236,6 +1284,7 @@ def view_summary(summary_id: str):
 
     html = _md_to_html(summary_text)
     sdoc = _enrich_summary_view_model(sdoc)
+    sdoc["_viewer_tags"] = _summary_tags_for_view(store, sdoc)
 
     return render_template(
         "index.html",
