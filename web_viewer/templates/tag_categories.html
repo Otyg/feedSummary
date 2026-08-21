@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row justify-content-center">
+  <div class="col-12 col-xl-10">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+      <div>
+        <h2 class="mb-1">Kategorisera taggar</h2>
+        <p class="text-muted mb-0">Visa taggar i en kategori och flytta dem till andra kategorier.</p>
+      </div>
+      <button id="save-button" class="btn btn-success" type="button" disabled>
+        <span id="save-label">Spara ändringar</span>
+        <span id="change-count" class="badge text-bg-light ms-1">0</span>
+      </button>
+    </div>
+
+    <form class="card card-body mb-4" method="get" action="{{ url_for('categorize_tags') }}">
+      <div class="row align-items-end g-3">
+        <div class="col-sm-8 col-lg-6">
+          <label for="category-filter" class="form-label">Visa taggar för kategori</label>
+          <select id="category-filter" name="category" class="form-select">
+            {% for category in categories %}
+              <option value="{{ category.get('name') }}" {% if category.get('name') == selected_category %}selected{% endif %}>
+                {{ category.get('label') }} ({{ category.get('name') }})
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-sm-auto">
+          <button class="btn btn-primary" type="submit">Visa</button>
+        </div>
+      </div>
+    </form>
+
+    <div id="save-status" class="alert d-none" role="alert"></div>
+
+    {% if tags %}
+      <div class="table-responsive border rounded">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th scope="col">Tagg</th>
+              <th scope="col">Beskrivning</th>
+              <th scope="col" style="min-width: 18rem;">Kategori</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for tag in tags %}
+              <tr class="tag-category-row" data-tag-id="{{ tag.get('id') }}">
+                <td><strong>{{ tag.get('name') }}</strong></td>
+                <td class="small text-muted">{{ tag.get('description') or '—' }}</td>
+                <td>
+                  <select
+                    class="form-select tag-category-select"
+                    aria-label="Kategori för {{ tag.get('name') }}"
+                    data-tag-id="{{ tag.get('id') }}"
+                    data-original-category="{{ tag.get('category') or 'GENERAL' }}"
+                  >
+                    {% for category in categories %}
+                      <option value="{{ category.get('name') }}" {% if category.get('name') == (tag.get('category') or 'GENERAL') %}selected{% endif %}>
+                        {{ category.get('label') }} ({{ category.get('name') }})
+                      </option>
+                    {% endfor %}
+                  </select>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="small text-muted mt-2 mb-0">{{ tags|length }} tagg{% if tags|length != 1 %}ar{% endif %} i kategorin.</p>
+    {% else %}
+      <div class="alert alert-info">Det finns inga taggar i den valda kategorin.</div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+const categorySelects = Array.from(document.querySelectorAll('.tag-category-select'));
+const saveButton = document.getElementById('save-button');
+const saveLabel = document.getElementById('save-label');
+const changeCount = document.getElementById('change-count');
+const saveStatus = document.getElementById('save-status');
+
+function changedSelects() {
+  return categorySelects.filter(
+    select => select.value !== select.dataset.originalCategory
+  );
+}
+
+function updateChangedState() {
+  const changed = changedSelects();
+  const changedIds = new Set(changed.map(select => select.dataset.tagId));
+
+  document.querySelectorAll('.tag-category-row').forEach(row => {
+    row.classList.toggle('table-warning', changedIds.has(row.dataset.tagId));
+  });
+
+  changeCount.textContent = String(changed.length);
+  saveButton.disabled = changed.length === 0;
+  if (changed.length > 0) {
+    saveStatus.classList.add('d-none');
+  }
+}
+
+function showStatus(message, kind) {
+  saveStatus.textContent = message;
+  saveStatus.className = `alert alert-${kind}`;
+}
+
+categorySelects.forEach(select => {
+  select.addEventListener('change', updateChangedState);
+});
+
+saveButton.addEventListener('click', async () => {
+  const changed = changedSelects();
+  if (changed.length === 0) {
+    return;
+  }
+
+  saveButton.disabled = true;
+  saveLabel.textContent = 'Sparar…';
+
+  try {
+    const response = await fetch('/api/v1/tags/categories', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        changes: changed.map(select => ({
+          tag_id: Number(select.dataset.tagId),
+          category: select.value
+        }))
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Ändringarna kunde inte sparas');
+    }
+
+    showStatus(`${data.updated_count} ändring${data.updated_count === 1 ? '' : 'ar'} sparades.`, 'success');
+    window.setTimeout(() => window.location.reload(), 700);
+  } catch (error) {
+    showStatus(error.message || 'Ändringarna kunde inte sparas', 'danger');
+    saveLabel.textContent = 'Spara ändringar';
+    saveButton.disabled = false;
+  }
+});
+
+updateChangedState();
+</script>
+{% endblock %}
