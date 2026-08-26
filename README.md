@@ -369,6 +369,37 @@ Med `--input-report` återanvänds den tidigare rapportens bedömningar och inga
 LLM-anrop görs. Rapportens artikel-ID, tagg-ID och taggnamn verifieras mot den aktuella
 databasen före varje borttagning.
 
+## Benchmarka lättvikts-ML för taggning
+
+`benchmark_tagging_ml.py` är fristående från produktionsflödet. Verktyget läser
+befintliga artiklar och taggkopplingar från den MongoDB som anges i `config.yaml`,
+jämför etablerade scikit-learn-algoritmer på samma kronologiska datasplit och skriver
+både JSON och Markdown. Det aktiverar eller sparar ingen produktionsmodell.
+
+```bash
+.venv/bin/python benchmark_tagging_ml.py \
+  --config config.yaml \
+  --output-dir benchmark_results/tagging_ml
+```
+
+Som standard jämförs Logistic Regression, SGD, två Naive Bayes-varianter, K-Nearest
+Neighbour, Random Forest och linjär Support Vector Machine. Rapporten innehåller först
+en körning med alla `DEFAULT_CATEGORIES` tillsammans och därefter en körning för varje
+kategori i tuple-ordning. `--categories LOCATION,THREAT` lägger till manuella kategorier
+efter standardkategorierna; det ersätter dem inte.
+
+Varje kategoriomfång körs med TF-IDF, hashade ord-/teckenfeatures, befintliga
+artikel-embeddings och en hybrid av TF-IDF och embeddings. Före tidsdelningen begränsas
+varje kategoriomfång till artiklar med samma kompatibla, redan sparade embeddingmodell
+och dimension. Därmed använder samtliga representationer exakt samma artiklar och
+etiketter. Rapporten redovisar modell, dimension, täckning och bortfall. Verktyget
+skapar inga nya embeddings. En viss modell kan krävas med `--embedding-model`, och
+representationer kan begränsas med exempelvis
+`--representations tfidf,embedding,hybrid`.
+
+Ett mindre prov kan köras med exempelvis
+`--max-articles 200 --algorithms logistic_regression,linear_svm`.
+
 Auditbedömningen tar hänsyn till taggens konfigurerade synonymer och till överordnade
 geografiska begrepp, exempelvis `Europe` för en artikel vars centrala plats är ett
 europeiskt land. Rapporten anger `match_type` och `matched_term`. Vid applicering av en
