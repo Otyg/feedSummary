@@ -32,6 +32,30 @@ batching:
   proofread_max_rounds: 4
   topic_max_workers: 4
 tagging:
+  # LLM får välja befintliga taggar i dessa kategorier, men inte skapa nya.
+  llm_new_tag_excluded_categories:
+    - DOMAIN_ENTITY
+  ml:
+    # Första produktionsvarianten använder SGDClassifier på lagrade artikel-embeddings.
+    # Lämna avstängd tills ett tillräckligt stort, granskat träningsunderlag finns.
+    enabled: false
+    algorithm: sgd
+    representation: embedding
+    categories:
+      - DOMAIN_ENTITY
+    # Tomt värde ärver embedding_model från den lokala LLM-konfigurationen.
+    embedding_model: ""
+    embedding_text_chars: 2000
+    model_path: data/tagging_ml/domain_entity_sgd_embeddings.joblib
+    min_label_support: 5
+    min_training_articles: 30
+    max_tags_per_article: 5
+    threshold: 0.5
+    alpha: 0.0001
+    random_state: 42
+    # Vid nästa taggningskörning jämförs ett corpus-fingeravtryck. Ändrade
+    # artikel-taggar leder till full omträning så att även borttagningar lärs om.
+    auto_retrain: true
   similarity_consistency:
     enabled: true
     similarity_threshold: 0.78
