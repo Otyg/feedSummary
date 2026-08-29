@@ -30,7 +30,13 @@ from feedsummary_core.persistence import MongoDBStore, create_store
 
 
 log = logging.getLogger("tagging_ml_benchmark")
-DEFAULT_CATEGORIES: Tuple[str, ...] = ("DOMAIN_ENTITY", "GENERAL")
+DEFAULT_CATEGORIES: Tuple[str, ...] = (
+    "DOMAIN_ENTITY",
+    "LOCATION",
+    "DATATYPE",
+    "SECTOR",
+    "THREAT",
+)
 DEFAULT_REPRESENTATIONS: Tuple[str, ...] = (
     "tfidf",
     "hashing",
@@ -695,12 +701,117 @@ def select_recommendation(
     }
 
 
+def _combination_comparison(
+    benchmarks: Sequence[Dict[str, Any]],
+    base_category: str,
+    *,
+    min_precision: float,
+    max_train_seconds: float,
+) -> Dict[str, Any]:
+    """Rank the base category and its pairwise category combinations by micro-F1."""
+    entries: List[Dict[str, Any]] = []
+    seen_category_sets: set[Tuple[str, ...]] = set()
+    for scope in benchmarks:
+        categories = tuple(scope.get("categories") or ())
+        if (
+            scope.get("status") != "ok"
+            or base_category not in categories
+            or len(categories) > 2
+            or categories in seen_category_sets
+        ):
+            continue
+        seen_category_sets.add(categories)
+
+        successful = [
+            result
+            for suite in scope.get("representations", ())
+            if suite.get("status") == "ok"
+            for result in suite.get("results", ())
+            if result.get("status") == "ok"
+        ]
+        if not successful:
+            continue
+        winner = max(
+            successful,
+            key=lambda result: (
+                result["metrics"]["micro_f1"],
+                result["metrics"]["micro_recall"],
+                result["metrics"]["micro_precision"],
+                -result["performance"]["train_seconds"],
+            ),
+        )
+        meets_quality_gate = bool(
+            winner["threshold"]["qualified"]
+            and winner["metrics"]["micro_precision"] >= min_precision
+            and winner["performance"]["train_seconds"] <= max_train_seconds
+        )
+        entries.append(
+            {
+                "name": scope["name"],
+                "categories": list(categories),
+                "added_category": next(
+                    (category for category in categories if category != base_category),
+                    None,
+                ),
+                "algorithm": winner["algorithm"],
+                "representation": winner.get(
+                    "representation", winner.get("vectorizer")
+                ),
+                "meets_quality_gate": meets_quality_gate,
+                "metrics": dict(winner["metrics"]),
+                "performance": dict(winner["performance"]),
+            }
+        )
+
+    entries.sort(
+        key=lambda entry: (
+            -entry["metrics"]["micro_f1"],
+            -entry["metrics"]["micro_recall"],
+            -entry["metrics"]["micro_precision"],
+        )
+    )
+    return {
+        "base_category": base_category,
+        "ranking_metric": "micro_f1",
+        "entries": entries,
+    }
+
+
 def _markdown_report(report: Dict[str, Any]) -> str:
     lines = [
         "# Benchmark: lättvikts-ML för artikeltaggar",
         "",
         f"Skapad: {report['created_at']}",
     ]
+    comparison = report.get("combination_comparison") or {}
+    comparison_entries = comparison.get("entries") or []
+    if comparison_entries:
+        lines.extend(
+            [
+                "",
+                f"## Kombinationer med {comparison['base_category']}",
+                "",
+                "Bästa algoritm och representation per kategoriomfång, rankad efter "
+                "micro-F1.",
+                "",
+                "| Kategorier | Algoritm | Representation | Precision | Recall | F1 | Kvalitetsgrind |",
+                "|---|---|---|---:|---:|---:|:---:|",
+            ]
+        )
+        for entry in comparison_entries:
+            metrics = entry["metrics"]
+            lines.append(
+                "| {categories} | {algorithm} | {representation} | {precision:.3f} | "
+                "{recall:.3f} | {f1:.3f} | {quality} |".format(
+                    categories=" + ".join(entry["categories"]),
+                    algorithm=entry["algorithm"],
+                    representation=entry["representation"],
+                    precision=metrics["micro_precision"],
+                    recall=metrics["micro_recall"],
+                    f1=metrics["micro_f1"],
+                    quality="ja" if entry["meets_quality_gate"] else "nej",
+                )
+            )
     for scope in report["benchmarks"]:
         category_label = ", ".join(scope["categories"])
         lines.extend(["", f"## {scope['name']}: {category_label}", ""])
@@ -795,9 +906,16 @@ def _merge_categories(
     return merged
 
 
-def _category_scopes(categories: Sequence[str]) -> List[Tuple[str, List[str]]]:
+def _category_scopes(
+    categories: Sequence[str], base_category: str = "DOMAIN_ENTITY"
+) -> List[Tuple[str, List[str]]]:
     scopes = [("Alla kategorier", list(categories))]
     scopes.extend((f"Kategori {category}", [category]) for category in categories)
+    if base_category in categories:
+        for category in categories:
+            pair = [base_category, category]
+            if category != base_category and pair != list(categories):
+                scopes.append((f"Kombination {base_category} + {category}", pair))
     return scopes
 
 
@@ -813,6 +931,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Kommaseparerade kategorier som läggs till efter DEFAULT_CATEGORIES; "
             "standardkategorierna körs alltid."
+        ),
+    )
+    parser.add_argument(
+        "--combination-base-category",
+        default="DOMAIN_ENTITY",
+        help=(
+            "Kategori som jämförs ensam och parvis med övriga kategorier "
+            "(standard: DOMAIN_ENTITY)."
         ),
     )
     parser.add_argument("--algorithms", default=_format_default_names(_candidate_factories()))
@@ -954,9 +1080,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     manual_categories = _parse_names(args.categories)
     categories = _merge_categories(DEFAULT_CATEGORIES, manual_categories)
+    combination_base_category = str(args.combination_base_category).strip().upper()
+    if not combination_base_category:
+        raise ValueError("--combination-base-category får inte vara tom")
+    if combination_base_category not in categories:
+        raise ValueError(
+            "--combination-base-category måste finnas bland benchmarkkategorierna: "
+            + ", ".join(categories)
+        )
     benchmarks: List[Dict[str, Any]] = []
     any_success = False
-    for scope_name, scope_categories in _category_scopes(categories):
+    for scope_name, scope_categories in _category_scopes(
+        categories, combination_base_category
+    ):
         log.info("Benchmarkomfång: %s", ", ".join(scope_categories))
         try:
             examples, dataset_metadata = load_mongodb_examples(
@@ -1023,7 +1159,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     import sklearn
 
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "runtime": {
             "python": sys.version.split()[0],
@@ -1035,6 +1171,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "default_categories": list(DEFAULT_CATEGORIES),
             "manually_added_categories": manual_categories,
             "categories": categories,
+            "combination_base_category": combination_base_category,
             "algorithms": algorithm_names,
             "representations": representations,
             "embedding_model": args.embedding_model,
@@ -1050,6 +1187,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         },
         "benchmarks": benchmarks,
     }
+    report["combination_comparison"] = _combination_comparison(
+        benchmarks,
+        combination_base_category,
+        min_precision=args.min_precision,
+        max_train_seconds=args.max_train_seconds,
+    )
 
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

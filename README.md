@@ -369,6 +369,22 @@ Med `--input-report` återanvänds den tidigare rapportens bedömningar och inga
 LLM-anrop görs. Rapportens artikel-ID, tagg-ID och taggnamn verifieras mot den aktuella
 databasen före varje borttagning.
 
+## Träna om produktionsmodellen helt
+
+Efter en ändring under `tagging.ml` i konfigurationen kan produktionsmodellen byggas
+om från samtliga lagrade artikel-embeddings och taggkopplingar:
+
+```bash
+.venv/bin/python retrain_tagging_ml.py --config config.yaml
+```
+
+Scriptet använder MongoDB- och modellinställningarna från konfigurationen och hoppar
+över den vanliga kontrollen av corpus-fingeravtrycket. Modellfilen ersätts atomiskt
+först när den nya träningen har lyckats. Om träningsunderlaget inte uppfyller
+`min_training_articles` eller `min_label_support` returneras ett fel och den befintliga
+modellen behålls. `--config` kan utelämnas; då används `FEEDSUMMARY_CONFIG` eller
+`config.yaml`.
+
 ## Benchmarka lättvikts-ML för taggning
 
 `benchmark_tagging_ml.py` är fristående från produktionsflödet. Verktyget läser
@@ -383,10 +399,13 @@ både JSON och Markdown. Det aktiverar eller sparar ingen produktionsmodell.
 ```
 
 Som standard jämförs Logistic Regression, SGD, två Naive Bayes-varianter, K-Nearest
-Neighbour, Random Forest och linjär Support Vector Machine. Rapporten innehåller först
-en körning med alla `DEFAULT_CATEGORIES` tillsammans och därefter en körning för varje
-kategori i tuple-ordning. `--categories LOCATION,THREAT` lägger till manuella kategorier
-efter standardkategorierna; det ersätter dem inte.
+Neighbour, Random Forest och linjär Support Vector Machine. Rapporten innehåller en
+körning med alla `DEFAULT_CATEGORIES` tillsammans, en körning för varje kategori och
+parvisa körningar med `DOMAIN_ENTITY` och var och en av de övriga kategorierna.
+JSON- och Markdownrapporterna rankar den bästa algoritmen och representationen för
+varje sådan kombination efter micro-F1. En annan baskategori kan anges med
+`--combination-base-category`. `--categories LOCATION,THREAT` lägger till manuella
+kategorier efter standardkategorierna; det ersätter dem inte.
 
 Varje kategoriomfång körs med TF-IDF, hashade ord-/teckenfeatures, befintliga
 artikel-embeddings och en hybrid av TF-IDF och embeddings. Före tidsdelningen begränsas
