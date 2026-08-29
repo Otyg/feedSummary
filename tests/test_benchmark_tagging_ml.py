@@ -3,6 +3,7 @@ import unittest
 from benchmark_tagging_ml import (
     ArticleExample,
     _category_scopes,
+    _combination_comparison,
     _embedding_subset,
     _candidate_factories,
     _fit_features,
@@ -39,9 +40,98 @@ class BenchmarkDatasetTests(unittest.TestCase):
                 ("Kategori DOMAIN_ENTITY", ["DOMAIN_ENTITY"]),
                 ("Kategori GENERAL", ["GENERAL"]),
                 ("Kategori LOCATION", ["LOCATION"]),
+                (
+                    "Kombination DOMAIN_ENTITY + GENERAL",
+                    ["DOMAIN_ENTITY", "GENERAL"],
+                ),
+                (
+                    "Kombination DOMAIN_ENTITY + LOCATION",
+                    ["DOMAIN_ENTITY", "LOCATION"],
+                ),
             ],
             _category_scopes(categories),
         )
+
+    def test_two_category_scope_is_not_benchmarked_twice(self):
+        self.assertEqual(
+            [
+                ("Alla kategorier", ["DOMAIN_ENTITY", "LOCATION"]),
+                ("Kategori DOMAIN_ENTITY", ["DOMAIN_ENTITY"]),
+                ("Kategori LOCATION", ["LOCATION"]),
+            ],
+            _category_scopes(["DOMAIN_ENTITY", "LOCATION"]),
+        )
+
+    def test_combination_comparison_ranks_best_micro_f1_per_scope(self):
+        def result(algorithm, representation, f1, precision, recall):
+            return {
+                "algorithm": algorithm,
+                "representation": representation,
+                "status": "ok",
+                "threshold": {"qualified": True},
+                "metrics": {
+                    "micro_precision": precision,
+                    "micro_recall": recall,
+                    "micro_f1": f1,
+                },
+                "performance": {"train_seconds": 1.0},
+            }
+
+        benchmarks = [
+            {
+                "name": "Kategori DOMAIN_ENTITY",
+                "categories": ["DOMAIN_ENTITY"],
+                "status": "ok",
+                "representations": [
+                    {
+                        "status": "ok",
+                        "results": [
+                            result("linear_svm", "tfidf", 0.50, 0.91, 0.35),
+                            result("random_forest", "hybrid", 0.60, 0.80, 0.48),
+                        ],
+                    }
+                ],
+            },
+            {
+                "name": "Kombination DOMAIN_ENTITY + LOCATION",
+                "categories": ["DOMAIN_ENTITY", "LOCATION"],
+                "status": "ok",
+                "representations": [
+                    {
+                        "status": "ok",
+                        "results": [
+                            result("linear_svm", "hybrid", 0.65, 0.92, 0.50)
+                        ],
+                    }
+                ],
+            },
+            {
+                "name": "Alla kategorier",
+                "categories": ["DOMAIN_ENTITY", "LOCATION", "THREAT"],
+                "status": "ok",
+                "representations": [],
+            },
+        ]
+
+        comparison = _combination_comparison(
+            benchmarks,
+            "DOMAIN_ENTITY",
+            min_precision=0.90,
+            max_train_seconds=10.0,
+        )
+
+        self.assertEqual("micro_f1", comparison["ranking_metric"])
+        self.assertEqual(
+            [
+                ["DOMAIN_ENTITY", "LOCATION"],
+                ["DOMAIN_ENTITY"],
+            ],
+            [entry["categories"] for entry in comparison["entries"]],
+        )
+        self.assertEqual("linear_svm", comparison["entries"][0]["algorithm"])
+        self.assertTrue(comparison["entries"][0]["meets_quality_gate"])
+        self.assertEqual("random_forest", comparison["entries"][1]["algorithm"])
+        self.assertFalse(comparison["entries"][1]["meets_quality_gate"])
 
     def test_embedding_subset_uses_most_common_compatible_signature(self):
         examples = [
