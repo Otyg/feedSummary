@@ -419,6 +419,28 @@ representationer kan begränsas med exempelvis
 Ett mindre prov kan köras med exempelvis
 `--max-articles 200 --algorithms logistic_regression,linear_svm`.
 
+## Granska produktionsmodellens DOMAIN_ENTITY-förslag
+
+Den tränade produktionsmodellen kan köras skrivskyddat mot samtliga artiklar och
+jämföras med databasens faktiska `DOMAIN_ENTITY`-taggar:
+
+```bash
+.venv/bin/python benchmark_ml_domain_entity.py \
+  --config config.yaml \
+  --output-dir benchmark_results/ml-domain-entity-audit
+```
+
+Verktyget laddar den befintliga modellartefakten utan att träna om den, genererar
+inga embeddings och ändrar aldrig databasen. `report.json` innehåller samtliga
+artiklar och maskinläsbara skillnader. `report.md` visar täckning, precision/recall/F1,
+jämförelse per tagg samt artiklar med möjliga taggtillägg eller modellmissar.
+Artiklar utan kompatibel embedding redovisas separat. Använd `--limit 20` för en
+snabb provkörning.
+
+Måtten är en in-sample-audit eftersom modellen har tränats från samma databas.
+Föreslagna tillägg ska därför granskas manuellt och faktiska taggar som modellen
+missar ska inte tas bort automatiskt.
+
 Auditbedömningen tar hänsyn till taggens konfigurerade synonymer och till överordnade
 geografiska begrepp, exempelvis `Europe` för en artikel vars centrala plats är ett
 europeiskt land. Rapporten anger `match_type` och `matched_term`. Vid applicering av en

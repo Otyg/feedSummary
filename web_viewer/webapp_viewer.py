@@ -916,23 +916,23 @@ def _list_articles_for_day_fast(
         except Exception:
             pass
 
-    # Fallback for non-sqlite stores.
-    src_map = source_to_topics_map(APP_CFG)
-    sources = sorted(list(src_map.keys()))
+    # Fallback for non-sqlite stores.  A date tab represents every stored
+    # article for that day, including articles from feeds that have since been
+    # removed from the configuration.  Passing configured sources here made
+    # the tab count and its article list describe different datasets.
     rows: List[Dict[str, Any]] = []
-    if sources:
-        try:
-            rows = (
-                store.list_articles_by_filter(
-                    sources=sources,
-                    since_ts=int(start_ts),
-                    until_ts=int(end_ts),
-                    limit=int(limit),
-                )
-                or []
+    try:
+        rows = (
+            store.list_articles_by_filter(
+                sources=[],
+                since_ts=int(start_ts),
+                until_ts=int(end_ts),
+                limit=int(limit),
             )
-        except Exception:
-            rows = []
+            or []
+        )
+    except Exception:
+        rows = []
     if not rows:
         raw = store.list_articles(limit=50000) or []
         rows = []
@@ -1587,7 +1587,11 @@ def list_articles():
         articles=active_articles,
         date_tabs=date_tabs,
         date_counts=date_counts,
-        total_article_count=len(active_articles) if not active_date else sum(date_counts.values()),
+        total_article_count=(
+            sum(date_counts.values())
+            if not active_date
+            else date_counts.get(active_date, len(active_articles))
+        ),
         active_date=active_date,
         format_published_ts_iso=_format_published_ts_iso,
         format_ts=format_ts,

@@ -31,6 +31,20 @@
         {% endfor %}
       </ul>
     {% endif %}
+
+    {# Source filter section #}
+    <div class="card mb-3">
+      <details>
+        <summary class="card-title">Filtrera på källor</summary>
+        <div id="source-filter-container" class="d-flex flex-wrap gap-2">
+          <small class="text-muted">Laddar källor...</small>
+        </div>
+        <div class="mt-2">
+          <small class="text-muted">Valda källor: <span id="selected-sources-count">0</span></small>
+          <button id="clear-source-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa källfilter</button>
+        </div>
+      </details>
+    </div>
     
     {# Category filter section #}
     <div class="card mb-3">
@@ -120,6 +134,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     {% for a in articles %}
     {
       id: "{{ a.get('id') }}",
+      source: {{ (a.get('source') or '')|tojson|safe }},
       tags: {{ a.get('tags', [])|tojson|safe }},
       row: document.querySelector('tr[data-article-id="{{ a.get('id') }}"]')
     },
@@ -128,6 +143,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   
   let selectedTags = new Set();
   let selectedCategories = new Set();
+  let selectedSources = new Set();
   let categoriesMap = new Map(); // category_name -> {bg_color, text_color, label}
   
   // Load categories from API
@@ -168,8 +184,12 @@ document.addEventListener('DOMContentLoaded', async function() {
   // Collect all unique tags
   const tagsMap = new Map(); // tag_name -> tag_object
   const categoriesSet = new Set(); // category names
+  const sourcesSet = new Set(); // source names
   
   allArticles.forEach(article => {
+    if (article.source) {
+      sourcesSet.add(article.source);
+    }
     if (!article.tags || !Array.isArray(article.tags)) {
       console.warn('[Articles.html] Article has invalid tags:', article.id, article.tags);
       return;
@@ -186,6 +206,38 @@ document.addEventListener('DOMContentLoaded', async function() {
   
   console.log('[Articles.html] tagsMap size:', tagsMap.size);
   console.log('[Articles.html] categoriesSet size:', categoriesSet.size);
+
+  // Build source filter buttons
+  const sourceFilterContainer = document.getElementById('source-filter-container');
+  sourceFilterContainer.innerHTML = '';
+  const sourcesArray = Array.from(sourcesSet).sort((a, b) => a.localeCompare(b));
+
+  if (sourcesArray.length === 0) {
+    sourceFilterContainer.innerHTML = '<small class="text-muted">Inga källor hittades</small>';
+  } else {
+    sourcesArray.forEach(source => {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline-secondary source-filter-btn';
+      btn.textContent = source;
+      btn.setAttribute('data-source', source);
+      btn.style.cursor = 'pointer';
+
+      btn.addEventListener('click', function() {
+        if (selectedSources.has(source)) {
+          selectedSources.delete(source);
+          btn.classList.remove('active', 'btn-secondary');
+          btn.classList.add('btn-outline-secondary');
+        } else {
+          selectedSources.add(source);
+          btn.classList.remove('btn-outline-secondary');
+          btn.classList.add('active', 'btn-secondary');
+        }
+        updateFiltering();
+      });
+
+      sourceFilterContainer.appendChild(btn);
+    });
+  }
   
   // Build category filter buttons
   const categoryFilterContainer = document.getElementById('category-filter-container');
@@ -291,6 +343,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     updateTagFilterVisibility();
     document.getElementById('selected-count').textContent = selectedTags.size;
     document.getElementById('selected-categories-count').textContent = selectedCategories.size;
+    document.getElementById('selected-sources-count').textContent = selectedSources.size;
     
     if (selectedTags.size === 0) {
       document.getElementById('clear-filters').style.display = 'none';
@@ -303,11 +356,18 @@ document.addEventListener('DOMContentLoaded', async function() {
     } else {
       document.getElementById('clear-category-filters').style.display = 'inline-block';
     }
+
+    if (selectedSources.size === 0) {
+      document.getElementById('clear-source-filters').style.display = 'none';
+    } else {
+      document.getElementById('clear-source-filters').style.display = 'inline-block';
+    }
     
     let visibleCount = 0;
     allArticles.forEach(article => {
       let hasMatchingTag = true;
       let hasMatchingCategory = true;
+      let hasMatchingSource = true;
       
       // Check tag filter
       if (selectedTags.size > 0) {
@@ -318,9 +378,14 @@ document.addEventListener('DOMContentLoaded', async function() {
       if (selectedCategories.size > 0) {
         hasMatchingCategory = article.tags.some(tag => selectedCategories.has(tag.category));
       }
+
+      // Multiple selected sources use OR; source filters combine with other filters using AND.
+      if (selectedSources.size > 0) {
+        hasMatchingSource = selectedSources.has(article.source);
+      }
       
-      // Show article only if it matches both filters
-      if (hasMatchingTag && hasMatchingCategory) {
+      // Show article only if it matches every active filter group.
+      if (hasMatchingTag && hasMatchingCategory && hasMatchingSource) {
         article.row.style.display = '';
         visibleCount++;
       } else {
@@ -378,12 +443,23 @@ document.addEventListener('DOMContentLoaded', async function() {
     updateFiltering();
   });
 
+  // Clear source filters button
+  document.getElementById('clear-source-filters').addEventListener('click', function() {
+    selectedSources.clear();
+    document.querySelectorAll('.source-filter-btn').forEach(btn => {
+      btn.classList.remove('active', 'btn-secondary');
+      btn.classList.add('btn-outline-secondary');
+    });
+    updateFiltering();
+  });
+
   updateFiltering();
 });
 </script>
 
 <style>
-.tag-filter-btn.active {
+.tag-filter-btn.active,
+.source-filter-btn.active {
   border-color: #0d6efd !important;
   color: #fff !important;
 }
