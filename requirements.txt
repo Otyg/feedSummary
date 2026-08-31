@@ -12,6 +12,6 @@ ollama>=0.6.1
 lxml_html_clean>=0.4.3
 PySide6>=6.10.2
 python-docx>=1.2.0
-feedsummary-core[mongodb]>=2.2.1
+feedsummary-core[mongodb,ml]>=2.3.0
 requests>=2.31.0
 scikit-learn>=1.5
