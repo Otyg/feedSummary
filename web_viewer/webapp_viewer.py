@@ -59,6 +59,7 @@ from feedsummary_core.summarizer.main import (
 )
 from feedsummary_core.summarizer.tagging import TagManager
 from feedsummary_core.llm_client import create_llm_client
+from feedsummary_core.persistence import TagRelationError
 from feedsummary_core.prompts.loader import (
     DEFAULT_PROMPTS_PATH,
     list_prompt_packages,
@@ -1804,6 +1805,8 @@ def api_create_tag():
         category = data.get("category", "GENERAL").strip()
         description = data.get("description", "").strip()
         synonyms = data.get("synonyms", []) or []
+        parent_ids = data.get("parent_ids") if "parent_ids" in data else None
+        child_ids = data.get("child_ids") if "child_ids" in data else None
         
         if not name:
             return jsonify({"error": "name is required"}), 400
@@ -1812,9 +1815,21 @@ def api_create_tag():
         tag = store.create_tag(name, category, description, synonyms)
         if tag is None:
             return jsonify({"error": "tag already exists"}), 409
+
+        if parent_ids is not None or child_ids is not None:
+            try:
+                relations = store.set_tag_relations(
+                    int(tag["id"]), parent_ids=parent_ids, child_ids=child_ids
+                )
+                tag["relations"] = relations
+            except Exception:
+                store.delete_tag(int(tag["id"]))
+                raise
         
         logger.info(f"[TagAPI] Created tag: {tag.get('name')} ({tag.get('id')}) with {len(synonyms)} synonyms")
         return jsonify({"tag": tag}), 201
+    except TagRelationError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Error creating tag: {e}")
         return jsonify({"error": str(e)}), 500
@@ -1979,6 +1994,12 @@ def api_get_tag(tag_id: int):
             pass
         
         tag["usage_count"] = usage_count
+        relation_reader = getattr(store, "get_tag_relations", None)
+        tag["relations"] = (
+            relation_reader(tag_id)
+            if callable(relation_reader)
+            else {"parents": [], "children": []}
+        )
         return jsonify({"tag": tag}), 200
     except Exception as e:
         logger.error(f"Error getting tag {tag_id}: {e}")
@@ -1998,6 +2019,8 @@ def api_update_tag(tag_id: int):
         category = data.get("category")
         description = data.get("description")
         new_synonyms = data.get("synonyms") if "synonyms" in data else None
+        parent_ids = data.get("parent_ids") if "parent_ids" in data else None
+        child_ids = data.get("child_ids") if "child_ids" in data else None
         
         # Get current tag to check for old synonyms
         all_tags = store.get_all_tags() or []
@@ -2020,6 +2043,11 @@ def api_update_tag(tag_id: int):
         updated_tag = store.update_tag(tag_id, name, category, description, new_synonyms)
         if not updated_tag:
             return jsonify({"error": "tag not found"}), 404
+
+        if parent_ids is not None or child_ids is not None:
+            updated_tag["relations"] = store.set_tag_relations(
+                tag_id, parent_ids=parent_ids, child_ids=child_ids
+            )
         
         # Handle synonym migrations
         if added_synonyms:
@@ -2046,6 +2074,8 @@ def api_update_tag(tag_id: int):
         
         logger.info(f"[TagAPI] Updated tag {tag_id}: {updated_tag.get('name')}")
         return jsonify({"tag": updated_tag}), 200
+    except TagRelationError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Error updating tag {tag_id}: {e}")
         return jsonify({"error": str(e)}), 500
@@ -2067,6 +2097,44 @@ def api_delete_tag(tag_id: int):
         return jsonify({"success": True}), 200
     except Exception as e:
         logger.error(f"Error deleting tag {tag_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/v1/tags/<int:tag_id>/relations", methods=["GET"])
+def api_get_tag_relations(tag_id: int):
+    """Get the parents and children of a tag."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    if not any(tag.get("id") == tag_id for tag in (store.get_all_tags() or [])):
+        return jsonify({"error": "tag not found"}), 404
+    return jsonify({"relations": store.get_tag_relations(tag_id)}), 200
+
+
+@app.route("/api/v1/tags/<int:tag_id>/relations", methods=["PUT"])
+def api_set_tag_relations(tag_id: int):
+    """Replace a tag's parent relations, child relations, or both."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        data = request.get_json(silent=True) or {}
+        has_parents = "parent_ids" in data
+        has_children = "child_ids" in data
+        if not has_parents and not has_children:
+            return jsonify({"error": "parent_ids or child_ids is required"}), 400
+        relations = store.set_tag_relations(
+            tag_id,
+            parent_ids=data.get("parent_ids") if has_parents else None,
+            child_ids=data.get("child_ids") if has_children else None,
+        )
+        return jsonify({"relations": relations}), 200
+    except TagRelationError as e:
+        message = str(e)
+        status = 404 if message.startswith("tag not found:") else 400
+        return jsonify({"error": message}), status
+    except Exception as e:
+        logger.error(f"Error updating relations for tag {tag_id}: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -2252,7 +2320,33 @@ def manage_tags():
         abort(500)
     
     try:
-        tags = store.get_all_tags() or []
+        all_tags = store.get_all_tags() or []
+        categories = store.get_all_categories() or []
+        categories.sort(
+            key=lambda category: (
+                str(category.get("label") or "").lower(),
+                str(category.get("name") or "").lower(),
+            )
+        )
+
+        category_counts = {}
+        for tag in all_tags:
+            category = str(tag.get("category") or "GENERAL")
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+        requested_category = str(request.args.get("category") or "").strip()
+        category_names = {
+            str(category.get("name") or "") for category in categories
+        }
+        selected_category = (
+            requested_category if requested_category in category_names else ""
+        )
+        tags = [
+            tag
+            for tag in all_tags
+            if not selected_category
+            or str(tag.get("category") or "GENERAL") == selected_category
+        ]
         
         # Count usage for each tag
         all_articles = store.list_articles(limit=10000) or []
@@ -2266,13 +2360,27 @@ def manage_tags():
                         usage_counts[tag_id] = usage_counts.get(tag_id, 0) + 1
         
         # Add usage count to each tag
+        relation_reader = getattr(store, "get_tag_relations", None)
         for tag in tags:
             tag["usage_count"] = usage_counts.get(tag.get("id"), 0)
+            tag["relations"] = (
+                relation_reader(int(tag["id"]))
+                if callable(relation_reader) and tag.get("id") is not None
+                else {"parents": [], "children": []}
+            )
         
         # Sort by name
         tags.sort(key=lambda t: t.get("name", "").lower())
         
-        return render_template("tags.html", tags=tags, format_ts=format_ts)
+        return render_template(
+            "tags.html",
+            tags=tags,
+            categories=categories,
+            category_counts=category_counts,
+            selected_category=selected_category,
+            total_tag_count=len(all_tags),
+            format_ts=format_ts,
+        )
     except Exception as e:
         logger.error(f"Error loading tags: {e}")
         abort(500)
