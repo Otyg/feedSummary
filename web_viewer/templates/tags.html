@@ -7,6 +7,31 @@
       <button class="btn btn-primary" onclick="showCreateForm()">Ny tagg</button>
     </div>
 
+    <form class="card card-body mb-4" method="get" action="{{ url_for('manage_tags') }}">
+      <div class="row align-items-end g-3">
+        <div class="col-sm-8 col-lg-6">
+          <label for="category-filter" class="form-label">Filtrera på kategori</label>
+          <select id="category-filter" name="category" class="form-select">
+            <option value="" {% if not selected_category %}selected{% endif %}>
+              Alla kategorier ({{ total_tag_count }})
+            </option>
+            {% for category in categories %}
+              {% set category_name = category.get('name') %}
+              <option value="{{ category_name }}" {% if category_name == selected_category %}selected{% endif %}>
+                {{ category.get('label') }} ({{ category_counts.get(category_name, 0) }})
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-sm-auto d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Filtrera</button>
+          {% if selected_category %}
+            <a class="btn btn-outline-secondary" href="{{ url_for('manage_tags') }}">Visa alla</a>
+          {% endif %}
+        </div>
+      </div>
+    </form>
+
     {# New/Edit tag form #}
     <div id="tag-form" class="card mb-4" style="display: none;">
       <div class="card-body">
@@ -40,6 +65,20 @@
               </div>
             </div>
           </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label">Föräldrar</label>
+              <div id="tag-parents-checkboxes" class="border rounded p-3 bg-light" style="max-height: 240px; overflow-y: auto;"></div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Barn</label>
+              <div id="tag-children-checkboxes" class="border rounded p-3 bg-light" style="max-height: 240px; overflow-y: auto;"></div>
+            </div>
+            <div class="col-12">
+              <small class="text-muted">Endast taggar i samma kategori kan kopplas. Relationerna får inte bilda cykler.</small>
+            </div>
+          </div>
           
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-success">Spara</button>
@@ -57,6 +96,7 @@
             <th>Namn</th>
             <th>Kategori</th>
             <th>Beskrivning</th>
+            <th>Relationer</th>
             <th class="text-center">Använd i artiklar</th>
             <th class="text-end">Åtgärder</th>
           </tr>
@@ -75,6 +115,16 @@
                 </span>
               </td>
               <td class="small">{{ tag.get('description') or '—' }}</td>
+              <td class="small">
+                {% set relations = tag.get('relations') or {} %}
+                {% if relations.get('parents') %}
+                  <div><span class="text-muted">Förälder:</span> {{ relations.get('parents')|map(attribute='name')|join(', ') }}</div>
+                {% endif %}
+                {% if relations.get('children') %}
+                  <div><span class="text-muted">Barn:</span> {{ relations.get('children')|map(attribute='name')|join(', ') }}</div>
+                {% endif %}
+                {% if not relations.get('parents') and not relations.get('children') %}—{% endif %}
+              </td>
               <td class="text-center">
                 <span class="badge bg-light text-dark">{{ tag.get('usage_count', 0) }}</span>
               </td>
@@ -90,10 +140,20 @@
           {% endfor %}
         </tbody>
       </table>
+
+      {% if tags %}
+        <p class="small text-muted mt-2 mb-0">
+          Visar {{ tags|length }} av {{ total_tag_count }} tagg{% if total_tag_count != 1 %}ar{% endif %}.
+        </p>
+      {% endif %}
       
       {% if not tags %}
         <div class="alert alert-info" role="alert">
-          Inga taggar ännu. <a href="#" onclick="showCreateForm(); return false;">Skapa en ny tagg</a>
+          {% if selected_category %}
+            Det finns inga taggar i den valda kategorin.
+          {% else %}
+            Inga taggar ännu. <a href="#" onclick="showCreateForm(); return false;">Skapa en ny tagg</a>
+          {% endif %}
         </div>
       {% endif %}
     </div>
@@ -103,6 +163,60 @@
 <script>
 let currentEditingTagId = null;
 let categoriesMap = {}; // name -> {id, name, label, bg_color, text_color}
+let allTagsForRelations = [];
+
+async function ensureRelationTagsLoaded() {
+  if (allTagsForRelations.length > 0) return;
+  const response = await fetch('/api/v1/tags');
+  if (!response.ok) throw new Error('Could not load tags');
+  const data = await response.json();
+  allTagsForRelations = data.tags || [];
+}
+
+function renderRelationOptions(currentTagId, category, relations) {
+  const selectedParents = new Set((relations.parents || []).map(tag => Number(tag.id ?? tag)));
+  const selectedChildren = new Set((relations.children || []).map(tag => Number(tag.id ?? tag)));
+  const candidates = allTagsForRelations
+    .filter(tag => Number(tag.id) !== Number(currentTagId) && (tag.category || 'GENERAL') === category)
+    .sort((a, b) => a.name.localeCompare(b.name, 'sv'));
+
+  const render = (containerId, cssClass, selected) => {
+    const container = document.getElementById(containerId);
+    container.innerHTML = '';
+    if (candidates.length === 0) {
+      container.innerHTML = '<small class="text-muted">Inga andra taggar i kategorin</small>';
+      return;
+    }
+    candidates.forEach(tag => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'form-check';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = `form-check-input ${cssClass}`;
+      checkbox.id = `${cssClass}-${tag.id}`;
+      checkbox.value = tag.id;
+      checkbox.checked = selected.has(Number(tag.id));
+      const label = document.createElement('label');
+      label.className = 'form-check-label small';
+      label.htmlFor = checkbox.id;
+      label.textContent = tag.name;
+      wrapper.append(checkbox, label);
+      container.appendChild(wrapper);
+    });
+  };
+
+  render('tag-parents-checkboxes', 'tag-parent-checkbox', selectedParents);
+  render('tag-children-checkboxes', 'tag-child-checkbox', selectedChildren);
+}
+
+async function loadRelationTagsForForm(currentTagId, category, relations = {}) {
+  try {
+    await ensureRelationTagsLoaded();
+    renderRelationOptions(currentTagId, category, relations);
+  } catch (error) {
+    console.error('Error loading tag relations:', error);
+  }
+}
 
 async function loadSynonymTagsForForm(currentTagName, currentSynonyms) {
   try {
@@ -252,6 +366,7 @@ async function showCreateForm() {
   document.getElementById('form-title').textContent = 'Ny tagg';
   document.getElementById('tag-form').style.display = 'block';
   await loadSynonymTagsForForm(null, []);
+  await loadRelationTagsForForm(null, document.getElementById('tag-category').value);
   document.getElementById('tag-name').focus();
 }
 
@@ -277,6 +392,7 @@ async function editTag(tagId) {
     document.getElementById('tag-category').value = tag.category || 'GENERAL';
     document.getElementById('tag-description').value = tag.description || '';
     const synonyms = tag.synonyms || [];
+    const relations = tag.relations || { parents: [], children: [] };
     document.getElementById('form-title').textContent = `Redigera "${tag.name}"`;
     document.getElementById('tag-form').style.display = 'block';
     
@@ -285,6 +401,7 @@ async function editTag(tagId) {
     
     // Load and render synonym tags with current synonyms selected
     await loadSynonymTagsForForm(tag.name, synonyms);
+    await loadRelationTagsForForm(tag.id, tag.category || 'GENERAL', relations);
     
     document.getElementById('tag-name').focus();
   } catch (error) {
@@ -304,6 +421,8 @@ async function saveTag(event) {
   // Collect selected synonym checkboxes
   const synonymCheckboxes = document.querySelectorAll('.tag-synonym-checkbox:checked');
   const synonyms = Array.from(synonymCheckboxes).map(cb => cb.value);
+  const parentIds = Array.from(document.querySelectorAll('.tag-parent-checkbox:checked')).map(cb => Number(cb.value));
+  const childIds = Array.from(document.querySelectorAll('.tag-child-checkbox:checked')).map(cb => Number(cb.value));
   
   if (!name) {
     alert('Taggnamn är obligatoriskt');
@@ -346,7 +465,7 @@ async function saveTag(event) {
       const response = await fetch(`/api/v1/tags/${tagId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, category, description, synonyms })
+        body: JSON.stringify({ name, category, description, synonyms, parent_ids: parentIds, child_ids: childIds })
       });
       
       if (!response.ok) {
@@ -365,7 +484,7 @@ async function saveTag(event) {
       const response = await fetch('/api/v1/tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, category, description, synonyms })
+        body: JSON.stringify({ name, category, description, synonyms, parent_ids: parentIds, child_ids: childIds })
       });
       
       if (!response.ok) {
@@ -428,6 +547,9 @@ function escapeHtml(text) {
 // Load categories when page loads
 document.addEventListener('DOMContentLoaded', function() {
   loadCategories();
+  document.getElementById('tag-category').addEventListener('change', event => {
+    renderRelationOptions(currentEditingTagId, event.target.value, {});
+  });
 });
 </script>
 {% endblock %}
