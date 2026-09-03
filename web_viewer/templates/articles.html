@@ -31,49 +31,52 @@
         {% endfor %}
       </ul>
     {% endif %}
-
-    {# Source filter section #}
     <div class="card mb-3">
       <details>
-        <summary class="card-title">Filtrera på källor</summary>
-        <div id="source-filter-container" class="d-flex flex-wrap gap-2">
-          <small class="text-muted">Laddar källor...</small>
+        <summary class="card-title">Filter</summary>
+        {# Source filter section #}
+        <div class="card mb-3">
+          <details>
+            <summary class="card-title">Filtrera på källor</summary>
+            <div id="source-filter-container" class="d-flex flex-wrap gap-2">
+              <small class="text-muted">Laddar källor...</small>
+            </div>
+            <div class="mt-2">
+              <small class="text-muted">Valda källor: <span id="selected-sources-count">0</span></small>
+              <button id="clear-source-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa källfilter</button>
+            </div>
+          </details>
         </div>
-        <div class="mt-2">
-          <small class="text-muted">Valda källor: <span id="selected-sources-count">0</span></small>
-          <button id="clear-source-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa källfilter</button>
+
+        {# Category filter section #}
+        <div class="card mb-3">
+          <details>
+            <summary class="card-title">Filtrera på kategori</summary>
+            <div id="category-filter-container" class="d-flex flex-wrap gap-2">
+              <small class="text-muted">Laddar kategorier...</small>
+            </div>
+            <div class="mt-2">
+              <small class="text-muted">Valda kategorier: <span id="selected-categories-count">0</span></small>
+              <button id="clear-category-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa kategori-filter</button>
+            </div>
+          </details>
+        </div>
+
+        {# Tag filter section #}
+        <div class="card mb-3">
+          <details>
+            <summary class="card-title">Filtrera på taggar</summary>
+            <div id="tag-filter-container" class="d-flex flex-wrap gap-2">
+              <small class="text-muted">Laddar taggar...</small>
+            </div>
+            <div class="mt-2">
+              <small class="text-muted">Valda taggar: <span id="selected-count">0</span></small>
+              <button id="clear-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa filter</button>
+            </div>
+          </details>
         </div>
       </details>
     </div>
-    
-    {# Category filter section #}
-    <div class="card mb-3">
-      <div class="card-body">
-        <h6 class="card-title">Filtrera på kategori</h6>
-        <div id="category-filter-container" class="d-flex flex-wrap gap-2">
-          <small class="text-muted">Laddar kategorier...</small>
-        </div>
-        <div class="mt-2">
-          <small class="text-muted">Valda kategorier: <span id="selected-categories-count">0</span></small>
-          <button id="clear-category-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa kategori-filter</button>
-        </div>
-      </div>
-    </div>
-
-    {# Tag filter section #}
-    <div class="card mb-3">
-      <details>
-        <summary class="card-title">Filtrera på taggar</summary>
-        <div id="tag-filter-container" class="d-flex flex-wrap gap-2">
-          <small class="text-muted">Laddar taggar...</small>
-        </div>
-        <div class="mt-2">
-          <small class="text-muted">Valda taggar: <span id="selected-count">0</span></small>
-          <button id="clear-filters" class="btn btn-sm btn-outline-secondary ms-2" style="display: none;">Rensa filter</button>
-        </div>
-      </details>
-    </div>
-    
     {# Article count #}
     <div class="mb-2">
       <small class="text-muted">
@@ -106,6 +109,7 @@
                 {% for tag in a.get('tags', []) %}
                   {% if tag is mapping %}
                     <span class="badge tag-badge tag-category-{{ tag.get('category') }}" 
+                          data-tag-id="{{ tag.get('id') }}"
                           data-tag-name="{{ tag.get('name') }}" 
                           data-category="{{ tag.get('category') }}"
                           style="cursor: pointer; font-size: 0.75rem;">
@@ -145,6 +149,8 @@ document.addEventListener('DOMContentLoaded', async function() {
   let selectedCategories = new Set();
   let selectedSources = new Set();
   let categoriesMap = new Map(); // category_name -> {bg_color, text_color, label}
+  const filterTags = {{ (tag_filter_tags or [])|tojson|safe }};
+  const tagDescendants = {{ (tag_filter_descendants or {})|tojson|safe }};
   
   // Load categories from API
   try {
@@ -182,7 +188,7 @@ document.addEventListener('DOMContentLoaded', async function() {
   console.log('[Articles.html] First article tags:', allArticles[0]?.tags);
   
   // Collect all unique tags
-  const tagsMap = new Map(); // tag_name -> tag_object
+  const tagsMap = new Map(); // tag_id -> tag_object
   const categoriesSet = new Set(); // category names
   const sourcesSet = new Set(); // source names
   
@@ -195,13 +201,18 @@ document.addEventListener('DOMContentLoaded', async function() {
       return;
     }
     article.tags.forEach(tag => {
-      if (!tagsMap.has(tag.name)) {
-        tagsMap.set(tag.name, tag);
-      }
       if (tag.category) {
         categoriesSet.add(tag.category);
       }
     });
+  });
+
+  filterTags.forEach(tag => {
+    const tagId = String(tag.id);
+    tagsMap.set(tagId, tag);
+    if (tag.category) {
+      categoriesSet.add(tag.category);
+    }
   });
   
   console.log('[Articles.html] tagsMap size:', tagsMap.size);
@@ -288,17 +299,19 @@ document.addEventListener('DOMContentLoaded', async function() {
     const btn = document.createElement('button');
     btn.className = 'btn btn-sm btn-outline-secondary tag-filter-btn';
     btn.textContent = tag.name;
+    btn.setAttribute('data-tag-id', String(tag.id));
     btn.setAttribute('data-tag-name', tag.name);
     btn.setAttribute('data-category', tag.category || 'GENERAL');
     btn.style.cursor = 'pointer';
 
     btn.addEventListener('click', function() {
-      if (selectedTags.has(tag.name)) {
-        selectedTags.delete(tag.name);
+      const tagId = String(tag.id);
+      if (selectedTags.has(tagId)) {
+        selectedTags.delete(tagId);
         btn.classList.remove('active', 'btn-secondary');
         btn.classList.add('btn-outline-secondary');
       } else {
-        selectedTags.add(tag.name);
+        selectedTags.add(tagId);
         btn.classList.remove('btn-outline-secondary');
         btn.classList.add('active', 'btn-secondary');
       }
@@ -330,7 +343,7 @@ document.addEventListener('DOMContentLoaded', async function() {
       }
 
       // A hidden tag must not keep filtering articles invisibly.
-      selectedTags.delete(btn.getAttribute('data-tag-name'));
+      selectedTags.delete(btn.getAttribute('data-tag-id'));
       btn.classList.remove('active', 'btn-secondary');
       btn.classList.add('btn-outline-secondary');
     });
@@ -363,6 +376,12 @@ document.addEventListener('DOMContentLoaded', async function() {
       document.getElementById('clear-source-filters').style.display = 'inline-block';
     }
     
+    const expandedSelectedTagIds = new Set();
+    selectedTags.forEach(tagId => {
+      const descendants = tagDescendants[tagId] || [tagId];
+      descendants.forEach(descendantId => expandedSelectedTagIds.add(String(descendantId)));
+    });
+
     let visibleCount = 0;
     allArticles.forEach(article => {
       let hasMatchingTag = true;
@@ -371,7 +390,9 @@ document.addEventListener('DOMContentLoaded', async function() {
       
       // Check tag filter
       if (selectedTags.size > 0) {
-        hasMatchingTag = article.tags.some(tag => selectedTags.has(tag.name));
+        hasMatchingTag = article.tags.some(
+          tag => expandedSelectedTagIds.has(String(tag.id))
+        );
       }
       
       // Check category filter
@@ -400,17 +421,17 @@ document.addEventListener('DOMContentLoaded', async function() {
   document.querySelectorAll('.tag-badge').forEach(badge => {
     badge.addEventListener('click', function(e) {
       e.stopPropagation();
-      const tagName = this.getAttribute('data-tag-name');
+      const tagId = this.getAttribute('data-tag-id');
       
-      if (selectedTags.has(tagName)) {
-        selectedTags.delete(tagName);
+      if (selectedTags.has(tagId)) {
+        selectedTags.delete(tagId);
       } else {
-        selectedTags.add(tagName);
+        selectedTags.add(tagId);
       }
       
       // Update button states
       document.querySelectorAll('.tag-filter-btn').forEach(btn => {
-        if (selectedTags.has(btn.getAttribute('data-tag-name'))) {
+        if (selectedTags.has(btn.getAttribute('data-tag-id'))) {
           btn.classList.remove('btn-outline-secondary');
           btn.classList.add('active', 'btn-secondary');
         } else {

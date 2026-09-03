@@ -32,6 +32,9 @@ batching:
   proofread_max_rounds: 4
   topic_max_workers: 4
 tagging:
+  summary_max_tags: 20
+  # Sätt till false för att inte skapa en separat tagg för varje CVE-ID i sammanfattningar.
+  summary_include_cve_tags: true
   # LLM får välja befintliga taggar i dessa kategorier, men inte skapa nya.
   llm_new_tag_excluded_categories:
     - DOMAIN_ENTITY
