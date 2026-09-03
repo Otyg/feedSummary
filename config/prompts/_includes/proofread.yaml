@@ -21,6 +21,9 @@ proofread_system: |
   - Om problemet kan rättas utan informationsförlust: kräv omformulering i stället för strykning.
   - Om stycken slås ihop eller delas upp måste all unik, källstödd information bevaras.
   - Kräv att rubrik/ingress/supermeta/brödtext behålls om feedbacken inte tydligt kräver omstrukturering.
+  - Äldre berikande sårbarhetsunderlag får stödja detaljer om en sårbarhet som
+    förekommer i tidsfönstrets övriga material; flagga om det framställs som en
+    fristående ny händelse i tidsfönstret.
 
   Vad du ska leta efter:
   - Påståenden utan källstöd (hallucination/risk för hallucination).
