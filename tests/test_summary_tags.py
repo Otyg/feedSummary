@@ -54,6 +54,15 @@ class _TagManager:
         ]
 
 
+class _CveReturningTagManager(_TagManager):
+    async def generate_tags_for_article(self, **kwargs):
+        self.calls.append(kwargs)
+        return [
+            {"id": 7, "name": "ransomware", "category": "THREAT"},
+            {"id": 8, "name": "CVE-2026-1234", "category": "VULNERABILITY"},
+        ]
+
+
 class SummaryTaggingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         _TagManager.calls.clear()
@@ -102,6 +111,26 @@ class SummaryTaggingTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual({"CVE-2026-1234", "CVE-2026-99999"}, cve_names)
         self.assertEqual(2, len(_TagManager.calls[1]["candidate_tags"]))
+
+    @patch("uicommon.summary_tags.TagManager", _CveReturningTagManager)
+    async def test_can_exclude_cve_tags_from_summaries(self):
+        store = _Store()
+        store.doc["title"] = "Status för CVE-2026-1234"
+        store.doc["summary"] = "CVE-2026-1234 och CVE-2026-99999 berörs."
+
+        tags = await tag_summary_doc(
+            store=store,
+            llm_client=object(),
+            config={"tagging": {"summary_include_cve_tags": False}},
+            summary_id="summary-1",
+        )
+
+        self.assertEqual(["ransomware"], [tag["name"] for tag in tags])
+        self.assertEqual(tags, store.doc["tags"])
+        self.assertEqual(1, len(_TagManager.calls))
+        article = _TagManager.calls[0]["article"]
+        self.assertEqual("Status för CVE-ID", article["title"])
+        self.assertEqual("CVE-ID och CVE-ID berörs.", article["content"])
 
     @patch("uicommon.summary_tags.TagManager", _TagManager)
     async def test_does_not_tag_an_already_tagged_summary_again(self):

@@ -216,6 +216,20 @@ batching:
 - `article_clip_chars`: klipper varje artikeltext.
 - `meta_*`: styr hur mycket som får plats i meta-steget.
 
+#### `tagging`
+
+Taggning av färdiga sammanfattningar:
+
+```yaml
+tagging:
+  summary_max_tags: 20
+  summary_include_cve_tags: false
+```
+
+- `summary_max_tags`: max antal vanliga taggar; CVE-taggar räknas inte in när de är aktiverade.
+- `summary_include_cve_tags`: sätt till `false` för att behålla CVE-ID:n i
+  sammanfattningstexten utan att skapa separata CVE-taggar.
+
 #### `llm`
 LLM-konfiguration anges som en lista där första posten är primary och efterföljande poster används som fallback i den ordning `feedsummary_core` förväntar sig:
 
@@ -368,6 +382,26 @@ tas även taggposter som helt saknar artikelkoppling bort:
 Med `--input-report` återanvänds den tidigare rapportens bedömningar och inga nya
 LLM-anrop görs. Rapportens artikel-ID, tagg-ID och taggnamn verifieras mot den aktuella
 databasen före varje borttagning.
+
+### Granska synonymer i en taggkategori
+
+`audit_tag_synonyms.py` går interaktivt igenom varje synonym i en vald kategori.
+En synonym kan behållas, hoppas över eller omvandlas till en egen barntagg i samma
+kategori.
+
+```bash
+.venv/bin/python audit_tag_synonyms.py \
+  --config config.yaml \
+  --category LOCATION \
+  --output tag-synonym-audit.json
+```
+
+När en barntagg skapas körs det befintliga förslagsflödet på artiklar som har
+föräldrataggen. Endast taggar ur den valda kategorin visas för modellen. Om barnet
+föreslås läggs det till innan föräldrataggen tas bort. Kategorin matchas
+skiftlägesokänsligt. Förhandsgranska besluten utan databasändringar eller LLM-anrop med
+`--dry-run`. Det äldre kommandot `audit_location_synonyms.py` finns kvar och använder
+`LOCATION` när `--category` utelämnas.
 
 ## Träna om produktionsmodellen helt
 

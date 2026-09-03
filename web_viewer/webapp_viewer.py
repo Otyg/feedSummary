@@ -659,6 +659,84 @@ def _article_list_item(a: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _article_tag_filter_tree(
+    store: Any,
+    articles: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Dict[str, List[str]]]:
+    """Return used tags plus ancestors and their transitive, relevant descendants."""
+    tags_by_id: Dict[int, Dict[str, Any]] = {}
+    descendants_by_id: Dict[int, set[int]] = {}
+    pending: List[int] = []
+
+    for article in articles:
+        for tag in article.get("tags", []) if isinstance(article, dict) else []:
+            if not isinstance(tag, dict):
+                continue
+            try:
+                tag_id = int(tag.get("id"))
+            except (TypeError, ValueError):
+                continue
+            tags_by_id[tag_id] = {
+                "id": tag_id,
+                "name": str(tag.get("name") or ""),
+                "category": str(tag.get("category") or "GENERAL"),
+            }
+            if tag_id not in descendants_by_id:
+                descendants_by_id[tag_id] = {tag_id}
+                pending.append(tag_id)
+
+    relation_reader = getattr(store, "get_tag_relations", None)
+    if callable(relation_reader):
+        relation_cache: Dict[int, List[Dict[str, Any]]] = {}
+        queued = set(pending)
+        while pending:
+            child_id = pending.pop()
+            queued.discard(child_id)
+            if child_id not in relation_cache:
+                try:
+                    relations = relation_reader(child_id) or {}
+                    relation_cache[child_id] = [
+                        parent
+                        for parent in relations.get("parents", [])
+                        if isinstance(parent, dict)
+                    ]
+                except Exception as exc:
+                    logger.debug(
+                        "Error loading tag parents for tag %s: %s", child_id, exc
+                    )
+                    relation_cache[child_id] = []
+
+            child_descendants = descendants_by_id.setdefault(child_id, {child_id})
+            for parent in relation_cache[child_id]:
+                try:
+                    parent_id = int(parent.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                tags_by_id[parent_id] = {
+                    "id": parent_id,
+                    "name": str(parent.get("name") or ""),
+                    "category": str(parent.get("category") or "GENERAL"),
+                }
+                parent_descendants = descendants_by_id.setdefault(
+                    parent_id, {parent_id}
+                )
+                previous_size = len(parent_descendants)
+                parent_descendants.update(child_descendants)
+                if len(parent_descendants) != previous_size and parent_id not in queued:
+                    pending.append(parent_id)
+                    queued.add(parent_id)
+
+    filter_tags = sorted(
+        tags_by_id.values(),
+        key=lambda tag: str(tag.get("name") or "").casefold(),
+    )
+    descendant_ids = {
+        str(tag_id): [str(item) for item in sorted(ids)]
+        for tag_id, ids in descendants_by_id.items()
+    }
+    return filter_tags, descendant_ids
+
+
 def _tag_id_key(value: Any) -> str:
     """Normalize tag identifiers so SQL, MongoDB and TinyDB values match."""
     try:
@@ -1582,10 +1660,15 @@ def list_articles():
                 active_articles.append(_article_list_item(a))
 
     active_articles.sort(key=_article_published_ts, reverse=True)
+    tag_filter_tags, tag_filter_descendants = _article_tag_filter_tree(
+        store, active_articles
+    )
 
     return render_template(
         "articles.html",
         articles=active_articles,
+        tag_filter_tags=tag_filter_tags,
+        tag_filter_descendants=tag_filter_descendants,
         date_tabs=date_tabs,
         date_counts=date_counts,
         total_article_count=(

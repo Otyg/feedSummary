@@ -38,7 +38,7 @@ import time
 from typing import Any, Dict, List
 
 from feedsummary_core.summarizer.tagging import TagManager
-from feedsummary_core.tagging_rules import CVE_PATTERN
+from feedsummary_core.tagging_rules import CVE_PATTERN, is_cve_tag
 
 
 DEFAULT_SUMMARY_MAX_TAGS = 20
@@ -76,6 +76,25 @@ def _summary_max_tags(config: Dict[str, Any], explicit: int | None) -> int:
         return max(1, int(tagging.get("summary_max_tags", DEFAULT_SUMMARY_MAX_TAGS)))
     except (TypeError, ValueError):
         return DEFAULT_SUMMARY_MAX_TAGS
+
+
+def _summary_include_cve_tags(config: Dict[str, Any]) -> bool:
+    tagging = config.get("tagging") if isinstance(config, dict) else None
+    tagging = tagging if isinstance(tagging, dict) else {}
+    value = tagging.get("summary_include_cve_tags", True)
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"false", "no", "off", "0"}:
+            return False
+        if normalized in {"true", "yes", "on", "1"}:
+            return True
+        return True
+    return bool(value)
+
+
+def _mask_cve_identifiers(text: str) -> str:
+    """Keep CVE context available to the tagger without exposing identifiers."""
+    return CVE_PATTERN.sub("CVE-ID", text or "")
 
 
 def _mentioned_cves(text: str) -> List[str]:
@@ -141,29 +160,35 @@ async def tag_summary_doc(
 
     tag_manager = TagManager(store, llm_client=llm_client)
     effective_max_tags = _summary_max_tags(config, max_tags)
+    include_cve_tags = _summary_include_cve_tags(config)
+    title = str(summary_doc.get("title") or "").strip()
+    tagger_title = title if include_cve_tags else _mask_cve_identifiers(title)
+    tagger_text = text if include_cve_tags else _mask_cve_identifiers(text)
     selected = await tag_manager.generate_tags_for_article(
         llm_client=llm_client,
         article={
             "id": sid,
-            "title": str(summary_doc.get("title") or "").strip(),
-            "content": text,
+            "title": tagger_title,
+            "content": tagger_text,
         },
         config=config,
         max_tags=effective_max_tags,
     )
 
-    # TagManager's LLM prompt intentionally truncates long input and limits its
-    # selected result. Extract CVEs from the complete summary separately so a
-    # CVE can never disappear merely because it occurred late in the document
-    # or because the normal tag budget was exhausted.
-    cve_candidates = [
-        {
-            "name": cve,
-            "type": "NAMED_ENTITY",
-            "reasoning": "CVE identifier mentioned in the summary.",
-        }
-        for cve in _mentioned_cves(text)
-    ]
+    # When CVE tags are enabled, extract them from the complete summary because
+    # TagManager's LLM prompt truncates long input and limits its selected result.
+    cve_candidates = (
+        [
+            {
+                "name": cve,
+                "type": "NAMED_ENTITY",
+                "reasoning": "CVE identifier mentioned in the summary.",
+            }
+            for cve in _mentioned_cves(text)
+        ]
+        if include_cve_tags
+        else []
+    )
     cve_tags = (
         await tag_manager.select_tags_for_article_async(
             article_id=sid,
@@ -174,6 +199,12 @@ async def tag_summary_doc(
         else []
     )
     selected = _merge_tags(selected, cve_tags)
+    if not include_cve_tags:
+        selected = [
+            tag
+            for tag in selected
+            if not isinstance(tag, dict) or not is_cve_tag(tag.get("name"))
+        ]
     tags = [
         _stored_tag(tag)
         for tag in selected
