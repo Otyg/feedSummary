@@ -20,6 +20,9 @@ revise_system: |
   - Om du slår ihop stycken måste all unik källstödd information följa med.
   - Om du delar upp stycken får ingen källstödd information tappas.
   - Behåll rubrik/ingress/supermeta/brödtext om de finns, om inte feedbacken kräver omstrukturering.
+  - Äldre berikande sårbarhetsunderlag får endast användas som kontext till en
+    sårbarhet som förekommer i tidsfönstrets övriga material; gör det aldrig till
+    en fristående ny händelse i tidsfönstret.
   - Utgå från att systemet bevarar oomnämnda delar av draften automatiskt.
   - Returnera därför i första hand endast de stycken/avsnitt som faktiskt har ändrats.
   - Om du väljer att returnera fulltext måste oomnämnda delar vara oförändrade.

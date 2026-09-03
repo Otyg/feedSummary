@@ -521,6 +521,11 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
     pp = str(entry.get("promptpackage") or "").strip()
     if pp:
         overrides["prompt_package"] = pp
+
+    enrich = entry.get("enrich")
+    if isinstance(enrich, bool):
+        overrides["enrich"] = enrich
+
     contents = entry.get("contents")
     if isinstance(contents, list) and contents:
         overrides["contents"] = contents
@@ -787,6 +792,7 @@ async def _run_regular_entry(
                 tag_names=tags,
                 lookback=lb,
                 prompt_package=overrides.get("prompt_package"),
+                enrich=bool(overrides.get("enrich")),
                 config_dict=cfg,
             )
             log.info("Job '%s' OK (tag_based_summary) summary_id=%s", job_name, summary_id)

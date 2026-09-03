@@ -80,6 +80,20 @@ summary_vulnerabilities:
     - "Vulnerability"
   lookback: "1w"
   promptpackage: "weekly_hybrid_news_cyber_tech_se"
+
+# Enrich can be enabled on summary jobs. Vulnerability-feed articles are then
+# included only when they share a specific VULNERABILITY tag with an in-window
+# primary article. Matching vulnerability material may be older than lookback.
+summary_enriched_threats:
+  frequency: "daily"
+  time: "08:30"
+  type: "tag_based_summary"
+  tags:
+    - "incident"
+    - "cyberattack"
+  lookback: "1d"
+  enrich: true
+  promptpackage: "daily_threat_landscape_healthcare_europe_se"
 Inrikes:
   frequency: "triggered"
   lookback: "1d"
