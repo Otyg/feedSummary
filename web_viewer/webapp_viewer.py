@@ -36,12 +36,24 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import format_datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from functools import lru_cache
+from xml.etree import ElementTree
+
 import markdown as md
-from flask import Flask, abort, redirect, render_template, request, url_for, jsonify
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from werkzeug.middleware.proxy_fix import ProxyFix
 import requests
 import yaml
@@ -70,6 +82,9 @@ from uicommon.proofread_rounds import _strip_proofread_feedback_from_summary
 
 
 logger = logging.getLogger(__name__)
+
+RSS_ATOM_NS = "http://www.w3.org/2005/Atom"
+ElementTree.register_namespace("atom", RSS_ATOM_NS)
 
 # Use absolute paths so templates/static work no matter working directory
 BASE_DIR = Path(__file__).resolve().parent
@@ -157,7 +172,7 @@ def _abspath_cfg_paths(cfg: Dict[str, Any], config_path: str) -> Dict[str, Any]:
     return cfg2
 
 
-def init_app_state(config_path: str) -> None:
+def init_app_state(config_path: str, *, initialize_categories: bool = True) -> None:
     global APP_CONFIG_PATH, APP_CFG, APP_STORE
     APP_CONFIG_PATH = str(Path(config_path).resolve())
     raw = load_config(APP_CONFIG_PATH)
@@ -168,16 +183,97 @@ def init_app_state(config_path: str) -> None:
     logger.info("Viewer config loaded: %s", APP_CONFIG_PATH)
     logger.info("Resolved store path: %s", sp)
     
-    # Initialize default tag categories
-    try:
-        APP_STORE.initialize_default_categories()
-        logger.info("Tag categories initialized")
-    except Exception as e:
-        logger.error("Error initializing categories: %s", e)
+    if initialize_categories:
+        # The regular viewer also serves the tag/category editors and therefore
+        # keeps their default metadata initialized. The read-only viewer opts
+        # out so its startup path does not deliberately mutate application data.
+        try:
+            APP_STORE.initialize_default_categories()
+            logger.info("Tag categories initialized")
+        except Exception as e:
+            logger.error("Error initializing categories: %s", e)
 
 
 def _md_to_html(text: str) -> str:
     return md.markdown(text or "", extensions=["extra"])
+
+
+_INVALID_XML_CHARS = re.compile(
+    "[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]"
+)
+
+
+def _xml_safe_text(value: Any) -> str:
+    """Remove characters that XML 1.0 cannot represent."""
+    return _INVALID_XML_CHARS.sub("", str(value or ""))
+
+
+def _rss_pub_date(value: Any) -> str:
+    timestamp = _coerce_positive_ts(value)
+    if timestamp <= 0:
+        return ""
+    try:
+        published = datetime.fromtimestamp(timestamp, timezone.utc)
+        return format_datetime(published, usegmt=True)
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _rss_limit(default: int = 100, maximum: int = 500) -> int:
+    try:
+        value = int(request.args.get("limit", str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
+def _rss_response(
+    *,
+    title: str,
+    link: str,
+    description: str,
+    self_url: str,
+    items: List[Dict[str, str]],
+) -> Response:
+    rss = ElementTree.Element(
+        "rss",
+        {"version": "2.0"},
+    )
+    channel = ElementTree.SubElement(rss, "channel")
+    ElementTree.SubElement(channel, "title").text = _xml_safe_text(title)
+    ElementTree.SubElement(channel, "link").text = _xml_safe_text(link)
+    ElementTree.SubElement(channel, "description").text = _xml_safe_text(description)
+    ElementTree.SubElement(channel, "language").text = "sv"
+    ElementTree.SubElement(
+        channel,
+        f"{{{RSS_ATOM_NS}}}link",
+        {"href": self_url, "rel": "self", "type": "application/rss+xml"},
+    )
+
+    if items and items[0].get("pub_date"):
+        ElementTree.SubElement(channel, "lastBuildDate").text = items[0]["pub_date"]
+
+    for item_data in items:
+        item = ElementTree.SubElement(channel, "item")
+        ElementTree.SubElement(item, "title").text = _xml_safe_text(
+            item_data.get("title")
+        )
+        ElementTree.SubElement(item, "link").text = _xml_safe_text(
+            item_data.get("link")
+        )
+        ElementTree.SubElement(
+            item,
+            "guid",
+            {"isPermaLink": item_data.get("guid_is_permalink", "true")},
+        ).text = _xml_safe_text(item_data.get("guid"))
+        if item_data.get("pub_date"):
+            ElementTree.SubElement(item, "pubDate").text = item_data["pub_date"]
+        ElementTree.SubElement(item, "description").text = _xml_safe_text(
+            item_data.get("description")
+        )
+
+    payload = ElementTree.tostring(rss, encoding="utf-8", xml_declaration=True)
+    return Response(payload, content_type="application/rss+xml; charset=utf-8")
 
 
 def _has_proofread_audit_data(d: Dict[str, Any]) -> bool:
@@ -1319,6 +1415,107 @@ def api_article(article_id: str):
     
     a["tags"] = tags
     return jsonify({"item": a})
+
+
+@app.route("/rss/summaries.xml")
+def rss_summaries():
+    """RSS 2.0 feed containing the latest published summaries."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    docs = store.list_summary_docs() or []
+    docs = [doc for doc in docs if isinstance(doc, dict) and doc.get("id")]
+    docs.sort(key=lambda doc: _coerce_positive_ts(doc.get("created")), reverse=True)
+
+    items: List[Dict[str, str]] = []
+    for listed_doc in docs[: _rss_limit()]:
+        summary_id = str(listed_doc.get("id") or "").strip()
+        try:
+            full_doc = store.get_summary_doc(summary_id)
+        except Exception:
+            full_doc = None
+        doc = full_doc if isinstance(full_doc, dict) else listed_doc
+        item_url = url_for(
+            "view_summary", summary_id=summary_id, _external=True
+        )
+        created = _coerce_positive_ts(doc.get("created"))
+        title = str(doc.get("title") or "").strip()
+        if not title:
+            title = (
+                f"Sammanfattning {format_ts(int(created))}"
+                if created
+                else summary_id
+            )
+        summary_text = str(
+            doc.get("summary") or doc.get("proofread_published_summary") or ""
+        ).strip()
+        items.append(
+            {
+                "title": title,
+                "link": item_url,
+                "guid": item_url,
+                "pub_date": _rss_pub_date(created),
+                "description": _md_to_html(summary_text),
+            }
+        )
+
+    return _rss_response(
+        title="FeedSummary – sammanfattningar",
+        link=url_for("index", _external=True),
+        description="De senaste publicerade sammanfattningarna från FeedSummary.",
+        self_url=url_for("rss_summaries", _external=True),
+        items=items,
+    )
+
+
+@app.route("/rss/articles.xml")
+def rss_articles():
+    """RSS 2.0 feed containing the latest collected articles."""
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    limit = _rss_limit()
+    try:
+        raw_articles = store.list_articles(limit=limit) or []
+    except TypeError:
+        raw_articles = (store.list_articles() or [])[:limit]
+    articles = [
+        article
+        for article in raw_articles
+        if isinstance(article, dict) and article.get("id")
+    ]
+    articles.sort(key=_article_published_ts, reverse=True)
+
+    items: List[Dict[str, str]] = []
+    for article in articles[:limit]:
+        article_id = str(article.get("id") or "").strip()
+        viewer_url = url_for("view_article", article_id=article_id, _external=True)
+        original_url = str(article.get("url") or "").strip()
+        published = _article_published_ts(article) or _coerce_positive_ts(
+            article.get("fetched_at")
+        )
+        text = str(article.get("text") or article.get("preview") or "").strip()
+        source = str(article.get("source") or "").strip()
+        description = f"Källa: {source}\n\n{text}" if source else text
+        items.append(
+            {
+                "title": str(article.get("title") or article_id),
+                "link": original_url or viewer_url,
+                "guid": viewer_url,
+                "pub_date": _rss_pub_date(published),
+                "description": description,
+            }
+        )
+
+    return _rss_response(
+        title="FeedSummary – artiklar",
+        link=url_for("list_articles", _external=True),
+        description="De senaste insamlade artiklarna från FeedSummary.",
+        self_url=url_for("rss_articles", _external=True),
+        items=items,
+    )
 
 
 @app.route("/api/v1/pages/source")
@@ -2630,7 +2827,8 @@ def _wsgi_init_once() -> None:
     init_app_state(cfg_path)
 
 
-_wsgi_init_once()
+if os.environ.get("FEEDSUMMARY_SKIP_VIEWER_AUTO_INIT") != "1":
+    _wsgi_init_once()
 
 
 # ---- Dev entrypoint (optional) ----

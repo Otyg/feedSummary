@@ -4,7 +4,9 @@
   <div class="col-12">
     <div class="d-flex justify-content-between align-items-center mb-4">
       <h2>Taggar</h2>
-      <button class="btn btn-primary" onclick="showCreateForm()">Ny tagg</button>
+      {% if not read_only %}
+        <button class="btn btn-primary" onclick="showCreateForm()">Ny tagg</button>
+      {% endif %}
     </div>
 
     <form class="card card-body mb-4" method="get" action="{{ url_for('manage_tags') }}">
@@ -32,8 +34,9 @@
       </div>
     </form>
 
-    {# New/Edit tag form #}
-    <div id="tag-form" class="card mb-4" style="display: none;">
+    {% if not read_only %}
+      {# New/Edit tag form #}
+      <div id="tag-form" class="card mb-4" style="display: none;">
       <div class="card-body">
         <h5 class="card-title" id="form-title">Ny tagg</h5>
         <form id="edit-form" onsubmit="saveTag(event)">
@@ -86,7 +89,8 @@
           </div>
         </form>
       </div>
-    </div>
+      </div>
+    {% endif %}
 
     {# Tags table #}
     <div class="table-responsive">
@@ -98,7 +102,7 @@
             <th>Beskrivning</th>
             <th>Relationer</th>
             <th class="text-center">Använd i artiklar</th>
-            <th class="text-end">Åtgärder</th>
+            {% if not read_only %}<th class="text-end">Åtgärder</th>{% endif %}
           </tr>
         </thead>
         <tbody id="tags-tbody">
@@ -128,14 +132,16 @@
               <td class="text-center">
                 <span class="badge bg-light text-dark">{{ tag.get('usage_count', 0) }}</span>
               </td>
-              <td class="text-end">
-                <button class="btn btn-sm btn-outline-primary" onclick="editTag({{ tag.get('id') }})">
-                  Redigera
-                </button>
-                <button class="btn btn-sm btn-outline-danger" onclick="deleteTag({{ tag.get('id') }}, {{ tag.get('name')|tojson }}, {{ tag.get('usage_count', 0) }})">
-                  Radera
-                </button>
-              </td>
+              {% if not read_only %}
+                <td class="text-end">
+                  <button class="btn btn-sm btn-outline-primary" onclick="editTag({{ tag.get('id') }})">
+                    Redigera
+                  </button>
+                  <button class="btn btn-sm btn-outline-danger" onclick="deleteTag({{ tag.get('id') }}, {{ tag.get('name')|tojson }}, {{ tag.get('usage_count', 0) }})">
+                    Radera
+                  </button>
+                </td>
+              {% endif %}
             </tr>
           {% endfor %}
         </tbody>
@@ -152,7 +158,7 @@
           {% if selected_category %}
             Det finns inga taggar i den valda kategorin.
           {% else %}
-            Inga taggar ännu. <a href="#" onclick="showCreateForm(); return false;">Skapa en ny tagg</a>
+            Inga taggar ännu.{% if not read_only %} <a href="#" onclick="showCreateForm(); return false;">Skapa en ny tagg</a>{% endif %}
           {% endif %}
         </div>
       {% endif %}
@@ -160,6 +166,7 @@
   </div>
 </div>
 
+{% if not read_only %}
 <script>
 let currentEditingTagId = null;
 let categoriesMap = {}; // name -> {id, name, label, bg_color, text_color}
@@ -552,4 +559,5 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 });
 </script>
+{% endif %}
 {% endblock %}
