@@ -25,10 +25,12 @@
                       data-category="{{ tag.get('category') }}"
                       style="cursor: default; position: relative; display: inline-block; padding: 0.5em 0.75em;">
                   {{ tag.get('name') }}
-                  <button type="button" class="btn-close btn-close-sm" 
-                          onclick="removeTag({{ tag.get('id') }})" 
-                          style="position: absolute; right: -5px; top: -5px; width: 1.2em; height: 1.2em;"
-                          title="Removetagg"></button>
+                  {% if not read_only %}
+                    <button type="button" class="btn-close btn-close-sm"
+                            onclick="removeTag({{ tag.get('id') }})"
+                            style="position: absolute; right: -5px; top: -5px; width: 1.2em; height: 1.2em;"
+                            title="Ta bort tagg"></button>
+                  {% endif %}
                 </span>
               {% endif %}
             {% endfor %}
@@ -49,31 +51,33 @@
             </div>
           </details>
           
-          <div class="input-group input-group-sm mb-2">
-            <input type="text" id="tag-input" class="form-control" placeholder="Lägg till befintlig tagg eller ny...">
-            <button class="btn btn-outline-primary" type="button" onclick="addOrCreateTag()">Lägg till</button>
-          </div>
-          
-          <button class="btn btn-sm btn-outline-info w-100 mb-2" type="button" onclick="reclassifyWithExistingTags()" id="reclassify-btn">
-            🔄 Föreslå taggar från befintliga
-          </button>
-          <div id="reclassify-suggestions" style="display: none; margin-top: 1rem; padding: 0.75rem; background-color: #f8f9fa; border-radius: 0.25rem; border-left: 3px solid #17a2b8;">
-            <div style="margin-bottom: 0.75rem;">
-              <strong>Föreslagna taggar:</strong>
-              <small id="reclassify-loading" style="display: none; margin-left: 0.5rem;">
-                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Hämtar förslag...
-              </small>
+          {% if not read_only %}
+            <div class="input-group input-group-sm mb-2">
+              <input type="text" id="tag-input" class="form-control" placeholder="Lägg till befintlig tagg eller ny...">
+              <button class="btn btn-outline-primary" type="button" onclick="addOrCreateTag()">Lägg till</button>
             </div>
-            <div id="reclassify-suggestions-list"></div>
-            <div style="margin-top: 0.75rem; text-align: right;">
-              <button class="btn btn-sm btn-outline-secondary" type="button" onclick="closeSuggestions()">Stäng</button>
+
+            <button class="btn btn-sm btn-outline-info w-100 mb-2" type="button" onclick="reclassifyWithExistingTags()" id="reclassify-btn">
+              🔄 Föreslå taggar från befintliga
+            </button>
+            <div id="reclassify-suggestions" style="display: none; margin-top: 1rem; padding: 0.75rem; background-color: #f8f9fa; border-radius: 0.25rem; border-left: 3px solid #17a2b8;">
+              <div style="margin-bottom: 0.75rem;">
+                <strong>Föreslagna taggar:</strong>
+                <small id="reclassify-loading" style="display: none; margin-left: 0.5rem;">
+                  <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Hämtar förslag...
+                </small>
+              </div>
+              <div id="reclassify-suggestions-list"></div>
+              <div style="margin-top: 0.75rem; text-align: right;">
+                <button class="btn btn-sm btn-outline-secondary" type="button" onclick="closeSuggestions()">Stäng</button>
+              </div>
             </div>
-          </div>
-          
-          <div id="tag-suggestions" class="mt-2" style="display: none; max-height: 200px; overflow-y: auto;">
-            <small class="text-muted">Förslag:</small>
-            <div id="suggestions-list" class="mt-1"></div>
-          </div>
+
+            <div id="tag-suggestions" class="mt-2" style="display: none; max-height: 200px; overflow-y: auto;">
+              <small class="text-muted">Förslag:</small>
+              <div id="suggestions-list" class="mt-1"></div>
+            </div>
+          {% endif %}
         </div>
       </div>
       <div>
@@ -93,8 +97,10 @@ window.categoriesMap = new Map(); // category_name -> {bg_color, text_color, lab
 // Load all tags and categories on page load
 document.addEventListener('DOMContentLoaded', async function() {
   await loadCategories();
-  await loadAllTags();
-  setupTagInput();
+  {% if not read_only %}
+    await loadAllTags();
+    setupTagInput();
+  {% endif %}
   applyCategoriesToExistingTags();
 });
 
@@ -130,6 +136,7 @@ function applyCategoriesToExistingTags() {
   });
 }
 
+{% if not read_only %}
 async function loadAllTags() {
   try {
     const response = await fetch('/api/v1/tags');
@@ -397,5 +404,6 @@ function closeSuggestions() {
   document.getElementById('reclassify-suggestions').style.display = 'none';
   document.getElementById('reclassify-btn').disabled = false;
 }
+{% endif %}
 </script>
 {% endblock %}

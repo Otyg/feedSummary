@@ -70,6 +70,30 @@ Du kan peka på en annan config med env-var:
 FEEDSUMMARY_CONFIG=/path/till/config.yaml python webapp.py
 ```
 
+### Read-only-variant
+
+Den separata read-only-appen återanvänder samma templates och läs-API:er. Alla
+registrerade tagg- och kategoriändringar svarar med HTTP 401. Worker-status,
+återupptagning och schematrigger finns inte i denna variant.
+
+```bash
+python -m web_viewer.webapp_viewer_readonly --config config.yaml --port 5001
+```
+
+För WSGI kan appen laddas som
+`web_viewer.webapp_viewer_readonly:app`. `FEEDSUMMARY_CONFIG` stöds på samma
+sätt som i den vanliga viewern.
+
+### RSS
+
+Det finns två RSS 2.0-feeds som fungerar i både den vanliga viewern och
+read-only-varianten:
+
+- `/rss/summaries.xml` för sammanfattningar
+- `/rss/articles.xml` för artiklar
+
+Antalet poster kan begränsas med exempelvis `?limit=50` (högst 500).
+
 ---
 
 ## Hur UI:t fungerar
