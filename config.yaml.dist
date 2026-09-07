@@ -69,6 +69,49 @@ tagging:
     embedding_text_chars: 2000
     embedding_max_concurrency: 4
     max_shared_tags: 1
+long_term_analysis:
+  # Aktiveras först efter kalibrering och shadow-körning enligt config/long_term.md.
+  enabled: false
+  schema_version: 1
+  batch_size: 200
+  quarantine_retry_limit: 50
+  retention_days: 730
+  map_lease_seconds: 1800
+  report_lease_seconds: 3600
+  llm:
+    map_provider: local
+    reduce_provider: configured_chain
+    map_max_output_tokens: 1200
+    reduce_max_output_tokens: 2500
+  clustering:
+    embedding_purpose: similarity
+    similarity_threshold: 0.80
+    ambiguity_margin: 0.03
+    candidate_window_days: 60
+    dormant_after_days: 30
+    close_after_days: 180
+  cluster_updates:
+    min_pending_articles: 3
+    max_update_delay_hours: 24
+    max_articles_per_call: 12
+    article_clip_chars: 2500
+  reports:
+    mirror_to_summary_docs: true
+    windows_days: [7, 30, 90]
+    bucket_days: 7
+    forecast_horizon_days: [30, 90]
+    min_independent_events_for_trend: 3
+    source_concentration_threshold: 0.75
+    source_mix_change_threshold: 0.35
+    max_clusters: 10000
+    max_memberships_per_cluster: 10000
+    max_snapshots_per_segment: 12
+    max_snapshot_records: 10000
+  profiles:
+    healthcare_europe:
+      enabled: true
+      categories: [Cybersecurity, Dataskydd, Breaches, Sårbarheter]
+      priority_tags: [Europe, healthcare]
 cleanup:
   enabled: true
   run_every_minutes: 60

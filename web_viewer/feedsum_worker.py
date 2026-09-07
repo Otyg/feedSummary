@@ -32,38 +32,42 @@
 
 import argparse
 import asyncio
-from collections import deque
 import datetime as dt
+import hashlib
 import inspect
 import json
 import logging
 import os
-import time
+import socket
 import sys
 import threading
+import time
 import uuid
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-
+from feedsummary_core.llm_client import create_llm_client
+from feedsummary_core.persistence import create_store
 from feedsummary_core.summarizer.main import (
     _build_composed_summary_text,
     _strip_sources_appendix_from_summary,
-    run_pipeline,
-    run_resume_job,
     compose_summary_docs,
     run_fetch_and_tag,
+    run_pipeline,
+    run_resume_job,
     run_tag_based_summary,
 )
+
+from run_long_term_clustering import execute_long_term_clustering
+from run_long_term_map import execute_long_term_map
+from run_long_term_report import execute_long_term_report
 from uicommon import load_config
 from uicommon.proofread_rounds import enable_configurable_proofread_rounds
 from uicommon.summary_tags import tag_summary_doc_safe
-
-from feedsummary_core.persistence import create_store
-from feedsummary_core.llm_client import create_llm_client
 
 try:
     from feedsummary_core.persistence import CleanupPolicy  # type: ignore
@@ -88,6 +92,22 @@ global RUNNING_JOB_LOCK
 RUNNING_JOB_ID: Optional[int] = None
 RUNNING_JOB_LOCK = threading.Lock()
 WORKER_LOG_FILE: Optional[Path] = None
+
+LONG_TERM_JOB_TYPES = frozenset(
+    {
+        "long_term_clustering",
+        "long_term_map",
+        "long_term_report",
+        "long_term_pipeline",
+    }
+)
+LONG_TERM_TRIGGER_OVERRIDE_FIELDS = frozenset(
+    {"profile", "since", "until", "at", "limit", "map_limit", "cluster", "force"}
+)
+
+
+class LongTermWorkerBlocked(RuntimeError):
+    """A resumable long-term stage stopped on a recorded input blocker."""
 
 
 def _supports_composed_proofread() -> bool:
@@ -529,6 +549,9 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
     contents = entry.get("contents")
     if isinstance(contents, list) and contents:
         overrides["contents"] = contents
+    for key in LONG_TERM_TRIGGER_OVERRIDE_FIELDS:
+        if key in entry:
+            overrides[key] = entry[key]
     # Handle tags for tag-based summary
     tags = entry.get("tags") or []
     if isinstance(tags, list):
@@ -537,6 +560,22 @@ def _entry_to_overrides(entry: Dict[str, Any]) -> Dict[str, Any]:
             overrides["tags"] = tag_names
 
     return overrides
+
+
+def _merge_trigger_overrides(
+    entry: Dict[str, Any], runtime_overrides: Dict[str, Any] | None
+) -> Dict[str, Any]:
+    merged = dict(entry)
+    if not runtime_overrides:
+        return merged
+    schedule_type = str(entry.get("type") or "").strip().lower()
+    if schedule_type not in LONG_TERM_JOB_TYPES:
+        raise ValueError("Körningsoverride stöds endast för långtidsjobb")
+    unknown = sorted(set(runtime_overrides) - LONG_TERM_TRIGGER_OVERRIDE_FIELDS)
+    if unknown:
+        raise ValueError(f"Otillåtna långtids-overrides: {', '.join(unknown)}")
+    merged.update(runtime_overrides)
+    return merged
 
 
 def _parse_contents_block(
@@ -745,6 +784,204 @@ async def _tag_created_summary(
     )
 
 
+def _long_term_profile(entry: Dict[str, Any]) -> str:
+    profile = str(entry.get("profile") or "").strip()
+    if not profile:
+        raise ValueError("Långtidsjobb kräver fältet 'profile'")
+    return profile
+
+
+def _long_term_config_hash(cfg: Dict[str, Any]) -> str:
+    material = json.dumps(
+        cfg.get("long_term_analysis") or {},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _positive_entry_limit(entry: Dict[str, Any], key: str, default: int) -> int:
+    value = int(entry.get(key, default))
+    if value < 1:
+        raise ValueError(f"Långtidsjobbets '{key}' måste vara positivt")
+    return value
+
+
+def _compact_long_term_result(stage: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    if stage == "clustering":
+        return {
+            key: value
+            for key, value in result.items()
+            if key != "assignments"
+        }
+    if stage == "map":
+        updates = result.get("updates") or []
+        return {
+            "profile_id": result.get("profile_id"),
+            "dry_run": bool(result.get("dry_run")),
+            "update_count": len(updates),
+            "updates": updates,
+        }
+    return dict(result)
+
+
+async def _run_long_term_entry(
+    *,
+    config_path: str,
+    cfg: Dict[str, Any],
+    store,
+    job_id: int,
+    job_name: str,
+    entry: Dict[str, Any],
+) -> Dict[str, Any]:
+    schedule_type = str(entry.get("type") or "").strip().lower()
+    if schedule_type not in LONG_TERM_JOB_TYPES:
+        raise ValueError(f"Okänd långtidsjobbtyp: {schedule_type}")
+    long_term = cfg.get("long_term_analysis")
+    if not isinstance(long_term, dict) or not long_term.get("enabled", False):
+        raise ValueError("long_term_analysis.enabled är false")
+    profile = _long_term_profile(entry)
+    dry_run = entry.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        raise TypeError("Långtidsjobbets 'dry_run' måste vara boolean")
+    force = entry.get("force", False)
+    if not isinstance(force, bool):
+        raise TypeError("Långtidsjobbets 'force' måste vara boolean")
+
+    stage_names = {
+        "long_term_clustering": ("clustering",),
+        "long_term_map": ("map",),
+        "long_term_report": ("report",),
+        "long_term_pipeline": ("clustering", "map", "report"),
+    }[schedule_type]
+    now_ts = int(time.time())
+    run_id = f"long_term_worker_run_{uuid.uuid4().hex}"
+    run_created = False
+    if not dry_run:
+        run_created = store.create_long_term_run(
+            {
+                "id": run_id,
+                "profile_id": profile,
+                "run_type": schedule_type,
+                "status": "running",
+                "started_at": now_ts,
+                "job_id": int(job_id),
+                "schedule_name": str(job_name),
+                "config_hash": _long_term_config_hash(cfg),
+                "stages": list(stage_names),
+            }
+        )
+        if not run_created:
+            raise RuntimeError("Kunde inte skapa statuspost för långtidsjobbet")
+
+    stage_results: Dict[str, Any] = {}
+    current_stage = stage_names[0]
+    owner_prefix = f"{socket.gethostname()}:{os.getpid()}:worker:{run_id}"
+    resolved_path = Path(config_path).resolve()
+    try:
+        for current_stage in stage_names:
+            if run_created:
+                updated = store.update_long_term_run(
+                    run_id,
+                    expected_status="running",
+                    fields={"stage": current_stage},
+                )
+                if not updated:
+                    raise RuntimeError(
+                        "Kunde inte uppdatera långtidsjobbets aktuella fas"
+                    )
+            if current_stage == "clustering":
+                result = execute_long_term_clustering(
+                    argparse.Namespace(
+                        config=config_path,
+                        profile=profile,
+                        limit=entry.get("limit"),
+                        since=entry.get("since"),
+                        until=entry.get("until"),
+                        dry_run=dry_run,
+                        owner_id=f"{owner_prefix}:clustering",
+                    ),
+                    config_path=resolved_path,
+                    config=cfg,
+                    store=store,
+                )
+                if result.get("blocked_reason"):
+                    raise LongTermWorkerBlocked(str(result["blocked_reason"]))
+            elif current_stage == "map":
+                result = await execute_long_term_map(
+                    argparse.Namespace(
+                        config=config_path,
+                        profile=profile,
+                        cluster=entry.get("cluster"),
+                        limit=_positive_entry_limit(entry, "map_limit", 20),
+                        force=force,
+                        dry_run=dry_run,
+                        owner_id=f"{owner_prefix}:map",
+                    ),
+                    config_path=resolved_path,
+                    config=cfg,
+                    store=store,
+                )
+            else:
+                result = await execute_long_term_report(
+                    argparse.Namespace(
+                        config=config_path,
+                        profile=profile,
+                        at=entry.get("at"),
+                        dry_run=dry_run,
+                        owner_id=f"{owner_prefix}:report",
+                    ),
+                    config_path=resolved_path,
+                    config=cfg,
+                    store=store,
+                )
+            stage_results[current_stage] = _compact_long_term_result(
+                current_stage, result
+            )
+
+        if run_created:
+            updated = store.update_long_term_run(
+                run_id,
+                expected_status="running",
+                fields={
+                    "status": "done",
+                    "stage": "done",
+                    "finished_at": int(time.time()),
+                    "results": stage_results,
+                },
+            )
+            if not updated:
+                raise RuntimeError("Kunde inte slutföra långtidsjobbets statuspost")
+        report_result = stage_results.get("report") or {}
+        return {
+            "run_id": run_id if run_created else None,
+            "profile_id": profile,
+            "dry_run": dry_run,
+            "stages": stage_results,
+            "report_id": report_result.get("report_id"),
+        }
+    except Exception as error:
+        if run_created:
+            status = "blocked" if isinstance(error, LongTermWorkerBlocked) else "failed"
+            updated = store.update_long_term_run(
+                run_id,
+                expected_status="running",
+                fields={
+                    "status": status,
+                    "stage": current_stage,
+                    "finished_at": int(time.time()),
+                    "error_type": type(error).__name__,
+                    "error": str(error)[:1000],
+                    "results": stage_results,
+                },
+            )
+            if not updated:
+                log.error("Kunde inte uppdatera långtidskörning %s efter fel", run_id)
+        raise
+
+
 async def _run_regular_entry(
     config_path: str,
     cfg: Dict[str, Any],
@@ -767,6 +1004,39 @@ async def _run_regular_entry(
             "Running job '%s' (id: %s) type=%s overrides=%s", 
             job_name, str(job_id), schedule_type, overrides
         )
+
+        if schedule_type in LONG_TERM_JOB_TYPES:
+            store.update_job(
+                job_id,
+                status="running",
+                started_at=int(time.time()),
+                message=f"Startar långtidsjobb '{job_name}'...",
+            )
+            outcome = await _run_long_term_entry(
+                config_path=config_path,
+                cfg=cfg,
+                store=store,
+                job_id=job_id,
+                job_name=job_name,
+                entry=entry,
+            )
+            result_id = str(outcome.get("report_id") or outcome.get("run_id") or "")
+            store.update_job(
+                job_id,
+                status="done",
+                finished_at=int(time.time()),
+                message=f"Klart: långtidsjobb '{job_name}' färdigt.",
+                summary_id=result_id or None,
+                long_term_run_id=outcome.get("run_id"),
+            )
+            log.info(
+                "Job '%s' OK (%s) profile=%s result_id=%s",
+                job_name,
+                schedule_type,
+                outcome["profile_id"],
+                result_id,
+            )
+            return result_id
 
         if schedule_type == "fetch_and_tag":
             # Fetch and tag articles only, no summarization
@@ -814,7 +1084,17 @@ async def _run_regular_entry(
         log.info("Job '%s' OK summary_id=%s", job_name, summary_id)
         return sid
 
-    except Exception:
+    except Exception as error:
+        if job_id is not None and schedule_type in LONG_TERM_JOB_TYPES:
+            try:
+                store.update_job(
+                    job_id,
+                    status="failed",
+                    finished_at=int(time.time()),
+                    message=f"Fel i långtidsjobb: {str(error)[:1000]}",
+                )
+            except Exception:
+                log.exception("Kunde inte felmarkera workerjobb %s", job_id)
         log.exception("Job '%s' failed", job_name)
         raise
 
@@ -1203,9 +1483,15 @@ class _WorkerControlHandler(BaseHTTPRequestHandler):
         if not name:
             self._send_json(400, {"error": "missing_name"})
             return
+        runtime_overrides = body.get("overrides") or {}
+        if not isinstance(runtime_overrides, dict):
+            self._send_json(400, {"error": "invalid_overrides"})
+            return
 
         try:
-            res = self.server.trigger_async(name)  # type: ignore[attr-defined]
+            res = self.server.trigger_async(  # type: ignore[attr-defined]
+                name, runtime_overrides
+            )
             self._send_json(202, res)
         except KeyError:
             self._send_json(404, {"error": "schedule_not_found", "name": name})
@@ -1346,7 +1632,9 @@ def main() -> int:
                 {k: v.isoformat() for k, v in next_runs.items()},
             )
 
-    def trigger_async(name: str) -> Dict[str, Any]:
+    def trigger_async(
+        name: str, runtime_overrides: Dict[str, Any] | None = None
+    ) -> Dict[str, Any]:
         schedule = _read_schedule_yaml(schedule_path)
         if (
             not isinstance(schedule, dict)
@@ -1355,7 +1643,7 @@ def main() -> int:
         ):
             raise KeyError(name)
 
-        entry = schedule[name]
+        entry = _merge_trigger_overrides(schedule[name], runtime_overrides)
         overrides = _entry_to_overrides(entry)
 
         trig = _trigger_create("tr", name=name, overrides=overrides, job_id=None)

@@ -1,0 +1,22 @@
+prompt_version: cluster-update-v1
+fixtures:
+  - name: first_supported_snapshot
+    expectations:
+      accept: true
+      require_evidence_for_every_fact: true
+  - name: unknown_article_evidence
+    expectations:
+      accept: false
+      error: unknown_article_id
+  - name: conflicting_claim_marks_disputed
+    expectations:
+      accept: true
+      required_fact_status: disputed
+  - name: unsupported_mitre_mapping
+    expectations:
+      accept: false
+      error: unsupported_technique
+  - name: malformed_json_is_repairable
+    expectations:
+      accept: false
+      allow_single_format_repair_retry: true

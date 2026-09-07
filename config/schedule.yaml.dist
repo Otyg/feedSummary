@@ -94,6 +94,32 @@ summary_enriched_threats:
   lookback: "1d"
   enrich: true
   promptpackage: "daily_threat_landscape_healthcare_europe_se"
+
+# Manuella långtidsjobb. De kan triggas via worker-API:t när
+# long_term_analysis.enabled är true. Byt frequency/time för schemalagd drift.
+long_term_cluster_healthcare:
+  frequency: "triggered"
+  type: "long_term_clustering"
+  profile: "healthcare_europe"
+  limit: 200
+
+long_term_map_healthcare:
+  frequency: "triggered"
+  type: "long_term_map"
+  profile: "healthcare_europe"
+  map_limit: 20
+
+long_term_report_healthcare:
+  frequency: "triggered"
+  type: "long_term_report"
+  profile: "healthcare_europe"
+
+long_term_pipeline_healthcare:
+  frequency: "triggered"
+  type: "long_term_pipeline"
+  profile: "healthcare_europe"
+  limit: 200
+  map_limit: 20
 Inrikes:
   frequency: "triggered"
   lookback: "1d"
