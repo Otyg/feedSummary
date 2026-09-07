@@ -26,6 +26,7 @@ batching:
   similarity_threshold: 0.78
   embedding_text_chars: 2000
   embedding_max_concurrency: 4
+  embedding_instruction: "Represent the specific real-world event described by this article."
   meta_batch_clip_chars: 1500
   meta_sources_clip_chars: 100
   retry_user_clip_chars: 9000
@@ -33,6 +34,8 @@ batching:
   topic_max_workers: 4
 tagging:
   summary_max_tags: 20
+  # Minsta cosinuslikhet för att ersätta en föreslagen tagg med en befintlig.
+  embedding_replacement_threshold: 0.8
   # Sätt till false för att inte skapa en separat tagg för varje CVE-ID i sammanfattningar.
   summary_include_cve_tags: true
   # LLM får välja befintliga taggar i dessa kategorier, men inte skapa nya.
@@ -49,6 +52,7 @@ tagging:
     # Tomt värde ärver embedding_model från den lokala LLM-konfigurationen.
     embedding_model: ""
     embedding_text_chars: 2000
+    embedding_instruction: "Represent the topics, industries or sectors, type of information, subjects and geographical regions discussed in this article."
     model_path: data/tagging_ml/domain_entity_sgd_embeddings.joblib
     min_label_support: 5
     min_training_articles: 30
@@ -103,6 +107,8 @@ llm:
       min_interval_seconds: 2
   - provider: ollama_local
     model: qwen2.5:7b
+    embedding_model: qwen3-embedding:0.6b
+    embedding_dimensions: 1024
     base_url: http://localhost:11434
     max_rps: 1
     timeout_s: 6000

@@ -52,9 +52,21 @@ class FakeTagger:
 class FakeStore:
     def __init__(self):
         self.articles = [
-            {"id": "article-1", "title": "Acme incident", "embedding_vector": [1.0]},
-            {"id": "article-2", "title": "Previously untagged", "embedding_vector": [2.0]},
-            {"id": "article-3", "title": "Rare entity", "embedding_vector": [3.0]},
+            {
+                "id": "article-1",
+                "title": "Acme incident",
+                "tagging_embedding_vector": [1.0],
+            },
+            {
+                "id": "article-2",
+                "title": "Previously untagged",
+                "tagging_embedding_vector": [2.0],
+            },
+            {
+                "id": "article-3",
+                "title": "Rare entity",
+                "tagging_embedding_vector": [3.0],
+            },
             {"id": "article-4", "title": "No embedding"},
         ]
         self.tags = {

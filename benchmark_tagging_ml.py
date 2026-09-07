@@ -151,8 +151,8 @@ def load_mongodb_examples(
             "_mongo_sort_ts": 1,
             "fetched_at": 1,
             "created_at": 1,
-            "embedding_vector": 1,
-            "embedding_model": 1,
+            "tagging_embedding_vector": 1,
+            "tagging_embedding_model": 1,
         },
     ).sort([("_mongo_sort_ts", 1), ("_id", 1)])
     if max_articles is not None:
@@ -166,7 +166,7 @@ def load_mongodb_examples(
         if not article_id or not text:
             skipped_empty += 1
             continue
-        raw_embedding = article.get("embedding_vector")
+        raw_embedding = article.get("tagging_embedding_vector")
         embedding: Optional[Tuple[float, ...]] = None
         if (
             isinstance(raw_embedding, list)
@@ -184,7 +184,7 @@ def load_mongodb_examples(
                 timestamp=_safe_timestamp(article),
                 labels=tuple(sorted(labels_by_article.get(article_id, set()))),
                 embedding=embedding,
-                embedding_model=str(article.get("embedding_model") or ""),
+                embedding_model=str(article.get("tagging_embedding_model") or ""),
             )
         )
 

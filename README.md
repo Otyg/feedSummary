@@ -248,11 +248,14 @@ Taggning av färdiga sammanfattningar:
 tagging:
   summary_max_tags: 20
   summary_include_cve_tags: false
+  embedding_replacement_threshold: 0.8
 ```
 
 - `summary_max_tags`: max antal vanliga taggar; CVE-taggar räknas inte in när de är aktiverade.
 - `summary_include_cve_tags`: sätt till `false` för att behålla CVE-ID:n i
   sammanfattningstexten utan att skapa separata CVE-taggar.
+- `embedding_replacement_threshold`: minsta cosinuslikhet för att ersätta en
+  föreslagen tagg med en befintlig. Exakta namn och synonymer påverkas inte.
 
 #### `llm`
 LLM-konfiguration anges som en lista där första posten är primary och efterföljande poster används som fallback i den ordning `feedsummary_core` förväntar sig:
@@ -429,8 +432,17 @@ skiftlägesokänsligt. Förhandsgranska besluten utan databasändringar eller LL
 
 ## Träna om produktionsmodellen helt
 
+När embeddingmodell, dimension eller instructions ändras behöver befintliga artiklar
+först få de två nya vektorerna. Backfill-kommandot återanvänder redan kompatibla
+cacheposter och lagrar både sök-/klustringsvektorn och taggningsvektorn:
+
+```bash
+.venv/bin/python backfill_article_embeddings.py --config config.yaml
+```
+
 Efter en ändring under `tagging.ml` i konfigurationen kan produktionsmodellen byggas
-om från samtliga lagrade artikel-embeddings och taggkopplingar:
+om från samtliga lagrade taggnings-embeddings (`tagging_embedding_*`) och
+taggkopplingar:
 
 ```bash
 .venv/bin/python retrain_tagging_ml.py --config config.yaml
@@ -466,7 +478,7 @@ varje sådan kombination efter micro-F1. En annan baskategori kan anges med
 kategorier efter standardkategorierna; det ersätter dem inte.
 
 Varje kategoriomfång körs med TF-IDF, hashade ord-/teckenfeatures, befintliga
-artikel-embeddings och en hybrid av TF-IDF och embeddings. Före tidsdelningen begränsas
+taggnings-embeddings och en hybrid av TF-IDF och embeddings. Före tidsdelningen begränsas
 varje kategoriomfång till artiklar med samma kompatibla, redan sparade embeddingmodell
 och dimension. Därmed använder samtliga representationer exakt samma artiklar och
 etiketter. Rapporten redovisar modell, dimension, täckning och bortfall. Verktyget

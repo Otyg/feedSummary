@@ -107,6 +107,42 @@ class ArticleDateTabTests(unittest.TestCase):
             '<span class="badge text-bg-light ms-1">73</span>', all_html
         )
 
+    def test_all_tab_applies_limit_after_selecting_newest_articles(self):
+        articles = [
+            {
+                "id": "older-article",
+                "title": "Older article",
+                "source": "Source",
+                "published_ts": int(datetime(2026, 9, 5, 12).timestamp()),
+            },
+            {
+                "id": "september-6",
+                "title": "September 6 article",
+                "source": "Source",
+                "published_ts": int(datetime(2026, 9, 6, 12).timestamp()),
+            },
+            {
+                "id": "september-7",
+                "title": "September 7 article",
+                "source": "Source",
+                "published_ts": int(datetime(2026, 9, 7, 12).timestamp()),
+            },
+        ]
+        store = _FilteredArticleStore(articles)
+        store.get_article_tags = lambda _article_id: []
+        webapp_viewer.APP_CFG = {"store": {"provider": "mongodb"}}
+        webapp_viewer.APP_STORE = store
+        webapp_viewer.app.config.update(TESTING=True)
+
+        response = webapp_viewer.app.test_client().get("/articles?limit=2")
+
+        self.assertEqual(200, response.status_code)
+        html = response.get_data(as_text=True)
+        self.assertEqual(2, html.count('class="article-row"'))
+        self.assertIn("September 7 article", html)
+        self.assertIn("September 6 article", html)
+        self.assertNotIn("Older article", html)
+
     def test_article_page_exposes_source_filter(self):
         published_ts = int(datetime(2026, 8, 30, 12).timestamp())
         store = _FilteredArticleStore(

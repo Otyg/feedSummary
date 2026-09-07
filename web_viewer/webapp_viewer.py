@@ -1136,6 +1136,83 @@ def _list_articles_for_day_fast(
     return out
 
 
+def _list_recent_articles_fast(store, *, limit: int) -> List[Dict[str, Any]]:
+    """Return the newest stored articles, regardless of the store's batch order."""
+    sqlite_path = _sqlite_store_path_from_cfg()
+    if sqlite_path:
+        try:
+            con = sqlite3.connect(sqlite_path)
+            try:
+                rows = con.execute(
+                    """
+                    SELECT id, title, source, url, published_ts, fetched_at
+                    FROM articles
+                    ORDER BY COALESCE(NULLIF(published_ts, 0), fetched_at, 0) DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            finally:
+                con.close()
+            return [
+                {
+                    "id": rid,
+                    "title": title or "",
+                    "source": source or "",
+                    "url": url or "",
+                    "published_ts": int(_coerce_positive_ts(published_ts)),
+                    "fetched_at": int(_coerce_positive_ts(fetched_at)),
+                }
+                for rid, title, source, url, published_ts, fetched_at in rows
+            ]
+        except Exception:
+            pass
+
+    provider = str(
+        (APP_CFG.get("store") or {}).get("provider")
+        if isinstance(APP_CFG.get("store"), dict)
+        else ""
+    ).strip().lower()
+    if provider == "mongodb":
+        try:
+            collection = store.db.articles
+            cursor = (
+                collection.find(
+                    {},
+                    {
+                        "_id": 0,
+                        "id": 1,
+                        "title": 1,
+                        "source": 1,
+                        "url": 1,
+                        "published_ts": 1,
+                        "fetched_at": 1,
+                    },
+                )
+                .sort("_mongo_sort_ts", -1)
+                .limit(int(limit))
+            )
+            return [dict(article) for article in cursor if article.get("id")]
+        except Exception:
+            pass
+
+    # list_articles is intentionally oldest-first in the persistence API because
+    # the summarization pipeline uses that order for stable batching. Scan a
+    # wider window here and apply the UI limit only after sorting newest-first.
+    raw = store.list_articles(limit=max(50000, int(limit))) or []
+    rows = [
+        article
+        for article in raw
+        if isinstance(article, dict) and article.get("id")
+    ]
+    rows.sort(
+        key=lambda article: _article_published_ts(article)
+        or _coerce_positive_ts(article.get("fetched_at")),
+        reverse=True,
+    )
+    return rows[:limit]
+
+
 def _load_yaml_file(path: str) -> dict:
     p = Path(path)
     if not p.exists():
@@ -1851,7 +1928,7 @@ def list_articles():
                 logger.debug(f"Error loading tags for article {a.get('id')}: {e}")
                 a["tags"] = []
     else:
-        raw = store.list_articles(limit=limit) or []
+        raw = _list_recent_articles_fast(store, limit=limit)
         for a in raw:
             if isinstance(a, dict) and a.get("id"):
                 active_articles.append(_article_list_item(a))
