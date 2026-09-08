@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 import yaml
+from feedsummary_core.prompts.loader import load_prompt_package_map
 
 
 class LongTermClusterPromptTests(unittest.TestCase):
@@ -16,7 +17,7 @@ class LongTermClusterPromptTests(unittest.TestCase):
         cls.fixtures = yaml.safe_load(
             (
                 root
-                / "config/prompts/long_term/fixtures/cluster_update_v1.yaml"
+                / "config/prompts/long_term/_fixtures/cluster_update_v1.yaml"
             ).read_text(encoding="utf-8")
         )
 
@@ -35,6 +36,16 @@ class LongTermClusterPromptTests(unittest.TestCase):
         fixtures = self.fixtures["fixtures"]
         self.assertEqual(5, len(fixtures))
         self.assertEqual(5, len({fixture["name"] for fixture in fixtures}))
+
+    def test_private_fixture_directory_is_not_loaded_as_prompt_packages(self):
+        prompt_root = Path(__file__).resolve().parents[1] / "config/prompts"
+
+        packages = load_prompt_package_map(prompt_root)
+
+        self.assertIn("cluster_update_v1", packages)
+        self.assertEqual(
+            "cluster-update-v1", packages["cluster_update_v1"]["prompt_version"]
+        )
 
 
 if __name__ == "__main__":

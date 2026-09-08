@@ -19,6 +19,7 @@ import yaml
 from feedsummary_core.llm_client import create_llm_client
 from feedsummary_core.long_term import (
     ClusterStatus,
+    LongTermLeaseHeartbeat,
     MapSettings,
     ThreatCluster,
     cluster_needs_map_update,
@@ -118,6 +119,7 @@ async def execute_long_term_map(
         or f"{socket.gethostname()}:{os.getpid()}:map"
     )
     lease_claimed = False
+    heartbeat = None
     try:
         now_ts = int(time.time())
         if args.cluster:
@@ -154,14 +156,22 @@ async def execute_long_term_map(
             }
         if not selected:
             return {"profile_id": args.profile, "dry_run": False, "updates": []}
+        lease_seconds = int(long_term.get("map_lease_seconds", 1800))
         lease_claimed = active_store.claim_long_term_lease(
             args.profile,
             owner_id,
             now_ts=now_ts,
-            lease_seconds=int(long_term.get("map_lease_seconds", 1800)),
+            lease_seconds=lease_seconds,
         )
         if not lease_claimed:
             raise RuntimeError(f"profilens lease används redan: {args.profile}")
+        heartbeat = LongTermLeaseHeartbeat(
+            active_store,
+            profile_id=args.profile,
+            owner_id=owner_id,
+            lease_seconds=lease_seconds,
+        )
+        await heartbeat.start()
         llm_client = create_llm_client(llm_config)
         package = _prompt_package(resolved_config_path)
         results = []
@@ -174,10 +184,13 @@ async def execute_long_term_map(
                 now_ts=int(time.time()),
                 settings=settings,
                 force=args.force,
+                lease_guard=heartbeat,
             )
             results.append(asdict(result))
         return {"profile_id": args.profile, "dry_run": False, "updates": results}
     finally:
+        if heartbeat is not None:
+            await heartbeat.stop()
         if lease_claimed:
             active_store.release_long_term_lease(args.profile, owner_id)
         close_llm = getattr(llm_client, "aclose", None)

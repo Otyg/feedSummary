@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROMPT_PATH = PROJECT_ROOT / "config/prompts/long_term/landscape_report_v1.yaml"
 FIXTURE_PATH = (
     PROJECT_ROOT
-    / "config/prompts/long_term/fixtures/landscape_report_v1.yaml"
+    / "config/prompts/long_term/_fixtures/landscape_report_v1.yaml"
 )
 
 

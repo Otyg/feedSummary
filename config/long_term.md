@@ -3,7 +3,7 @@
 > Operativ status, produktionsblockerare och exakt återupptagningsordning finns
 > i [`long_term_handoff.md`](long_term_handoff.md).
 
-## Implementationsläge 2026-09-07
+## Implementationsläge 2026-09-08
 
 - Grenen `feature/long-term-threat-analysis` finns i både applikations- och
   basbiblioteksrepot.
@@ -55,8 +55,17 @@
   sammanhållen pipeline. Jobben återanvänder CLI-kodvägarna, kräver aktiverad
   feature-flagga och profil, samt sparar övergripande status med fas,
   konfigurationshash, kompakt resultat och sanerat fel i `long_term_runs`.
-  Trigger-API:t tillåter endast en vitlistad mängd långtids-overrides. Verkliga
-  shadow-körningar, timeout-/databas-failure-injection och driftmått återstår.
+  Trigger-API:t tillåter endast en vitlistad mängd långtids-overrides. Den
+  faktiska LLM-outputgränsen går nu genom fallbackkedjan till lokal och cloud
+  Ollamas `num_predict`, och Map/Reduce använder samma gräns som sina
+  tokenbudgetar. Ägarkontrollerad lease-renewal finns i samtliga backends;
+  Map/Reduce använder bakgrunds-heartbeat och kontrollerar leasen före
+  persistens, medan klustringen förnyar under batchen och före cursor-commit.
+  Samtidig start, cursorfel före/efter commit och uttömd timeout-fallback är
+  failure-injection-testade. Ett nätverksfritt helflöde täcker fixture-artiklar
+  genom klustring, Map, mått, Reduce och publicerad rapport. Verkliga
+  shadow-körningar, återstarts-/signaturtester, prestandatest och driftmått
+  återstår.
 
 ## 1. Mål och avgränsning
 

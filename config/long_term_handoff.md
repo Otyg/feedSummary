@@ -1,6 +1,6 @@
 # Återupptagningsstatus: löpande långtidsanalys
 
-Senast uppdaterad: 2026-09-07
+Senast uppdaterad: 2026-09-08
 
 Detta dokument är den operativa överlämningen för arbetet i
 `config/long_term.md`. Börja här vid nästa arbetspass och kontrollera därefter
@@ -20,12 +20,18 @@ git-status och testresultat på nytt.
 
 Senast verifierade testbaslinje:
 
-- FeedSummaryBase: 176 tester godkända.
-- FeedSummary: 102 tester godkända.
+- FeedSummaryBase: 198 tester godkända.
+- FeedSummary: 105 tester godkända.
 - Ruff är godkänd för de nya Base-modulerna, de fristående långtids-CLI:n och
   långtids-workertesterna. För den äldre workerfilen är import-, namn- och
   syntaxkontrollerna godkända; filen har sedan tidigare andra lintanmärkningar.
 - Map- och rapport-CLI har körts framgångsrikt med `--dry-run`.
+
+Korrigering 2026-09-08: promptloadern söker rekursivt under `config/prompts`.
+Långtids-fixtures ligger därför i den privata katalogen
+`config/prompts/long_term/_fixtures`, som loadern ignorerar. Lägg inte fixtures
+i en vanlig underkatalog med samma filnamn som ett riktigt promptpaket; det
+blockerar även ordinarie summeringsjobb med ett duplicate-package-fel.
 
 ## Implementerat
 
@@ -93,39 +99,41 @@ granskning av verkliga modellsvar återstår.
   `since`, `until`, `at`, `limit`, `map_limit`, `cluster` och `force`.
 - Fyra manuella `frequency: triggered`-exempel finns i
   `config/schedule.yaml.dist`.
+- `LLMClient.chat()` har en bakåtkompatibel, valfri faktisk outputgräns.
+  `FallbackLLMClient` vidarebefordrar samma gräns vid retry/fallback och både
+  lokal och cloud-Ollama mappar den till `num_predict`. Map, segment-Reduce,
+  final-Reduce och deras formatreparationer skickar samma `max_output_tokens`
+  som reserveras i respektive kontextbudget. Anrop utan gräns skickar ingen ny
+  providerparameter.
+- `renew_long_term_lease()` är atomisk och ägarkontrollerad i TinyDB, SQLite
+  och MongoDB och vägrar återuppliva en utgången eller övertagen lease. Map och
+  Reduce har bakgrunds-heartbeat under LLM-anrop och verifierar ägarskapet igen
+  omedelbart före snapshot-/rapportskrivning. Klustringen förnyar under batchen
+  och verifierar före cursor-commit. Databasfel eller leaseförlust stoppar
+  persistens, och release kan inte radera en ny ägares lease.
+- Failure-injection visar att exakt en av två samtidiga klusterstarter får
+  profilleasen, att fel både före och efter cursor-commit kan köras om utan
+  dubblett eller cursorlucka, och att uttömd timeout-fallback i Map/Reduce inte
+  skapar snapshot, rapport eller UI-spegel. Ett fast nätverksfritt end-to-end-
+  test kör tre fixture-artiklar genom klustring, Map, mått, Reduce, validering
+  och publicering i SQLite.
 
 ## Blockerare före produktionstest
 
-### 1. LLM-output och lease-livslängd
-
-Detta är nästa kodsteg och högsta prioritet.
-
-- `map_max_output_tokens` och `reduce_max_output_tokens` reserverar plats i
-  tokenbudgeten men skickas inte som faktisk outputgräns via nuvarande
-  `LLMClient.chat()` till Ollama.
-- Exempelkonfigurationen tillåter `timeout_s: 6000`, medan Map-leasen är 1800
-  sekunder och rapportleasen 3600 sekunder. En annan worker kan därför ta över
-  en profil medan det första LLM-anropet fortfarande pågår.
-- Lägg till en faktisk outputgräns i LLM-kontraktet och båda Ollama-klienterna,
-  och vidarebefordra den genom fallback-klienten.
-- Lägg till lease-förnyelse/heartbeat i lagringskontraktet och samtliga tre
-  backends, eller bevisa med striktare timeouter att en lease alltid överlever
-  hela anropet inklusive retries.
-- Testa timeout, förnyelse, förlorad lease och samtidig takeover.
-
-### 2. Failure-injection och end-to-end
+### 1. Failure-injection och end-to-end
 
 Följande tester saknas fortfarande:
 
-- två samtidiga workerstarter för samma profil,
-- databasfel före och efter cursorflytt,
-- LLM-timeout och fallback i Map respektive Reduce,
 - omstart efter `blocked` och `failed`,
 - modell-/embedding-signaturbyte mellan körningar,
-- ett fast, nätverksfritt end-to-end-flöde från fixture-artiklar till rapport,
 - prestandatest på ett representativt 180-/400-dagarsunderlag.
 
-### 3. Produktionsdata och klusterkalibrering
+Lease-renewal, expiry, ägarbyte, databasfel i heartbeat, skydd före persistens
+och leaseförlust under ett långsamt Map-anrop är enhetstestade. Samtidig start,
+cursorfel, uttömd LLM-fallback och ett nätverksfritt helflöde är också testade.
+Ovanstående återstarts-, signatur- och prestandafall återstår.
+
+### 2. Produktionsdata och klusterkalibrering
 
 - Kör embedding-audit mot hela produktionsprofilen.
 - Gör en begränsad och säker `similarity`-backfill för saknade embeddings.
@@ -134,7 +142,7 @@ Följande tester saknas fortfarande:
 - Granska karantän, felaktiga sammanslagningar och splittrade händelser efter en
   liten skrivande klusterbatch.
 
-### 4. Verkliga LLM-regressionsfall
+### 3. Verkliga LLM-regressionsfall
 
 - Kör Map-, segment- och rapportprompterna mot exakt de modeller som ska användas.
 - Spara anonymiserade svar som fixtures.
@@ -143,7 +151,7 @@ Följande tester saknas fortfarande:
 - Justera prompt först efter dokumenterat fel och höj promptversionen vid en
   kontraktsändring.
 
-### 5. Paketering och databasberedskap
+### 4. Paketering och databasberedskap
 
 - Committa endast avsedda filer i båda repona.
 - Publicera/versionera Base och lås appen till den versionen eller en exakt
@@ -154,7 +162,7 @@ Följande tester saknas fortfarande:
 - Lägg långtidsjobben i den faktiska produktions-schedulefilen; de finns ännu
   bara i distributionsmallen.
 
-### 6. Shadow-konfiguration och driftinsyn
+### 5. Shadow-konfiguration och driftinsyn
 
 - Det finns ingen separat `shadow_mode`. Använd initialt
   `reports.mirror_to_summary_docs: false` så att rapporter inte visas i
@@ -169,34 +177,26 @@ Följande tester saknas fortfarande:
 
 ## Rekommenderad återupptagningsordning
 
-1. Implementera faktisk LLM-outputgräns genom klient- och fallbackkedjan.
-2. Implementera lease-renewal/heartbeat för klustring, Map och Reduce.
-3. Lägg failure-injection för timeout, lease-takeover och databasfel.
-4. Lägg ett nätverksfritt end-to-end-test för hela pipelinen.
-5. Skapa golden-dataset och kör kalibrering.
-6. Kör produktionsdatans embedding-audit och en liten kontrollerad backfill.
-7. Spela in verkliga Map-/Reduce-svar och lägg regressionsfixtures.
-8. Versionera Base, lås appens beroende och verifiera deployment mot en kopia av
+1. Slutför failure-injection för omstart och embedding-signaturbyte.
+2. Lägg ett representativt 180-/400-dagars prestandatest.
+3. Skapa golden-dataset och kör kalibrering.
+4. Kör produktionsdatans embedding-audit och en liten kontrollerad backfill.
+5. Spela in verkliga Map-/Reduce-svar och lägg regressionsfixtures.
+6. Versionera Base, lås appens beroende och verifiera deployment mot en kopia av
    produktionsdatabasen.
-9. Kör shadow i ordningen klustring, manuell granskning, Map, manuell
+7. Kör shadow i ordningen klustring, manuell granskning, Map, manuell
    granskning, rapport utan spegling och först därefter full pipeline.
-10. Låt shadow-körningen gå minst en vecka och godkänn först när den saknar
+8. Låt shadow-körningen gå minst en vecka och godkänn först när den saknar
     cursorluckor/dubbletter och de analytiska resultaten har granskats manuellt.
 
 ## Första konkreta nästa arbetsuppgift
 
-Utöka `LLMClient.chat()` med en valfri faktisk outputgräns utan att bryta
-befintliga anrop. Vidarebefordra den genom `FallbackLLMClient`, mappa den till
-Ollamas outputparameter i lokal- och cloud-klienterna och låt Map/Reduce skicka
-sina konfigurerade gränser. Lägg enhetstester som visar att:
-
-1. gränsen når den aktiva providern,
-2. fallback får samma gräns,
-3. gamla anrop utan gräns fungerar oförändrat,
-4. en trunkerad/ogiltig respons aldrig persisteras,
-5. kontextbudget och faktisk outputgräns använder samma värde.
-
-Efter detta är nästa uppgift lease-renewal.
+Testa omstart efter en `blocked` klusterkörning där artikeln senare har
+korrigerats/backfillats samt efter ett `failed` Map-/Reduce-anrop. Verifiera att
+statushistorik, cursor, klustermedlemskap och insert-only-dokument förblir
+idempotenta. Lägg därefter ett signaturbyte där embeddingmodell, dimension eller
+instruktion ändras mellan batcher; äldre och nya signaturer får inte blandas i
+samma kluster och körningen ska ge ett tydligt granskningsbart utfall.
 
 ## Kommandon vid återupptagning
 

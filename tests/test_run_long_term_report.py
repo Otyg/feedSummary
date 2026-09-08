@@ -1,9 +1,15 @@
+import argparse
 import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+from feedsummary_core.long_term import ReduceResult
 
 from run_long_term_report import (
     _model_label,
     _reduce_llm_config,
     _reduce_settings,
+    execute_long_term_report,
 )
 
 
@@ -57,6 +63,81 @@ class LongTermReportCliTests(unittest.TestCase):
             "ollama_cloud:large -> ollama_local:small",
             _model_label(llm_config),
         )
+
+
+class LongTermReportExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_execute_renews_and_passes_lease_guard_before_report_write(self):
+        class Store:
+            def __init__(self):
+                self.renewals = 0
+                self.releases = 0
+
+            def claim_long_term_lease(self, *_args, **_kwargs):
+                return True
+
+            def renew_long_term_lease(self, *_args, **_kwargs):
+                self.renewals += 1
+                return True
+
+            def release_long_term_lease(self, *_args, **_kwargs):
+                self.releases += 1
+                return True
+
+        class Client:
+            async def aclose(self):
+                return None
+
+        store = Store()
+        config = {
+            "llm": {"provider": "ollama_local", "model": "test"},
+            "long_term_analysis": {
+                "enabled": True,
+                "report_lease_seconds": 60,
+                "profiles": {"profile": {"enabled": True}},
+            },
+        }
+        args = argparse.Namespace(
+            config=None,
+            profile="profile",
+            at=None,
+            dry_run=False,
+            owner_id="worker",
+        )
+
+        async def reduce(*_args, lease_guard, **_kwargs):
+            await lease_guard.ensure_owned()
+            return ReduceResult(
+                action="saved",
+                report_id="report-1",
+                input_snapshot_ids=("snapshot-1",),
+                segment_count=0,
+                llm_call_count=1,
+                repair_attempted=False,
+                estimated_final_prompt_tokens=10,
+                mirror_action="disabled",
+            )
+
+        with (
+            patch("run_long_term_report.build_landscape_metrics", return_value={}),
+            patch("run_long_term_report.select_report_snapshots", return_value=[]),
+            patch("run_long_term_report.create_llm_client", return_value=Client()),
+            patch("run_long_term_report._prompt_package", return_value={}),
+            patch(
+                "run_long_term_report.run_landscape_reduce",
+                AsyncMock(side_effect=reduce),
+            ) as run_reduce,
+        ):
+            result = await execute_long_term_report(
+                args,
+                config_path=Path("/tmp/config.yaml"),
+                config=config,
+                store=store,
+            )
+
+        self.assertEqual("report-1", result["report_id"])
+        self.assertIsNotNone(run_reduce.await_args.kwargs["lease_guard"])
+        self.assertEqual(1, store.renewals)
+        self.assertEqual(1, store.releases)
 
 
 if __name__ == "__main__":

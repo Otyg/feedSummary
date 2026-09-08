@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 from feedsummary_core.llm_client import create_llm_client
 from feedsummary_core.long_term import (
+    LongTermLeaseHeartbeat,
     ReduceSettings,
     build_landscape_metrics,
     run_landscape_reduce,
@@ -151,16 +152,25 @@ async def execute_long_term_report(
         or f"{socket.gethostname()}:{os.getpid()}:report"
     )
     lease_claimed = False
+    heartbeat = None
     try:
         if not args.dry_run:
+            lease_seconds = int(long_term.get("report_lease_seconds", 3600))
             lease_claimed = active_store.claim_long_term_lease(
                 args.profile,
                 owner_id,
                 now_ts=int(time.time()),
-                lease_seconds=int(long_term.get("report_lease_seconds", 3600)),
+                lease_seconds=lease_seconds,
             )
             if not lease_claimed:
                 raise RuntimeError(f"profilens lease används redan: {args.profile}")
+            heartbeat = LongTermLeaseHeartbeat(
+                active_store,
+                profile_id=args.profile,
+                owner_id=owner_id,
+                lease_seconds=lease_seconds,
+            )
+            await heartbeat.start()
         metrics = build_landscape_metrics(
             active_store,
             profile_id=args.profile,
@@ -214,9 +224,12 @@ async def execute_long_term_report(
             mirror_to_summary_docs=bool(
                 reports.get("mirror_to_summary_docs", True)
             ),
+            lease_guard=heartbeat,
         )
         return {"profile_id": args.profile, "dry_run": False, **asdict(result)}
     finally:
+        if heartbeat is not None:
+            await heartbeat.stop()
         if lease_claimed:
             active_store.release_long_term_lease(args.profile, owner_id)
         close_llm = getattr(llm_client, "aclose", None)
