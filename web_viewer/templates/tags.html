@@ -349,7 +349,9 @@ async function loadCategories() {
       const category = badge.getAttribute('data-category');
       const categoryData = categoriesMap[category];
       if (categoryData) {
-        badge.className = `badge ${categoryData.bg_color} ${categoryData.text_color}`;
+        badge.className = 'badge';
+        badge.style.backgroundColor = categoryColorValue(categoryData.bg_color, '#6c757d');
+        badge.style.color = categoryColorValue(categoryData.text_color, '#212529');
         badge.textContent = categoryData.label;
       } else {
         badge.className = 'badge bg-secondary text-dark';

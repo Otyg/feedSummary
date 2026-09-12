@@ -96,10 +96,13 @@ class LongTermWorkerTests(unittest.IsolatedAsyncioTestCase):
         run = store.runs[outcome["run_id"]]
         self.assertEqual("done", run["status"])
         self.assertEqual("done", run["stage"])
+        self.assertEqual("publish", run["mode"])
+        self.assertEqual("publish", outcome["mode"])
         self.assertEqual(64, len(run["config_hash"]))
         self.assertNotIn("assignments", run["results"]["clustering"])
         self.assertEqual(1, run["results"]["map"]["update_count"])
         self.assertEqual(1, run_clustering.call_count)
+        self.assertFalse(run_clustering.call_args.args[0].all_sources)
         self.assertEqual(1, run_map.await_count)
         self.assertEqual(1, run_report.await_count)
 
@@ -170,6 +173,105 @@ class LongTermWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("clustering", run["stage"])
         self.assertEqual(0, run_map.await_count)
 
+    async def test_blocked_pipeline_can_restart_as_new_successful_run(self):
+        store = _Store()
+        clustering = [
+            {
+                "blocked_reason": "article identity missing",
+                "assignments": [],
+            },
+            {
+                "blocked_reason": None,
+                "assigned": 1,
+                "assignments": [{"article_id": "article-1"}],
+            },
+        ]
+        with (
+            patch.object(
+                feedsum_worker,
+                "execute_long_term_clustering",
+                side_effect=clustering,
+            ),
+            patch.object(
+                feedsum_worker,
+                "execute_long_term_map",
+                AsyncMock(return_value={"updates": []}),
+            ),
+            patch.object(
+                feedsum_worker,
+                "execute_long_term_report",
+                AsyncMock(return_value={"report_id": "report-1"}),
+            ),
+        ):
+            with self.assertRaises(feedsum_worker.LongTermWorkerBlocked):
+                await feedsum_worker._run_long_term_entry(
+                    config_path="config.yaml",
+                    cfg=self.config,
+                    store=store,
+                    job_id=17,
+                    job_name="weekly-landscape",
+                    entry=self.entry,
+                )
+            resumed = await feedsum_worker._run_long_term_entry(
+                config_path="config.yaml",
+                cfg=self.config,
+                store=store,
+                job_id=18,
+                job_name="weekly-landscape-retry",
+                entry=self.entry,
+            )
+
+        self.assertEqual("report-1", resumed["report_id"])
+        self.assertEqual(
+            ["blocked", "done"],
+            [run["status"] for run in store.runs.values()],
+        )
+
+    async def test_failed_pipeline_can_restart_without_overwriting_failed_run(self):
+        store = _Store()
+        map_runner = AsyncMock(
+            side_effect=[
+                RuntimeError("temporary map failure"),
+                {"updates": [{"snapshot_id": "snapshot-1"}]},
+            ]
+        )
+        with (
+            patch.object(
+                feedsum_worker,
+                "execute_long_term_clustering",
+                return_value={"blocked_reason": None, "assignments": []},
+            ),
+            patch.object(feedsum_worker, "execute_long_term_map", map_runner),
+            patch.object(
+                feedsum_worker,
+                "execute_long_term_report",
+                AsyncMock(return_value={"report_id": "report-1"}),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "temporary map failure"):
+                await feedsum_worker._run_long_term_entry(
+                    config_path="config.yaml",
+                    cfg=self.config,
+                    store=store,
+                    job_id=17,
+                    job_name="weekly-landscape",
+                    entry=self.entry,
+                )
+            resumed = await feedsum_worker._run_long_term_entry(
+                config_path="config.yaml",
+                cfg=self.config,
+                store=store,
+                job_id=18,
+                job_name="weekly-landscape-retry",
+                entry=self.entry,
+            )
+
+        self.assertEqual("report-1", resumed["report_id"])
+        runs = list(store.runs.values())
+        self.assertEqual(["failed", "done"], [run["status"] for run in runs])
+        self.assertEqual("map", runs[0]["stage"])
+        self.assertEqual(2, map_runner.await_count)
+
     async def test_disabled_feature_and_missing_profile_are_rejected(self):
         store = _Store()
         disabled = copy.deepcopy(self.config)
@@ -194,15 +296,33 @@ class LongTermWorkerTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual({}, store.runs)
 
+        invalid_mode = copy.deepcopy(self.config)
+        invalid_mode["long_term_analysis"]["mode"] = "preview"
+        with self.assertRaisesRegex(ValueError, "shadow eller publish"):
+            await feedsum_worker._run_long_term_entry(
+                config_path="config.yaml",
+                cfg=invalid_mode,
+                store=store,
+                job_id=17,
+                job_name="invalid-mode",
+                entry=self.entry,
+            )
+
     def test_manual_trigger_allows_only_bounded_long_term_overrides(self):
         merged = feedsum_worker._merge_trigger_overrides(
             self.entry,
-            {"profile": "another-profile", "map_limit": 5, "force": True},
+            {
+                "profile": "another-profile",
+                "map_limit": 5,
+                "force": True,
+                "all_sources": True,
+            },
         )
 
         self.assertEqual("another-profile", merged["profile"])
         self.assertEqual(5, merged["map_limit"])
         self.assertTrue(merged["force"])
+        self.assertTrue(merged["all_sources"])
         with self.assertRaisesRegex(ValueError, "Otillåtna"):
             feedsum_worker._merge_trigger_overrides(
                 self.entry, {"type": "tag_based_summary"}
@@ -211,6 +331,31 @@ class LongTermWorkerTests(unittest.IsolatedAsyncioTestCase):
             feedsum_worker._merge_trigger_overrides(
                 {"type": "tag_based_summary"}, {"profile": "profile"}
             )
+
+    def test_cleanup_policy_uses_long_term_retention(self):
+        policy = feedsum_worker._cleanup_policy(
+            {
+                "cleanup": {"articles_days": 90},
+                "long_term_analysis": {"retention_days": 540},
+            }
+        )
+
+        self.assertEqual(90, policy.articles_days)
+        self.assertEqual(540, policy.long_term_days)
+
+        class LegacyCleanupPolicy:
+            def __init__(self, **kwargs):
+                if "long_term_days" in kwargs:
+                    raise TypeError("legacy policy")
+                self.__dict__.update(kwargs)
+
+        with patch.object(
+            feedsum_worker, "CleanupPolicy", LegacyCleanupPolicy
+        ):
+            legacy = feedsum_worker._cleanup_policy(
+                {"long_term_analysis": {"retention_days": 540}}
+            )
+        self.assertFalse(hasattr(legacy, "long_term_days"))
 
     async def test_regular_worker_job_persists_outer_status(self):
         store = _Store()

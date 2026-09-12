@@ -102,7 +102,17 @@ LONG_TERM_JOB_TYPES = frozenset(
     }
 )
 LONG_TERM_TRIGGER_OVERRIDE_FIELDS = frozenset(
-    {"profile", "since", "until", "at", "limit", "map_limit", "cluster", "force"}
+    {
+        "profile",
+        "since",
+        "until",
+        "at",
+        "limit",
+        "map_limit",
+        "cluster",
+        "force",
+        "all_sources",
+    }
 )
 
 
@@ -842,6 +852,9 @@ async def _run_long_term_entry(
     long_term = cfg.get("long_term_analysis")
     if not isinstance(long_term, dict) or not long_term.get("enabled", False):
         raise ValueError("long_term_analysis.enabled är false")
+    mode = str(long_term.get("mode") or "publish").strip().lower()
+    if mode not in {"shadow", "publish"}:
+        raise ValueError("long_term_analysis.mode måste vara shadow eller publish")
     profile = _long_term_profile(entry)
     dry_run = entry.get("dry_run", False)
     if not isinstance(dry_run, bool):
@@ -849,6 +862,9 @@ async def _run_long_term_entry(
     force = entry.get("force", False)
     if not isinstance(force, bool):
         raise TypeError("Långtidsjobbets 'force' måste vara boolean")
+    all_sources = entry.get("all_sources", False)
+    if not isinstance(all_sources, bool):
+        raise TypeError("Långtidsjobbets 'all_sources' måste vara boolean")
 
     stage_names = {
         "long_term_clustering": ("clustering",),
@@ -869,6 +885,7 @@ async def _run_long_term_entry(
                 "started_at": now_ts,
                 "job_id": int(job_id),
                 "schedule_name": str(job_name),
+                "mode": mode,
                 "config_hash": _long_term_config_hash(cfg),
                 "stages": list(stage_names),
             }
@@ -900,6 +917,7 @@ async def _run_long_term_entry(
                         limit=entry.get("limit"),
                         since=entry.get("since"),
                         until=entry.get("until"),
+                        all_sources=all_sources,
                         dry_run=dry_run,
                         owner_id=f"{owner_prefix}:clustering",
                     ),
@@ -917,6 +935,7 @@ async def _run_long_term_entry(
                         cluster=entry.get("cluster"),
                         limit=_positive_entry_limit(entry, "map_limit", 20),
                         force=force,
+                        continue_on_error=False,
                         dry_run=dry_run,
                         owner_id=f"{owner_prefix}:map",
                     ),
@@ -959,6 +978,7 @@ async def _run_long_term_entry(
             "run_id": run_id if run_created else None,
             "profile_id": profile,
             "dry_run": dry_run,
+            "mode": mode,
             "stages": stage_results,
             "report_id": report_result.get("report_id"),
         }
@@ -1291,6 +1311,8 @@ async def _run_one(
 def _cleanup_policy(cfg: Dict[str, Any]) -> "CleanupPolicy":
     d = cfg.get("cleanup") if isinstance(cfg, dict) else None
     d = d if isinstance(d, dict) else {}
+    long_term = cfg.get("long_term_analysis") if isinstance(cfg, dict) else None
+    long_term = long_term if isinstance(long_term, dict) else {}
 
     enabled = bool(d.get("enabled", True))
     run_every_minutes = int(d.get("run_every_minutes", 60))
@@ -1303,11 +1325,18 @@ def _cleanup_policy(cfg: Dict[str, Any]) -> "CleanupPolicy":
         "weekly_summaries_days": int(d.get("weekly_summaries_days", 30)),
         "temp_summaries_days": int(d.get("temp_summaries_days", 30)),
         "jobs_days": int(d.get("jobs_days", 90)),
+        "long_term_days": int(long_term.get("retention_days", 730)),
     }
 
     try:
         return CleanupPolicy(**kwargs)  # type: ignore[arg-type]
     except TypeError:
+        legacy_kwargs = dict(kwargs)
+        legacy_kwargs.pop("long_term_days", None)
+        try:
+            return CleanupPolicy(**legacy_kwargs)  # type: ignore[arg-type]
+        except TypeError:
+            pass
         pol = CleanupPolicy()  # type: ignore[call-arg]
         for k, v in kwargs.items():
             if hasattr(pol, k):
@@ -1585,8 +1614,8 @@ def main() -> int:
             if not getattr(pol, "enabled", True):
                 log.info("cleanup disabled (cleanup.enabled=false).")
                 return 0
-            store.run_cleanup(pol)  # type: ignore[attr-defined]
-            log.info("cleanup: run_cleanup executed (cleanup-once).")
+            removed = store.run_cleanup(pol)  # type: ignore[attr-defined]
+            log.info("cleanup: run_cleanup executed (cleanup-once): %s", removed)
             return 0
         finally:
             async_runner.close()
@@ -1749,8 +1778,8 @@ def main() -> int:
                 every = max(1, int(getattr(pol, "run_every_minutes", 60))) * 60
                 if (time.time() - last_cleanup_ts) >= every:
                     try:
-                        store.run_cleanup(pol)  # type: ignore[attr-defined]
-                        log.info("cleanup: run_cleanup executed")
+                        removed = store.run_cleanup(pol)  # type: ignore[attr-defined]
+                        log.info("cleanup: run_cleanup executed: %s", removed)
                     except Exception as e:
                         log.exception("cleanup: run_cleanup failed: %s", e)
                     last_cleanup_ts = time.time()

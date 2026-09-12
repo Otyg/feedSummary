@@ -15,6 +15,7 @@ class LongTermMetricsCliTests(unittest.TestCase):
                     "source_mix_change_threshold": 0.4,
                     "max_clusters": 500,
                     "max_memberships_per_cluster": 200,
+                    "min_snapshot_member_count": 2,
                 }
             }
         )
@@ -26,6 +27,7 @@ class LongTermMetricsCliTests(unittest.TestCase):
         self.assertEqual(0.4, settings.source_mix_change_threshold)
         self.assertEqual(500, settings.max_clusters)
         self.assertEqual(200, settings.max_memberships_per_cluster)
+        self.assertEqual(2, settings.min_snapshot_member_count)
 
 
 if __name__ == "__main__":

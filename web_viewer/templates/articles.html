@@ -176,7 +176,8 @@ document.addEventListener('DOMContentLoaded', async function() {
     const categoryData = categoriesMap.get(category);
     if (categoryData) {
       badge.className = `badge tag-category-${category}`;
-      badge.classList.add(categoryData.bg_color, categoryData.text_color);
+      badge.style.backgroundColor = categoryColorValue(categoryData.bg_color, '#6c757d');
+      badge.style.color = categoryColorValue(categoryData.text_color, '#212529');
     } else {
       // Fallback if category not found
       badge.className = 'badge tag-category-' + category;

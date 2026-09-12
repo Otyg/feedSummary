@@ -3,13 +3,33 @@
 > Operativ status, produktionsblockerare och exakt återupptagningsordning finns
 > i [`long_term_handoff.md`](long_term_handoff.md).
 
-## Implementationsläge 2026-09-08
+## Implementationsläge 2026-09-10
 
 - Grenen `feature/long-term-threat-analysis` finns i både applikations- och
   basbiblioteksrepot.
+- Den initiala cloud-baselinen är färdig. Den sista Map-passen sparade samtliga
+  19 återstående kluster utan fel och Reduce skapade shadow-rapporten
+  `threat_report_72ea6f4fdae356c49a0bb82bbd926dff` från 219 snapshots.
+  Två revisionsposter som tillkom genom timklustringen efter rapportens frysta
+  tidpunkt har också Map-behandlats; en tvingad preview visar nu tom Map-kö.
+  Rapporten är sparad i långtidslagret men har, enligt
+  `mirror_to_summary_docs: false`, ingen vanlig summary-spegel.
 - Fas 0 är påbörjad med read-only-kalibreringsverktyg, versionssatt initial
-  analysprompt, JSON-schema och fem prompt-fixtures. Ett manuellt märkt golden
-  dataset och dokumenterad promptgranskning återstår innan fasen är godkänd.
+  analysprompt, JSON-schema och fem prompt-fixtures. Ett första stratifierat
+  golden-utkast med 33 par och explicita `same`/`different`/`ambiguous`-etiketter
+  finns tillsammans med en portabel anonymiserad fixture och stöd för att skapa
+  ett blindat fulltextpaket för en oberoende granskare. Ren cosinus vid
+  `0.80` gav preliminärt precision 0,813, medan den faktiska onlineklustringen
+  gav precision/recall 0,929/1,000 för `0.80` och 1,000/1,000 för `0.82`.
+  Ingen körning av de produktionshärledda paren utlöste `needs_review`. Två
+  isolerade
+  trepartsscenarier verifierar dock både tvetydighetsgrenen och CVE-vakten vid
+  båda trösklarna. En riktad innehållsgranskning korrigerade ett felmärkt
+  AI-par och lade till ett verkligt CareCloud-trepartsfall. Med 67 frysta
+  bakgrundskonkurrenter gav `0.80` en falsk sammanslagning och precision 0,929,
+  medan `0.82` gav precision och recall 1,000. Trösklarna får inte godkännas
+  före oberoende fulltextgranskning, fler låg-likhetspositiva exempel och verkliga
+  trepartsfall. Dokumenterad promptgranskning återstår innan fasen är godkänd.
 - Fas 1 har additiva lagringsmodeller, cursor/lease, körningsposter, kluster,
   medlemskap, snapshots och rapporter för TinyDB, SQLite och MongoDB. Den
   kombinerade kluster-/medlemskapsskrivningen är transaktionell i SQLite och
@@ -20,19 +40,27 @@
   endast efter bestående medlemskap eller karantänpost. Öppna karantänposter
   återprövas automatiskt och löses när artikeln senare kan klustras. Profilens
   `required_tags`, tidsstyrd livscykel och en första stark indikatorvakt är
-  implementerade; motstridiga CVE-ID:n får inte slås ihop.
+  implementerade. Motstridiga CVE-ID:n är ett hårt stopp endast när båda
+  sidorna är rena en-CVE-katalogposter; narrativa händelseartiklar kan matcha
+  trots olika CVE-mängder. En read-only reconciliation-pass föreslår dessutom
+  sammanslagningar av befintligt fragmenterade kluster utan att ännu flytta
+  medlemskap eller invalidera snapshots.
 - Embedding-backfill kan nu begränsas till långtidsprofil, tidsintervall och
   `similarity`-embedding samt köras read-only. En verklig dry-run mot tre lokala
   profilartiklar identifierade tre saknade embeddings utan LLM-anrop eller
   databasskrivning. Nästa operativa steg är en kontrollerad similarity-backfill
   följd av shadow-klustring och granskning av karantän-/klusterutfall.
-- Fas 3 har `cluster-update-v1`, fem prompt-fixtures, en körbar Map-tjänst och
+- Fas 3 har `cluster-update-v2` (med `cluster-update-v1` bevarad), fem
+  prompt-fixtures, en körbar Map-tjänst och
   strikt snapshotvalidering av schema, identitet, medlemsrevision, MITRE-format
   och samtliga evidensreferenser. Pending artiklar väljs deterministiskt i
   begränsade delar, promptens inputbudget kontrolleras före LLM-anrop och högst
   ett formatreparationsförsök görs. Snapshot och `summarized_revision` sparas
-  atomiskt i SQLite och återspelningsbart via journal i dokumentlagren. Ett CLI
-  stöder read-only-preview och explicit lokal modell. Inspelade verkliga
+  atomiskt i SQLite och återspelningsbart via journal i dokumentlagren. Map
+  använder 8 000 outputtokens i aktuell cloud-konfiguration. Innehållslösa
+  uncertainty-markörer tas bort evidensneutralt medan strukturerade objekt
+  bevaras förlustfritt som deterministisk JSON-text. Ett CLI stöder
+  read-only-preview och explicit lokal modell. Inspelade verkliga
   LLM-regressionsfall återstår; Map-körningen är inkopplad i Fas 5:s workerflöde.
 - Fas 4 är påbörjad med reproducerbara 7-/30-/90-dagarsmått som räknar
   oberoende händelsekluster separat från artiklar. Underlaget innehåller
@@ -41,16 +69,27 @@
   CLI kan frysa beräkningen vid en explicit tidpunkt. Reduce-kontraktet validerar
   nu identitet, period, konfigurerad evidensmängd och faktisk spridning över
   tidsbuckets samt blockerar förändringar och prognoser när inget fönster är
-  trendbehörigt. Markdown renderas deterministiskt och rapport-ID:t binds till
+  trendbehörigt. Reduce tillämpar dessutom denna grind deterministiskt före
+  validering, så att modellen inte kan kringgå den genom att ändå returnera
+  `changes` eller `forecast`. Markdown renderas deterministiskt och rapport-ID:t binds till
   prompt, segmentprompt, modell och fryst input. En körbar Reduce-tjänst väljer
   automatiskt direkt eller segmenterad syntes utifrån kontextbudgeten, tillåter
   högst en formatreparation och sparar först efter full validering. Rapport-CLI:t
   har lease, `--dry-run`, fryst körtid och idempotent publicering till det
-  separata långtidslagret. Publicerade original speglas deterministiskt och
-  idempotent till `summary_docs`; konflikt skrivs inte över och ett partiellt
-  speglingsfel kan köras om mot det redan sparade originalet. Cleanup får gallra
-  UI-spegeln men rör inte långtidsoriginalet. Inspelade verkliga LLM-regressionsfall
-  återstår.
+  separata långtidslagret. I `publish` kan original speglas deterministiskt och
+  idempotent till `summary_docs`, vilket betyder en intern extra kopia i den
+  vanliga FeedSummary-listan/RSS och inte publicering på internet; konflikt
+  skrivs inte över och ett partiellt
+  speglingsfel kan köras om mot det redan sparade originalet. Vanlig
+  summary-retention får gallra UI-spegeln men inte långtidsoriginalet; den
+  separata långtidsretentionen gallrar först när dess längre fönster löpt ut.
+  Reduce skickar JSON-schema till segment-, reparations- och finalanrop, gör
+  upp till tre lokala genereringsförsök för ett felande segment och loggar
+  segmentprogress. En kompakt promptvy utelämnar icke-citerbara rå-ID-
+  upprepningar men bevarar numeriska mått och tidsbucket-kopplingar. Ett
+  deterministiskt slutsteg behåller varje citerbart kluster-ID och anpassar
+  textdetaljen till inputbudgeten. Originalmåtten används oförändrade för
+  validering och persistens. Inspelade verkliga LLM-regressionsfall återstår.
 - Fas 5 är påbörjad med workerjobb för separat klustring, Map, rapport och en
   sammanhållen pipeline. Jobben återanvänder CLI-kodvägarna, kräver aktiverad
   feature-flagga och profil, samt sparar övergripande status med fas,
@@ -63,9 +102,64 @@
   persistens, medan klustringen förnyar under batchen och före cursor-commit.
   Samtidig start, cursorfel före/efter commit och uttömd timeout-fallback är
   failure-injection-testade. Ett nätverksfritt helflöde täcker fixture-artiklar
-  genom klustring, Map, mått, Reduce och publicerad rapport. Verkliga
-  shadow-körningar, återstarts-/signaturtester, prestandatest och driftmått
-  återstår.
+  genom klustring, Map, mått, Reduce och publicerad rapport. Återstart efter
+  `blocked`/`failed` bevarar historiken och kan fortsätta idempotent;
+  embedding-signaturbyten blandas inte mellan kluster. Ett reproducerbart,
+  nätverksfritt benchmark för 90-/180-dagarsunderlag mäter kandidaturval, mått,
+  snapshoturval, Reduce-input, total körtid och minnestopp; standardlasten ligger
+  under de satta lokala gränserna. En första verklig shadow-körning är
+  genomförd; minst en veckas driftmått och manuell resultatgranskning återstår.
+  `long_term_analysis.retention_days` verkställs nu i TinyDB, SQLite
+  och MongoDB. Kvarvarande rapporter skyddar refererade snapshots och deras
+  kluster; endast utgångna stängda kluster och deras medlemskap gallras.
+  Workern loggar separata borttagningsräknare för shadow-verifiering.
+  Ett explicit `mode: shadow` blockerar nu alltid spegling till `summary_docs`
+  även om speglingsflaggan skulle vara felsatt. Den aktiva, git-ignorerade
+  pilotkonfigurationen använder explicit `cloud` för både Map och Reduce,
+  tröskel `0.82` och batch 25. `cloud` filtrerar bort alla `ollama_local`-poster
+  ur dessa två LLM-kedjor; `configured_chain` finns kvar som ett separat val.
+  Fyra manuella jobb kompletteras av klustring varje timme, Map var sjätte timme
+  och shadow-rapport måndag 05:30. En skrivande pilotbatch har nått totalt 50
+  medlemskap i 49 kluster utan karantän eller `needs_review`. Fem Map-snapshots
+  skapades först via cloud-kedjan utan formatreparation. En större
+  återupptagningsbar Map-körning sparade ytterligare 23 innan ett ogiltigt
+  cloud-svar stoppades säkert; totalt finns 28 snapshots och 21 ännu ej
+  berättigade singelkluster. Den första riktiga rapporten skapades därefter från
+  28 snapshots i 6 segment och 7 cloud-anrop, utan formatreparation. Den sparades
+  som `threat_report_a9d3f30b82325e5791013db138d16ff9` i
+  `threat_landscape_reports`; shadow-läget gav `mirror_action: disabled`.
+  Slutprompten uppskattades till 15 086 tokens inom budgeten 20 476.
+- Fas 6 är enligt beslut 2026-09-08 påbörjad parallellt med kvarvarande
+  produktionsvalidering. Första read-only-snittet ligger bakom den
+  separata flaggan `long_term_analysis.ui.enabled`, så shadow-rapporter kan
+  granskas utan att `long_term_analysis.enabled` behöver slå på nya
+  pipelinekörningar. Ett versionerat API och serverrenderade vyer visar nu
+  rapportlista, rapportdetalj, profiler, perioder, kvalitetsvarningar, tomläge
+  och prognoshypoteser tydligt skilda från observerade fakta. Provenienskedjan
+  rapport -> snapshot -> kluster -> artikel är nu klickbar. Klustervyn visar
+  bevarad titel, källa, URL och publiceringstid även när originalartikeln har
+  gallrats. Synlig länktext använder snapshot-/klustertitel, kompletterad med
+  belagd CVE när sådan finns, samt artikelrubrik i stället för interna ID:n;
+  ID:n finns kvar i URL och teknisk proveniens. Centroid och vektorsumma
+  exponeras aldrig av API:t. `/long-term/clusters` visar nu en paginerad
+  klusteröversikt med profil- och statusfilter, mänskliga rubriker, medlemsantal,
+  senaste observation och väntande snapshotrevisioner. Motsvarande versionerade
+  läs-API är `/api/v1/long-term/clusters`; listfrågan hämtar inte lagrade
+  embedding-vektorer. Ett första manuellt granskningsflöde finns också via
+  `/long-term/review/<cluster_id>`: den tvetydiga artikeln jämförs med de två
+  kandidaterna och den skrivbara viewern kan registrera `merge`,
+  `keep_separate` eller `exclude`. Besluten är revisionskontrollerade och
+  loggar granskare, tid och motivering; merge återanvänder det atomiska
+  reconciliation-kontraktet. Nya tvetydiga tilldelningar sparar kandidat-ID:n,
+  medan äldre poster rekonstrueras och märks tydligt som sådana. Skrivning
+  kräver den separata flaggan `long_term_analysis.ui.review_actions_enabled`;
+  read-only-viewern blockerar alltid åtgärderna. Olösta och exkluderade
+  granskningskluster ignoreras nu i nya trendmått. Nästa UI-steg är paginering för mycket stora klusters
+  medlemslistor och slutlig granskning av
+  åtkomst, navigation och deployment i read-only-viewern. Bred
+  produktionsaktivering är fortsatt blockerad av oberoende golden-granskning,
+  embedding-audit/backfill, verkliga Map/Reduce-regressioner, databas-/indexkontroll
+  och minst en veckas godkänd shadow-körning.
 
 ## 1. Mål och avgränsning
 
@@ -371,6 +465,48 @@ Bearbeta artiklar deterministiskt i ordningen `(article_ts, article_id)`.
 5. Skriv medlemskapet med unik nyckel och uppdatera `vector_sum`, centroid,
    `member_count`, `last_seen_ts` och `membership_revision` atomiskt.
 
+Rena CVE-poster identifieras konservativt: titeln ska ha katalogformat och hela
+artikeln ska endast avse samma CVE. Disjunkta CVE-mängder blockerar matchning
+bara när både artikeln och kandidatklustret har denna strikta identitet. För
+narrativa incident-, kampanj- och rådgivningsartiklar är CVE:er evidens om
+händelsen, inte en unik händelsenyckel.
+
+### 5.2.1 Reconciliation av befintliga kluster
+
+`run_long_term_reconciliation.py` läser kluster och medlemskap och producerar
+endast förslag. Kandidater måste ha kompatibel embedding-signatur, ligga inom
+tidsfönstret och nå review-tröskeln. Auto-förslag kräver dessutom minst `0.88`
+likhet och delad stark identitet: samma CVE, eller delad produkt/organisation
+tillsammans med ett gemensamt titelbegrepp. Två rena poster med olika CVE:er
+blockeras. Narrativ artikel mot ren CVE-post, återkommande katalogpost och
+roundup/bulletin går alltid till manuell granskning.
+
+Förslagen binds ihop till granskningsbara komponenter men skrivs inte tillbaka
+av proposal-passet. Ett separat apply-kontrakt finns nu för samtliga backends.
+Det flyttar medlemskap, räknar om centroid/revision/indikatorer, ger varje
+medlemskap en unik sammanhängande revision, bevarar lineage som sekundära
+tombstones och nollställer primärens snapshotpekare så att en ny snapshot måste
+byggas. Summeringsrevisionen sätts till en syntetisk bas direkt före de nya
+medlemsrevisionerna. Äldre snapshots ändras inte och fortsätter därför att
+fungera som proveniens för historiska rapporter. SQLite gör övergången i en
+transaktion; TinyDB och MongoDB använder idempotenta, återspelningsbara journaler.
+
+CLI-flödet är avsiktligt tvådelat. `--prepare-group` exporterar först en exakt
+operationsfil med förväntade revisioner. `--apply-operation` kräver därefter att
+hela operations-ID:t upprepas med `--confirm-apply`. Om någon källrevision har
+ändrats avvisas operationen utan att SQLite skriver något; dokumentlagrens
+journal kan återuppta ett delavbrott till samma deterministiska slutläge.
+Superseded tombstones filtreras alltid bort när nya proposals skapas.
+
+Den första godkända apply-körningen genomfördes 2026-09-09 för PaperCut. Sex
+kluster blev ett primärkluster med 18 medlemskap och revision 19; fem sekundärer
+bevarades som tombstones. Efterkontrollen visade komplett lineage, tom journal
+och inga återkommande PaperCut-förslag. Ett fel i den första operationsformen,
+som gav alla medlemskap samma slutrevision, upptäcktes innan någon
+PaperCut-snapshot sparades. Produktionsmedlemskapen reparerades till unika
+revisioner 2–19 och Map har även ett defensivt legacy-skydd. Den resumérbara
+cloud-baselinekörningen återstartades därefter.
+
 `0.80` är ett initialt experimentvärde, inte ett produktionskrav. På det
 nuvarande materialet har många artiklar minst en granne över denna nivå, men det
 säger inget om händelseprecision. Tröskel, tidsgräns och tvetydighetsmarginal ska
@@ -385,6 +521,14 @@ hand hög precision och få felaktiga sammanslagningar.
 - `closed`: analytiskt avslutad händelse eller passerad maximal återöppningstid.
 - `needs_review`: inkompatibla data, tvetydig sammanslagning eller misslyckad
   validering.
+
+I den nuvarande onlineklustringen betyder `needs_review` specifikt att både den
+bästa och näst bästa kandidaten nådde likhetströskeln men låg närmare varandra
+än `ambiguity_margin`. Artikeln läggs då i ett separat säkerhetskluster. Den
+manuella granskningen bedömer konkret händelseidentitet och väljer att slå ihop
+med en kandidat, behålla som separat aktiv händelse eller exkludera från
+långtidsanalysen. Statusen och exkluderade beslut räknas inte in i nya
+landskapsmått innan de har lösts.
 
 Tiderna är profilkonfiguration, inte hårdkodade 60 dagar. Livscykeln styr vilka
 kluster som tas med i rapporten; den raderar aldrig kluster eller snapshots.
@@ -465,16 +609,21 @@ kalibreras innan funktionen slås på i produktion:
 ```yaml
 long_term_analysis:
   enabled: false
+  ui:
+    enabled: false
   schema_version: 1
   batch_size: 200
   quarantine_retry_limit: 50
+  # FeedSummary skickar värdet uttryckligen till cleanup; 0 stänger av
+  # långtidsretention vid direkt användning av Base-policyn.
   retention_days: 730
   map_lease_seconds: 1800
   report_lease_seconds: 3600
   llm:
-    map_provider: local
-    reduce_provider: configured_chain
-    map_max_output_tokens: 1200
+    # cloud, local eller configured_chain
+    map_provider: cloud
+    reduce_provider: cloud
+    map_max_output_tokens: 8000
     reduce_max_output_tokens: 2500
   clustering:
     embedding_purpose: similarity
@@ -484,6 +633,8 @@ long_term_analysis:
     dormant_after_days: 30
     close_after_days: 180
   cluster_updates:
+    # Singeltons är atomära observationer och kräver ingen egen LLM-snapshot.
+    min_cluster_members_for_map: 2
     min_pending_articles: 3
     max_update_delay_hours: 24
     max_articles_per_call: 12
@@ -496,10 +647,12 @@ long_term_analysis:
     min_independent_events_for_trend: 3
     source_concentration_threshold: 0.75
     source_mix_change_threshold: 0.35
+    min_snapshot_member_count: 2
     max_clusters: 10000
     max_memberships_per_cluster: 10000
-    max_snapshots_per_segment: 12
+    max_snapshots_per_segment: 5
     max_snapshot_records: 10000
+    generation_attempts: 3
   profiles:
     healthcare_europe:
       enabled: true
@@ -514,6 +667,7 @@ och dess normaliserade hash sparas på varje körning och rapport.
 Prompter läggs i egna versionshanterade paket under `config/prompts/long_term/`:
 
 - `cluster_update_v1.yaml`
+- `cluster_update_v2.yaml`
 - `landscape_segment_v1.yaml`
 - `landscape_report_v1.yaml`
 
@@ -649,6 +803,9 @@ precisionsmål uppnås.
 - Implementera JSON-schema, promptpaket, tokenbudget, formatreparation och
   evidensvalidering.
 - Spara snapshots och revisionskoppla dem atomiskt.
+- Behåll atomära singeltons i trendmåtten men välj dem inte automatiskt för
+  Map. Ett kluster blir snapshot-berättigat när det har minst två medlemmar;
+  explicit manuell analys får hanteras separat.
 - Lägg golden-/regressionstester med inspelade LLM-svar; enhetstester får inte
   kräva en aktiv Ollama-server.
 
@@ -683,19 +840,29 @@ fullständig manuell körning kan, när långtidsfunktionen har aktiverats, star
 via worker-API:t:
 
 ```bash
-curl -X POST http://127.0.0.1:8765/trigger \
+curl -X POST http://127.0.0.1:8799/trigger \
   -H 'Content-Type: application/json' \
   -d '{"name":"long_term_pipeline_healthcare","overrides":{"map_limit":20}}'
 ```
 
 Tillåtna manuella overrides är `profile`, `since`, `until`, `at`, `limit`,
-`map_limit`, `cluster` och `force`. Övriga fält avvisas.
+`map_limit`, `cluster`, `force` och `all_sources`. `all_sources` är avsett för
+en uttrycklig initial backfill och kopplar bort profilens källfilter för just
+klustringssteget. Övriga fält avvisas.
+
+`limit` är maximalt antal nya artiklar som klustringssteget hämtar efter
+profilens cursor i en batch. `map_limit` är maximalt antal kluster som faktiskt
+Map-bearbetas i en pass; redan aktuella kluster räknas inte längre mot gränsen.
+En vanlig `long_term_pipeline` gör bara en pass i ordningen klustring, Map och
+rapport och är därför inte i sig en fullständig historisk backfill.
 
 **Klart när:** en veckas shadow-körningar saknar cursorluckor/dubbletter,
 failure injection återhämtas automatiskt och driftmåtten är synliga.
 
 ### Fas 6 – API och UI
 
+- Leverera read-only-API och UI bakom `long_term_analysis.ui.enabled`; flaggan
+  är avsiktligt oberoende av workerflaggan för att stödja shadow-granskning.
 - Visa senaste rapport, tidigare rapporter, period och kvalitetsvarningar.
 - Gör kluster-, snapshot- och artikelreferenser klickbara för analytisk
   granskning.
@@ -723,7 +890,7 @@ Minimikrav före produktionsaktivering:
   ändrad källvolym ska ge varning; glest data ska inte ge stark trend.
 - **End-to-end:** fixture-artiklar -> medlemskap -> snapshots -> rapport, utan
   nätverk och med fast klocka.
-- **Prestanda:** representativt 180-/400-dagarsdataset, minnesgräns,
+- **Prestanda:** representativt 90-/180-dagarsdataset, minnesgräns,
   kandidatsökning, backfilltid och normal timkostnad.
 
 ## 12. Risker och medvetna uppskjutningar

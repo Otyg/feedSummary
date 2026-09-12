@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row justify-content-center">
+  <main class="col-12 col-xl-11 pb-5">
+    <a href="{{ url_for('list_long_term_clusters', profile=cluster.profile_id, status='needs_review') }}" class="small">← Granskningskön</a>
+    <div class="d-flex flex-wrap justify-content-between gap-3 mt-2 mb-3">
+      <div>
+        <div class="small text-muted">Manuell klustergranskning</div>
+        <h1 class="h3 mb-1">{{ cluster_label }}</h1>
+      </div>
+      <span class="badge text-bg-warning align-self-start">Behöver granskas</span>
+    </div>
+
+    <div class="alert alert-info">
+      Artikeln låg över matchningströskeln för flera kluster, men skillnaden
+      mellan de två bästa kandidaterna var för liten. Bedöm om den beskriver
+      samma konkreta händelse som någon kandidat – inte bara samma produkt,
+      sårbarhetstyp eller sektor.
+    </div>
+    {% if candidate_source == 'reconstructed' %}
+      <div class="alert alert-warning">
+        Kandidaterna har rekonstruerats för ett äldre kluster eftersom deras ID:n
+        inte sparades vid den ursprungliga tilldelningen. Klustren kan ha ändrats
+        sedan dess; jämför därför artikelevidensen extra noggrant.
+      </div>
+    {% endif %}
+
+    {% set evidence = assignment.get('evidence', {}) %}
+    <section class="card mb-4 border-warning">
+      <div class="card-header fw-semibold">Artikel som behöver placeras</div>
+      <div class="card-body">
+        <h2 class="h5">{{ evidence.get('title') or cluster_label }}</h2>
+        <div class="text-muted small mb-2">
+          {{ evidence.get('source') or 'Okänd källa' }} ·
+          {{ format_ts(evidence.get('published_ts') or assignment.get('article_ts')) }}
+        </div>
+        {% if evidence.get('url') %}<a href="{{ evidence.get('url') }}" target="_blank" rel="noopener noreferrer">Öppna originalkälla ↗</a>{% endif %}
+        <dl class="row small mt-3 mb-0">
+          <dt class="col-sm-3">Orsak</dt><dd class="col-sm-9"><code>{{ assignment.get('assignment_reason') or 'ambiguous_candidates' }}</code></dd>
+          <dt class="col-sm-3">Bästa likhet</dt><dd class="col-sm-9">{% if assignment.get('similarity') is not none %}{{ '%.4f'|format(assignment.get('similarity')) }}{% else %}—{% endif %}</dd>
+          <dt class="col-sm-3">Andra likhet</dt><dd class="col-sm-9">{% if assignment.get('second_similarity') is not none %}{{ '%.4f'|format(assignment.get('second_similarity')) }}{% else %}—{% endif %}</dd>
+        </dl>
+      </div>
+    </section>
+
+    <section class="mb-4" aria-labelledby="candidate-heading">
+      <h2 id="candidate-heading" class="h4">Kandidater</h2>
+      {% if candidates %}
+        <div class="row g-3">
+          {% for candidate in candidates %}
+            <div class="col-12 col-lg-6">
+              <article class="card h-100">
+                <div class="card-header d-flex justify-content-between gap-2">
+                  <strong>Kandidat {{ candidate.rank }}</strong>
+                  {% if candidate.similarity is not none %}<span class="badge text-bg-primary">likhet {{ '%.4f'|format(candidate.similarity) }}</span>{% endif %}
+                </div>
+                <div class="card-body">
+                  <h3 class="h5"><a href="{{ url_for('view_long_term_cluster', cluster_id=candidate.id) }}" target="_blank">{{ candidate.label }}</a></h3>
+                  <p class="small text-muted">{{ candidate.member_count }} artiklar · senast observerat {{ format_ts(candidate.last_seen_ts) }} · {{ candidate.status }}</p>
+                  {% if candidate.strong_indicators %}
+                    <div class="mb-2">{% for indicator in candidate.strong_indicators[:5] %}<span class="badge text-bg-light border me-1">{{ indicator }}</span>{% endfor %}</div>
+                  {% endif %}
+                  {% if candidate.memberships %}
+                    <div class="small fw-semibold mb-1">Artikelevidens</div>
+                    <ul class="small mb-0">
+                      {% for membership in candidate.memberships[:5] %}
+                        <li>{{ membership.get('evidence', {}).get('title') or membership.article_id }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% else %}<p class="small text-muted mb-0">Ingen artikelevidens tillgänglig.</p>{% endif %}
+                </div>
+              </article>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="alert alert-danger">Kandidaterna kunde inte längre återskapas. Gör ingen sammanslagning utan separat analys.</div>
+      {% endif %}
+    </section>
+
+    <section class="card" aria-labelledby="decision-heading">
+      <div class="card-body">
+        <h2 id="decision-heading" class="h4">Beslut</h2>
+        {% if long_term_review_actions_enabled and not read_only %}
+          <form method="post" action="{{ url_for('resolve_long_term_cluster_review', cluster_id=cluster.id) }}">
+            <input type="hidden" name="expected_membership_revision" value="{{ cluster.membership_revision }}">
+            <div class="mb-3">
+              <label class="form-label" for="reviewer">Granskare</label>
+              <input class="form-control" id="reviewer" name="reviewer" maxlength="120" required autocomplete="name">
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="comment">Motivering</label>
+              <textarea class="form-control" id="comment" name="comment" maxlength="2000" rows="3" placeholder="Vilka händelseindikatorer avgjorde beslutet?"></textarea>
+            </div>
+            {% if candidates %}
+              <div class="mb-3">
+                <label class="form-label" for="target_cluster_id">Kandidat för sammanslagning</label>
+                <select class="form-select" id="target_cluster_id" name="target_cluster_id">
+                  {% for candidate in candidates if candidate.merge_allowed %}<option value="{{ candidate.id }}">Kandidat {{ candidate.rank }}: {{ candidate.label }}</option>{% endfor %}
+                </select>
+              </div>
+            {% endif %}
+            <div class="d-flex flex-wrap gap-2">
+              {% if candidates %}<button class="btn btn-danger" type="submit" name="decision" value="merge" onclick="return confirm('Slå ihop klustren? Medlemskap flyttas och en ny snapshot måste skapas.')">Slå ihop med vald kandidat</button>{% endif %}
+              <button class="btn btn-success" type="submit" name="decision" value="keep_separate">Behåll som separat händelse</button>
+              <button class="btn btn-outline-danger" type="submit" name="decision" value="exclude" onclick="return confirm('Exkludera klustret från långtidsanalysen?')">Exkludera</button>
+            </div>
+          </form>
+        {% elif read_only %}
+          <div class="alert alert-secondary mb-0">Denna viewer är read-only. Öppna granskningsvyn i den skrivbara interna viewern för att registrera beslut.</div>
+        {% else %}
+          <div class="alert alert-secondary mb-0">Granskningsåtgärder är avstängda. Aktivera <code>long_term_analysis.ui.review_actions_enabled</code> efter att skrivbehörigheten har verifierats.</div>
+        {% endif %}
+      </div>
+    </section>
+  </main>
+</div>
+{% endblock %}

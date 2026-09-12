@@ -72,16 +72,28 @@ tagging:
 long_term_analysis:
   # Aktiveras först efter kalibrering och shadow-körning enligt config/long_term.md.
   enabled: false
+  # shadow sparar långtidsresultat men blockerar alltid summary_docs-spegling.
+  # Byt uttryckligen till publish först efter godkänd shadow-period.
+  mode: shadow
+  # Read-only-vyn kan aktiveras separat för granskning av shadow-rapporter.
+  ui:
+    enabled: false
+    # Tillåter explicita, loggade beslut i den skrivbara viewern. Read-only-
+    # viewern blockerar alltid dessa POST-anrop även när flaggan är true.
+    review_actions_enabled: false
   schema_version: 1
   batch_size: 200
   quarantine_retry_limit: 50
+  # Egen retention för långtidsdata; 0 stänger av gallringen.
   retention_days: 730
   map_lease_seconds: 1800
   report_lease_seconds: 3600
   llm:
-    map_provider: local
-    reduce_provider: configured_chain
-    map_max_output_tokens: 1200
+    # cloud utesluter lokala modeller från Map/Reduce-kedjan. Välj local för
+    # ren lokal körning eller configured_chain för hela ordinarie kedjan.
+    map_provider: cloud
+    reduce_provider: cloud
+    map_max_output_tokens: 8000
     reduce_max_output_tokens: 2500
   clustering:
     embedding_purpose: similarity
@@ -90,7 +102,16 @@ long_term_analysis:
     candidate_window_days: 60
     dormant_after_days: 30
     close_after_days: 180
+  reconciliation:
+    # Förslagspasset är read-only. En sammanslagning kräver identitetsstöd och
+    # narrativa artiklar får nämna olika CVE:er för samma händelse.
+    auto_merge_similarity: 0.88
+    review_similarity: 0.82
+    candidate_window_days: 60
+    max_review_pairs: 500
   cluster_updates:
+    # Atomära enartikelssignaler räknas i trender men får inget eget LLM-anrop.
+    min_cluster_members_for_map: 2
     min_pending_articles: 3
     max_update_delay_hours: 24
     max_articles_per_call: 12
@@ -103,10 +124,12 @@ long_term_analysis:
     min_independent_events_for_trend: 3
     source_concentration_threshold: 0.75
     source_mix_change_threshold: 0.35
+    min_snapshot_member_count: 2
     max_clusters: 10000
     max_memberships_per_cluster: 10000
-    max_snapshots_per_segment: 12
+    max_snapshots_per_segment: 5
     max_snapshot_records: 10000
+    generation_attempts: 3
   profiles:
     healthcare_europe:
       enabled: true

@@ -129,7 +129,8 @@ function applyCategoriesToExistingTags() {
     const category = badge.getAttribute('data-category');
     const categoryData = window.categoriesMap.get(category);
     if (categoryData) {
-      badge.classList.add(categoryData.bg_color, categoryData.text_color);
+      badge.style.backgroundColor = categoryColorValue(categoryData.bg_color, '#6c757d');
+      badge.style.color = categoryColorValue(categoryData.text_color, '#212529');
     } else {
       badge.classList.add('bg-secondary', 'text-dark');
     }
@@ -279,7 +280,7 @@ function addTagToDisplay(tag) {
   const textColor = categoryData.text_color || 'text-dark';
   
   const badgeHtml = `
-    <span class="badge ${bgColor} ${textColor} me-1 tag-badge" data-tag-id="${tag.id}" 
+    <span class="badge me-1 tag-badge" style="background-color: ${categoryColorValue(bgColor, '#6c757d')}; color: ${categoryColorValue(textColor, '#212529')};" data-tag-id="${tag.id}"
           style="cursor: default; position: relative; display: inline-block; padding: 0.5em 0.75em;">
       ${escapeHtml(tag.name)}
       <button type="button" class="btn-close btn-close-sm" 

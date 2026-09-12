@@ -45,6 +45,9 @@ def _metric_settings(long_term: dict[str, Any]) -> LandscapeMetricSettings:
         max_memberships_per_cluster=int(
             reports.get("max_memberships_per_cluster", 10000)
         ),
+        min_snapshot_member_count=int(
+            reports.get("min_snapshot_member_count", 1)
+        ),
     )
 
 

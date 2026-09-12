@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row justify-content-center">
+  <div class="col-12 col-xl-10">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+      <div>
+        <h1 class="h3 mb-1">
+          Långtidsanalys av hotlandskapet
+          {% if long_term_mode == 'shadow' %}<span class="badge text-bg-warning">SHADOW</span>{% endif %}
+        </h1>
+        <p class="text-muted mb-0">Publicerade, oföränderliga analysrapporter.</p>
+      </div>
+      <div class="d-flex flex-wrap align-items-end gap-2">
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('list_long_term_clusters', profile=active_profile) }}">Visa kluster</a>
+      {% if available_profiles %}
+        <form method="get" class="d-flex align-items-center gap-2">
+          <label class="form-label mb-0" for="profile">Profil</label>
+          <select class="form-select form-select-sm" id="profile" name="profile" onchange="this.form.submit()">
+            {% for profile_id in available_profiles %}
+              <option value="{{ profile_id }}" {% if profile_id == active_profile %}selected{% endif %}>{{ profile_id }}</option>
+            {% endfor %}
+          </select>
+          <noscript><button class="btn btn-sm btn-primary" type="submit">Visa</button></noscript>
+        </form>
+      {% endif %}
+      </div>
+    </div>
+
+    {% if not available_profiles %}
+      <div class="alert alert-warning">Ingen långtidsprofil är konfigurerad.</div>
+    {% elif not reports %}
+      <div class="alert alert-light border">
+        Inga publicerade rapporter finns ännu för <code>{{ active_profile }}</code>.
+      </div>
+    {% else %}
+      <div class="list-group">
+        {% for report in reports %}
+          <a class="list-group-item list-group-item-action py-3" href="{{ url_for('view_long_term_report', report_id=report.id) }}">
+            <div class="d-flex w-100 justify-content-between gap-3">
+              <div>
+                <h2 class="h5 mb-1">{{ format_ts(report.period_start_ts) }} – {{ format_ts(report.period_end_ts) }}</h2>
+                <p class="mb-2">{{ report.executive_summary or "Ingen sammanfattning tillgänglig." }}</p>
+                {% if loop.first %}<span class="badge text-bg-primary">Senaste</span>{% endif %}
+                <span class="badge text-bg-secondary">{{ report.input_snapshot_count }} snapshots</span>
+                <span class="badge text-bg-info">{{ report.forecast_count }} hypoteser</span>
+                {% for warning in report.quality.get('warning_codes', []) %}
+                  <span class="badge text-bg-warning">{{ warning }}</span>
+                {% endfor %}
+              </div>
+              <small class="text-muted text-nowrap">Skapad {{ format_ts(report.created_at) }}</small>
+            </div>
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <section class="mt-5" aria-labelledby="runs-heading">
+      <h2 id="runs-heading" class="h4">Senaste pipelinekörningar</h2>
+      {% if runs %}
+        <div class="table-responsive">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>Start</th><th>Typ</th><th>Fas</th><th>Status</th></tr></thead>
+            <tbody>
+              {% for run in runs %}
+                <tr>
+                  <td>{{ format_ts(run.started_at) }}</td>
+                  <td><code>{{ run.run_type }}</code></td>
+                  <td>{{ run.stage or '—' }}</td>
+                  <td>
+                    {% if run.status == 'done' %}
+                      <span class="badge text-bg-success">done</span>
+                    {% elif run.status in ['failed', 'blocked'] %}
+                      <span class="badge text-bg-danger">{{ run.status }}</span>
+                    {% elif run.status == 'running' %}
+                      <span class="badge text-bg-primary">running</span>
+                    {% else %}
+                      <span class="badge text-bg-secondary">{{ run.status }}</span>
+                    {% endif %}
+                    {% if run.error %}<div class="small text-danger mt-1">{{ run.error_type }}: {{ run.error }}</div>{% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="text-muted">Inga registrerade pipelinekörningar ännu.</p>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

@@ -1,13 +1,67 @@
+import argparse
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import yaml
+from feedsummary_core.long_term import IncrementalBatchResult
 
 import run_long_term_clustering as cli
 
 
 class LongTermClusteringCliTests(unittest.TestCase):
+    def test_all_sources_bypasses_profile_source_resolution(self):
+        result = IncrementalBatchResult(
+            run_id="run",
+            profile_id="profile",
+            dry_run=False,
+            fetched=0,
+            assigned=0,
+            existing=0,
+            created=0,
+            matched=0,
+            needs_review=0,
+            quarantined=0,
+            quarantine_retried=0,
+            filtered=0,
+            lifecycle_updated=0,
+            cursor_fetched_at=0,
+            cursor_article_id="",
+            blocked_article_id=None,
+            blocked_reason=None,
+            assignments=(),
+        )
+        args = argparse.Namespace(
+            config=None,
+            profile="profile",
+            limit=10,
+            since=None,
+            until=None,
+            all_sources=True,
+            dry_run=False,
+        )
+        config = {
+            "long_term_analysis": {
+                "enabled": True,
+                "profiles": {
+                    "profile": {"enabled": True, "categories": ["missing"]}
+                },
+            }
+        }
+
+        with patch.object(
+            cli, "run_incremental_clustering", return_value=result
+        ) as run:
+            cli.execute_long_term_clustering(
+                args,
+                config_path=Path("/tmp/config.yaml"),
+                config=config,
+                store=object(),
+            )
+
+        self.assertIsNone(run.call_args.kwargs["sources"])
+
     def test_resolves_profile_categories_to_feed_sources(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -10,7 +10,7 @@ import os
 import socket
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -36,7 +36,7 @@ from run_long_term_clustering import (
 
 
 def _prompt_package(config_path: Path) -> dict[str, Any]:
-    path = config_path.parent / "config/prompts/long_term/cluster_update_v1.yaml"
+    path = config_path.parent / "config/prompts/long_term/cluster_update_v2.yaml"
     package = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(package, dict):
         raise TypeError(f"Map-prompten måste vara ett YAML-objekt: {path}")
@@ -46,23 +46,30 @@ def _prompt_package(config_path: Path) -> dict[str, Any]:
 def _map_llm_config(config: dict[str, Any], map_provider: str) -> dict[str, Any]:
     if map_provider == "configured_chain":
         return config
-    if map_provider != "local":
-        raise ValueError("long_term_analysis.llm.map_provider måste vara local eller configured_chain")
+    if map_provider not in {"cloud", "local"}:
+        raise ValueError(
+            "long_term_analysis.llm.map_provider måste vara cloud, local "
+            "eller configured_chain"
+        )
     configured = config.get("llm")
     entries = configured if isinstance(configured, list) else [configured]
-    local = next(
-        (
-            item
-            for item in entries
-            if isinstance(item, dict)
-            and str(item.get("provider") or "").strip().lower() == "ollama_local"
-        ),
-        None,
-    )
-    if local is None:
-        raise ValueError("Map-provider local kräver en ollama_local-konfiguration")
+    provider = "ollama_cloud" if map_provider == "cloud" else "ollama_local"
+    selected = [
+        dict(item)
+        for item in entries
+        if isinstance(item, dict)
+        and str(item.get("provider") or "").strip().lower() == provider
+    ]
+    fallback = config.get("llm_fallback")
+    if (
+        isinstance(fallback, dict)
+        and str(fallback.get("provider") or "").strip().lower() == provider
+    ):
+        selected.append(dict(fallback))
+    if not selected:
+        raise ValueError(f"Map-provider {map_provider} kräver en {provider}-konfiguration")
     result = dict(config)
-    result["llm"] = dict(local)
+    result["llm"] = selected[0] if len(selected) == 1 else selected
     result.pop("llm_fallback", None)
     return result
 
@@ -79,10 +86,20 @@ def _map_settings(long_term: dict[str, Any], llm_config: dict[str, Any]) -> MapS
         max_articles_per_call=int(updates.get("max_articles_per_call", 12)),
         article_clip_chars=int(updates.get("article_clip_chars", 2500)),
         max_context_tokens=int(provider.get("context_window_tokens", 8192)),
-        max_output_tokens=int(llm.get("map_max_output_tokens", 1200)),
+        max_output_tokens=int(llm.get("map_max_output_tokens", 8000)),
         safety_margin_tokens=int(provider.get("prompt_safety_margin", 512)),
         format_repair_attempts=1,
     )
+
+
+def _min_cluster_members_for_map(long_term: dict[str, Any]) -> int:
+    updates = long_term.get("cluster_updates") or {}
+    if not isinstance(updates, dict):
+        raise TypeError("long_term_analysis.cluster_updates måste vara ett YAML-objekt")
+    value = int(updates.get("min_cluster_members_for_map", 1))
+    if value < 1:
+        raise ValueError("min_cluster_members_for_map måste vara positivt")
+    return value
 
 
 async def execute_long_term_map(
@@ -91,6 +108,7 @@ async def execute_long_term_map(
     config_path: Path | None = None,
     config: dict[str, Any] | None = None,
     store: Any = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Execute bounded Map updates for CLI or worker callers."""
 
@@ -104,6 +122,7 @@ async def execute_long_term_map(
     provider_name = str((long_term.get("llm") or {}).get("map_provider") or "local")
     llm_config = _map_llm_config(resolved_config, provider_name)
     settings = _map_settings(long_term, llm_config)
+    min_cluster_members = _min_cluster_members_for_map(long_term)
     owns_store = store is None
     active_store = store
     if active_store is None:
@@ -122,22 +141,34 @@ async def execute_long_term_map(
     heartbeat = None
     try:
         now_ts = int(time.time())
+        requested_limit = max(1, args.limit)
         if args.cluster:
             document = active_store.get_threat_cluster(args.cluster)
             documents = [document] if document else []
         else:
+            reports = long_term.get("reports") or {}
+            if not isinstance(reports, dict):
+                raise TypeError("long_term_analysis.reports måste vara ett YAML-objekt")
+            scan_limit = max(
+                requested_limit,
+                int(reports.get("max_clusters", 10000)),
+            )
             documents = active_store.list_threat_clusters(
                 args.profile,
                 statuses=[ClusterStatus.ACTIVE.value, ClusterStatus.DORMANT.value],
-                limit=max(1, args.limit),
+                limit=scan_limit,
             )
         clusters = [ThreatCluster.from_document(doc) for doc in documents if doc]
         selected = [
             cluster
             for cluster in clusters
-            if args.force
-            or cluster_needs_map_update(cluster, now_ts=now_ts, settings=settings)
-        ][: max(1, args.limit)]
+            if cluster.member_count >= min_cluster_members
+            and cluster.membership_revision > cluster.summarized_revision
+            and (
+                args.force
+                or cluster_needs_map_update(cluster, now_ts=now_ts, settings=settings)
+            )
+        ][:requested_limit]
         if args.dry_run:
             return {
                 "profile_id": args.profile,
@@ -153,6 +184,7 @@ async def execute_long_term_map(
                     }
                     for cluster in selected
                 ],
+                "min_cluster_members_for_map": min_cluster_members,
             }
         if not selected:
             return {"profile_id": args.profile, "dry_run": False, "updates": []}
@@ -175,19 +207,59 @@ async def execute_long_term_map(
         llm_client = create_llm_client(llm_config)
         package = _prompt_package(resolved_config_path)
         results = []
-        for cluster in selected:
-            result = await update_cluster_map_snapshot(
-                active_store,
-                llm_client,
-                cluster_id=cluster.id,
-                prompt_package=package,
-                now_ts=int(time.time()),
-                settings=settings,
-                force=args.force,
-                lease_guard=heartbeat,
-            )
-            results.append(asdict(result))
-        return {"profile_id": args.profile, "dry_run": False, "updates": results}
+        failures = []
+        for attempt_number, cluster in enumerate(selected, start=1):
+            progress = {
+                "attempt_number": attempt_number,
+                "attempt_total": len(selected),
+                "cluster_id": cluster.id,
+                "membership_revision": cluster.membership_revision,
+                "summarized_revision": cluster.summarized_revision,
+                "pending_revision_units": (
+                    cluster.membership_revision - cluster.summarized_revision
+                ),
+            }
+            if progress_callback is not None:
+                progress_callback({**progress, "status": "started"})
+            try:
+                result = await update_cluster_map_snapshot(
+                    active_store,
+                    llm_client,
+                    cluster_id=cluster.id,
+                    prompt_package=package,
+                    now_ts=int(time.time()),
+                    settings=settings,
+                    force=args.force,
+                    lease_guard=heartbeat,
+                )
+                results.append(asdict(result))
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            **progress,
+                            "status": result.action,
+                            "snapshot_id": result.snapshot_id,
+                            "result_revision": result.summarized_revision,
+                        }
+                    )
+            except Exception as error:
+                if not getattr(args, "continue_on_error", False):
+                    raise
+                failure = {
+                    "cluster_id": cluster.id,
+                    "error_type": type(error).__name__,
+                    "error": " ".join(str(error).split())[:1000],
+                }
+                failures.append(failure)
+                if progress_callback is not None:
+                    progress_callback({**progress, "status": "failed", **failure})
+        return {
+            "profile_id": args.profile,
+            "dry_run": False,
+            "updates": results,
+            "failures": failures,
+            "min_cluster_members_for_map": min_cluster_members,
+        }
     finally:
         if heartbeat is not None:
             await heartbeat.stop()
@@ -212,6 +284,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cluster", help="Bearbeta endast detta kluster-ID")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--force", action="store_true", help="Ignorera update-tröskeln")
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Logga klusterfel och fortsätt med resten av batchen",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Lista endast valbara kluster")
     return parser
 

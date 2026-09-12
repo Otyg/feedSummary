@@ -10,7 +10,7 @@ import os
 import socket
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -47,25 +47,32 @@ def _prompt_package(config_path: Path, name: str) -> dict[str, Any]:
 def _reduce_llm_config(config: dict[str, Any], provider_name: str) -> dict[str, Any]:
     if provider_name == "configured_chain":
         return config
-    if provider_name != "local":
+    if provider_name not in {"cloud", "local"}:
         raise ValueError(
-            "long_term_analysis.llm.reduce_provider måste vara local eller configured_chain"
+            "long_term_analysis.llm.reduce_provider måste vara cloud, local "
+            "eller configured_chain"
         )
     configured = config.get("llm")
     entries = configured if isinstance(configured, list) else [configured]
-    local = next(
-        (
-            item
-            for item in entries
-            if isinstance(item, dict)
-            and str(item.get("provider") or "").strip().lower() == "ollama_local"
-        ),
-        None,
-    )
-    if local is None:
-        raise ValueError("Reduce-provider local kräver en ollama_local-konfiguration")
+    provider = "ollama_cloud" if provider_name == "cloud" else "ollama_local"
+    selected = [
+        dict(item)
+        for item in entries
+        if isinstance(item, dict)
+        and str(item.get("provider") or "").strip().lower() == provider
+    ]
+    fallback = config.get("llm_fallback")
+    if (
+        isinstance(fallback, dict)
+        and str(fallback.get("provider") or "").strip().lower() == provider
+    ):
+        selected.append(dict(fallback))
+    if not selected:
+        raise ValueError(
+            f"Reduce-provider {provider_name} kräver en {provider}-konfiguration"
+        )
     result = dict(config)
-    result["llm"] = dict(local)
+    result["llm"] = selected[0] if len(selected) == 1 else selected
     result.pop("llm_fallback", None)
     return result
 
@@ -101,6 +108,7 @@ def _reduce_settings(
         max_snapshots_per_segment=int(reports.get("max_snapshots_per_segment", 12)),
         max_snapshot_records=int(reports.get("max_snapshot_records", 10000)),
         format_repair_attempts=1,
+        generation_attempts=int(reports.get("generation_attempts", 3)),
     )
 
 
@@ -116,12 +124,39 @@ def _model_label(llm_config: dict[str, Any]) -> str:
     )
 
 
+def _long_term_mode(long_term: dict[str, Any]) -> str:
+    mode = str(long_term.get("mode") or "publish").strip().lower()
+    if mode not in {"shadow", "publish"}:
+        raise ValueError("long_term_analysis.mode måste vara shadow eller publish")
+    return mode
+
+
+def _report_cluster_ids(metrics: dict[str, Any]) -> tuple[set[str], set[str]]:
+    event_ids = {
+        str(cluster_id)
+        for window in metrics.get("windows") or []
+        for cluster_id in window.get("event_cluster_ids") or []
+    }
+    snapshot_eligible_ids = {
+        str(cluster_id)
+        for window in metrics.get("windows") or []
+        for cluster_id in (
+            window.get("snapshot_eligible_cluster_ids")
+            if "snapshot_eligible_cluster_ids" in window
+            else window.get("event_cluster_ids")
+        )
+        or []
+    }
+    return event_ids, snapshot_eligible_ids
+
+
 async def execute_long_term_report(
     args: argparse.Namespace,
     *,
     config_path: Path | None = None,
     config: dict[str, Any] | None = None,
     store: Any = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Execute one report publication for CLI or worker callers."""
 
@@ -132,6 +167,7 @@ async def execute_long_term_report(
         raise ValueError(
             "long_term_analysis.enabled är false; använd --dry-run eller aktivera funktionen"
         )
+    mode = _long_term_mode(long_term)
     raw_period_end = _timestamp(args.at)
     period_end_ts = raw_period_end if raw_period_end is not None else int(time.time())
     provider_name = str((long_term.get("llm") or {}).get("reduce_provider") or "configured_chain")
@@ -184,11 +220,7 @@ async def execute_long_term_report(
             settings=reduce_settings,
         )
         if args.dry_run:
-            event_ids = {
-                str(cluster_id)
-                for window in metrics["windows"]
-                for cluster_id in window.get("event_cluster_ids") or []
-            }
+            event_ids, snapshot_eligible_ids = _report_cluster_ids(metrics)
             snapshot_cluster_ids = {
                 str(snapshot.get("cluster_id") or "") for snapshot in snapshots
             }
@@ -197,8 +229,14 @@ async def execute_long_term_report(
                 "dry_run": True,
                 "period_end_ts": period_end_ts,
                 "event_cluster_count": len(event_ids),
+                "snapshot_eligible_cluster_count": len(snapshot_eligible_ids),
+                "atomic_observation_cluster_count": len(
+                    event_ids - snapshot_eligible_ids
+                ),
                 "snapshot_ids": [str(snapshot["id"]) for snapshot in snapshots],
-                "missing_snapshot_cluster_ids": sorted(event_ids - snapshot_cluster_ids),
+                "missing_snapshot_cluster_ids": sorted(
+                    snapshot_eligible_ids - snapshot_cluster_ids
+                ),
                 "quality_warning_codes": metrics["quality"]["warning_codes"],
             }
         llm_client = create_llm_client(llm_config)
@@ -222,11 +260,17 @@ async def execute_long_term_report(
             ),
             settings=reduce_settings,
             mirror_to_summary_docs=bool(
-                reports.get("mirror_to_summary_docs", True)
+                mode == "publish" and reports.get("mirror_to_summary_docs", True)
             ),
             lease_guard=heartbeat,
+            progress_callback=progress_callback,
         )
-        return {"profile_id": args.profile, "dry_run": False, **asdict(result)}
+        return {
+            "profile_id": args.profile,
+            "dry_run": False,
+            "mode": mode,
+            **asdict(result),
+        }
     finally:
         if heartbeat is not None:
             await heartbeat.stop()
@@ -241,7 +285,10 @@ async def execute_long_term_report(
 
 
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
-    return await execute_long_term_report(args)
+    def progress(event: dict[str, Any]) -> None:
+        print(json.dumps({"stage": "reduce", **event}, ensure_ascii=False), flush=True)
+
+    return await execute_long_term_report(args, progress_callback=progress)
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -85,15 +85,19 @@ def _resolve_sources(
     }
     if categories:
         feeds_config = config.get("feeds") or {}
-        raw_path = feeds_config.get("path") if isinstance(feeds_config, dict) else None
-        if not raw_path:
-            raise ValueError("Profilen har categories men feeds.path saknas")
-        feeds_path = Path(os.path.expandvars(os.path.expanduser(str(raw_path))))
-        if not feeds_path.is_absolute():
-            feeds_path = config_path.parent / feeds_path
-        feeds = _load_yaml(feeds_path) or []
+        if isinstance(feeds_config, list):
+            # feeds already resolved into a list (e.g. by the worker's load_config)
+            feeds = feeds_config
+        else:
+            raw_path = feeds_config.get("path") if isinstance(feeds_config, dict) else None
+            if not raw_path:
+                raise ValueError("Profilen har categories men feeds.path saknas")
+            feeds_path = Path(os.path.expandvars(os.path.expanduser(str(raw_path))))
+            if not feeds_path.is_absolute():
+                feeds_path = config_path.parent / feeds_path
+            feeds = _load_yaml(feeds_path) or []
         if not isinstance(feeds, list):
-            raise TypeError(f"Feedkonfigurationen måste vara en YAML-lista: {feeds_path}")
+            raise TypeError("Feedkonfigurationen måste vara en YAML-lista")
         for feed in feeds:
             if not isinstance(feed, dict):
                 continue
@@ -150,6 +154,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, help="Maximalt antal artiklar i batchen")
     parser.add_argument("--since", help="Starttid som Unix-tid eller ISO-8601")
     parser.add_argument("--until", help="Sluttid som Unix-tid eller ISO-8601")
+    parser.add_argument(
+        "--all-sources",
+        action="store_true",
+        help="Ignorera profilens källfilter för denna körning",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Beräkna utan skrivningar")
     return parser
 
@@ -173,7 +182,11 @@ def execute_long_term_clustering(
             raise ValueError(
                 "long_term_analysis.enabled är false; använd --dry-run eller aktivera funktionen"
             )
-        sources = _resolve_sources(resolved_config, resolved_config_path, profile)
+        sources = (
+            None
+            if getattr(args, "all_sources", False)
+            else _resolve_sources(resolved_config, resolved_config_path, profile)
+        )
         if active_store is None:
             store_config = _resolved_store_config(
                 resolved_config, resolved_config_path

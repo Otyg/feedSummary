@@ -32,27 +32,14 @@
           <div class="mb-3">
             <label for="category-bg-color" class="form-label">Bakgrundsfärg *</label>
             <div class="input-group">
-              <select class="form-select" id="category-bg-color" required onchange="updateColorPreview()">
-                <option value="bg-primary">Primär (blå)</option>
-                <option value="bg-secondary" selected>Sekundär (grå)</option>
-                <option value="bg-success">Framgång (grön)</option>
-                <option value="bg-danger">Fara (röd)</option>
-                <option value="bg-warning">Varning (gul)</option>
-                <option value="bg-info">Info (ljusblå)</option>
-                <option value="bg-light">Ljus</option>
-                <option value="bg-dark">Mörk</option>
-              </select>
+              <input type="color" class="form-control form-control-color" id="category-bg-color" value="#6c757d" required onchange="updateColorPreview()" title="Välj bakgrundsfärg">
               <span id="bg-color-preview" class="badge ms-2" style="width: 60px; height: 30px;"></span>
             </div>
           </div>
           
           <div class="mb-3">
             <label for="category-text-color" class="form-label">Textfärg *</label>
-            <select class="form-select" id="category-text-color" required onchange="updateColorPreview()">
-              <option value="text-dark" selected>Mörk text</option>
-              <option value="text-light">Ljus text</option>
-              <option value="text-white">Vit text</option>
-            </select>
+            <input type="color" class="form-control form-control-color" id="category-text-color" value="#212529" required onchange="updateColorPreview()" title="Välj textfärg">
           </div>
           
           <div class="mb-3">
@@ -107,7 +94,7 @@
                 <strong>{{ cat.get('label') }}</strong>
               </td>
               <td>
-                <span class="badge {{ cat.get('bg_color') }} {{ cat.get('text_color') }}">
+                <span class="badge {{ cat.get('bg_color') }} {{ cat.get('text_color') }}" style="background-color: {{ cat.get('bg_color') }}; color: {{ cat.get('text_color') }};">
                   {{ cat.get('label') }}
                 </span>
               </td>
@@ -196,8 +183,8 @@ async function editCategory(categoryId) {
     document.getElementById('category-name').value = category.name;
     document.getElementById('category-name').disabled = true;
     document.getElementById('category-label').value = category.label;
-    document.getElementById('category-bg-color').value = category.bg_color;
-    document.getElementById('category-text-color').value = category.text_color;
+    document.getElementById('category-bg-color').value = categoryColorValue(category.bg_color, '#6c757d');
+    document.getElementById('category-text-color').value = categoryColorValue(category.text_color, '#212529');
     document.getElementById('category-description').value = category.description || '';
     document.getElementById('form-title').textContent = `Redigera kategori: ${category.name}`;
     document.getElementById('category-form').style.display = 'block';
@@ -291,10 +278,13 @@ function updateColorPreview() {
   const bgColor = document.getElementById('category-bg-color').value;
   const textColor = document.getElementById('category-text-color').value;
   const previewBadge = document.getElementById('preview-badge');
-  const previewForm = document.getElementById('category-form');
+  const bgPreview = document.getElementById('bg-color-preview');
   
   // Update preview badge in form
-  previewBadge.className = `badge ${bgColor} ${textColor}`;
+  previewBadge.className = 'badge';
+  previewBadge.style.backgroundColor = bgColor;
+  previewBadge.style.color = textColor;
+  bgPreview.style.backgroundColor = bgColor;
   
   // Also update in table if editing
   if (currentEditingCategoryId) {
@@ -303,7 +293,9 @@ function updateColorPreview() {
       const badge = row.querySelector('.badge');
       if (badge) {
         const label = document.getElementById('category-label').value;
-        badge.className = `badge ${bgColor} ${textColor}`;
+        badge.className = 'badge';
+        badge.style.backgroundColor = bgColor;
+        badge.style.color = textColor;
         badge.textContent = label;
       }
     }

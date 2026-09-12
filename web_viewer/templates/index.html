@@ -101,6 +101,7 @@
           {% for tag in summary.get('_viewer_tags') %}
             <span
               class="badge {{ tag.get('bg_color') }} {{ tag.get('text_color') }}"
+              style="background-color: {{ tag.get('bg_color') }}; color: {{ tag.get('text_color') }};"
               title="{{ tag.get('category') }}"
             >{{ tag.get('name') }}</span>
           {% endfor %}

@@ -31,11 +31,13 @@
 #
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from functools import lru_cache
@@ -70,6 +72,15 @@ from feedsummary_core.summarizer.main import (
     _strip_sources_appendix_from_summary,
 )
 from feedsummary_core.summarizer.tagging import TagManager
+from feedsummary_core.long_term import (
+    ClusteringSettings,
+    ThreatCluster,
+    assign_article,
+    build_cluster_merge_operation,
+    build_cluster_membership_edit,
+    build_cluster_review_merge_operation,
+    build_cluster_review_resolution,
+)
 from feedsummary_core.llm_client import create_llm_client
 from feedsummary_core.persistence import TagRelationError
 from feedsummary_core.prompts.loader import (
@@ -196,6 +207,644 @@ def init_app_state(config_path: str, *, initialize_categories: bool = True) -> N
 
 def _md_to_html(text: str) -> str:
     return md.markdown(text or "", extensions=["extra"])
+
+
+def _long_term_ui_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return the explicit, read-only long-term UI feature flag."""
+
+    root = config if isinstance(config, dict) else APP_CFG
+    long_term = root.get("long_term_analysis") or {}
+    ui = long_term.get("ui") or {} if isinstance(long_term, dict) else {}
+    return isinstance(ui, dict) and ui.get("enabled") is True
+
+
+def _long_term_review_actions_enabled(
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    root = config if isinstance(config, dict) else APP_CFG
+    long_term = root.get("long_term_analysis") or {}
+    ui = long_term.get("ui") or {} if isinstance(long_term, dict) else {}
+    return (
+        isinstance(ui, dict)
+        and isinstance(long_term, dict)
+        and long_term.get("enabled") is True
+        and ui.get("enabled") is True
+        and ui.get("review_actions_enabled") is True
+    )
+
+
+def _long_term_profile_ids(config: Optional[Dict[str, Any]] = None) -> List[str]:
+    root = config if isinstance(config, dict) else APP_CFG
+    long_term = root.get("long_term_analysis") or {}
+    profiles = long_term.get("profiles") or {} if isinstance(long_term, dict) else {}
+    if not isinstance(profiles, dict):
+        return []
+    return sorted(str(profile_id) for profile_id in profiles if str(profile_id).strip())
+
+
+def _long_term_report_list_item(report: Dict[str, Any]) -> Dict[str, Any]:
+    analysis = report.get("analysis") or {}
+    quality = report.get("quality") or {}
+    snapshot_ids = report.get("input_snapshot_ids") or []
+    forecasts = report.get("forecast") or []
+    return {
+        "id": str(report.get("id") or ""),
+        "profile_id": str(report.get("profile_id") or ""),
+        "period_start_ts": int(report.get("period_start_ts") or 0),
+        "period_end_ts": int(report.get("period_end_ts") or 0),
+        "created_at": int(report.get("created_at") or 0),
+        "status": str(report.get("status") or ""),
+        "previous_report_id": report.get("previous_report_id"),
+        "executive_summary": (
+            str(analysis.get("executive_summary") or "")
+            if isinstance(analysis, dict)
+            else ""
+        ),
+        "quality": quality if isinstance(quality, dict) else {},
+        "input_snapshot_count": len(snapshot_ids) if isinstance(snapshot_ids, list) else 0,
+        "forecast_count": len(forecasts) if isinstance(forecasts, list) else 0,
+        "prompt_version": report.get("prompt_version"),
+        "segment_prompt_version": report.get("segment_prompt_version"),
+        "model": report.get("model"),
+    }
+
+
+def _long_term_run_list_item(run: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(run.get("id") or ""),
+        "profile_id": str(run.get("profile_id") or ""),
+        "run_type": str(run.get("run_type") or ""),
+        "status": str(run.get("status") or "unknown"),
+        "mode": str(run.get("mode") or ""),
+        "stage": str(run.get("stage") or ""),
+        "started_at": int(run.get("started_at") or 0),
+        "finished_at": int(run.get("finished_at") or 0),
+        "error_type": str(run.get("error_type") or ""),
+        "error": str(run.get("error") or "")[:1000],
+    }
+
+
+def _long_term_snapshot_list_item(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    payload = snapshot.get("payload") or {}
+    return {
+        "id": str(snapshot.get("id") or ""),
+        "profile_id": str(snapshot.get("profile_id") or ""),
+        "cluster_id": str(snapshot.get("cluster_id") or ""),
+        "membership_revision": int(snapshot.get("membership_revision") or 0),
+        "prompt_version": snapshot.get("prompt_version"),
+        "created_at": int(snapshot.get("created_at") or 0),
+        "title": str(payload.get("title") or "") if isinstance(payload, dict) else "",
+        "label": _long_term_snapshot_label(snapshot),
+        "summary": (
+            str(payload.get("summary") or "") if isinstance(payload, dict) else ""
+        ),
+    }
+
+
+_LONG_TERM_CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
+
+
+def _long_term_snapshot_label(snapshot: Dict[str, Any]) -> str:
+    """Build a concise human label without exposing storage identity as text."""
+
+    payload = snapshot.get("payload") or {}
+    payload = payload if isinstance(payload, dict) else {}
+    title = " ".join(str(payload.get("title") or "").split())
+    summary = " ".join(str(payload.get("summary") or "").split())
+    searchable = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    cves = list(
+        dict.fromkeys(value.upper() for value in _LONG_TERM_CVE_RE.findall(searchable))
+    )
+    if title:
+        if any(cve.casefold() in title.casefold() for cve in cves):
+            return title
+        if cves:
+            return f"{cves[0]} – {title}"
+        return title
+    if cves:
+        return cves[0]
+    if summary:
+        return summary if len(summary) <= 120 else f"{summary[:117].rstrip()}…"
+    revision = int(snapshot.get("membership_revision") or 0)
+    return f"Klustersnapshot, revision {revision}" if revision else "Klustersnapshot"
+
+
+def _long_term_report_link_labels(
+    store: Any, report: Dict[str, Any]
+) -> tuple[Dict[str, str], Dict[str, str]]:
+    """Resolve report snapshot/cluster IDs to labels from its frozen evidence."""
+
+    get_snapshot = getattr(store, "get_cluster_snapshot", None)
+    if not callable(get_snapshot):
+        return {}, {}
+    snapshot_labels: Dict[str, str] = {}
+    cluster_labels: Dict[str, str] = {}
+    for raw_snapshot_id in report.get("input_snapshot_ids") or []:
+        snapshot_id = str(raw_snapshot_id or "").strip()
+        if not snapshot_id:
+            continue
+        snapshot = get_snapshot(snapshot_id)
+        if not isinstance(snapshot, dict):
+            continue
+        label = _long_term_snapshot_label(snapshot)
+        snapshot_labels[snapshot_id] = label
+        cluster_id = str(snapshot.get("cluster_id") or "").strip()
+        if cluster_id:
+            cluster_labels[cluster_id] = label
+    return snapshot_labels, cluster_labels
+
+
+def _long_term_article_labels(
+    store: Any, snapshot: Dict[str, Any]
+) -> Dict[str, str]:
+    """Resolve current or retained article titles for snapshot evidence links."""
+
+    article_ids = [
+        str(value).strip()
+        for value in snapshot.get("input_article_ids") or []
+        if str(value).strip()
+    ]
+    article_id_set = set(article_ids)
+    labels: Dict[str, str] = {}
+    get_articles = getattr(store, "get_articles_by_ids", None)
+    if callable(get_articles) and article_ids:
+        for article in get_articles(article_ids) or []:
+            if not isinstance(article, dict):
+                continue
+            article_id = str(article.get("id") or "").strip()
+            title = " ".join(str(article.get("title") or "").split())
+            if article_id and title:
+                labels[article_id] = title
+    list_memberships = getattr(store, "list_cluster_memberships", None)
+    cluster_id = str(snapshot.get("cluster_id") or "").strip()
+    if callable(list_memberships) and cluster_id:
+        rows = list_memberships(cluster_id, limit=max(1000, len(article_ids))) or []
+        for membership in rows:
+            if not isinstance(membership, dict):
+                continue
+            article_id = str(membership.get("article_id") or "").strip()
+            evidence = membership.get("evidence") or {}
+            title = (
+                " ".join(str(evidence.get("title") or "").split())
+                if isinstance(evidence, dict)
+                else ""
+            )
+            if article_id in article_id_set and title:
+                labels.setdefault(article_id, title)
+    return labels
+
+
+def _long_term_cluster_public_item(cluster: Dict[str, Any]) -> Dict[str, Any]:
+    """Exclude stored vectors while retaining review and identity metadata."""
+
+    return {
+        key: value
+        for key, value in cluster.items()
+        if key not in {"centroid", "vector_sum"}
+    }
+
+
+_LONG_TERM_CLUSTER_STATUSES = ("active", "dormant", "needs_review", "closed")
+
+
+def _long_term_cluster_label(store: Any, cluster: Dict[str, Any]) -> str:
+    """Resolve a readable cluster name from its latest retained evidence."""
+
+    latest_snapshot_id = str(cluster.get("latest_snapshot_id") or "").strip()
+    get_snapshot = getattr(store, "get_cluster_snapshot", None)
+    if latest_snapshot_id and callable(get_snapshot):
+        snapshot = get_snapshot(latest_snapshot_id)
+        if isinstance(snapshot, dict):
+            return _long_term_snapshot_label(snapshot)
+
+    title = ""
+    list_memberships = getattr(store, "list_cluster_memberships", None)
+    cluster_id = str(cluster.get("id") or "").strip()
+    if cluster_id and callable(list_memberships):
+        memberships = list_memberships(cluster_id, limit=1) or []
+        if memberships and isinstance(memberships[0], dict):
+            evidence = memberships[0].get("evidence") or {}
+            if isinstance(evidence, dict):
+                title = " ".join(str(evidence.get("title") or "").split())
+
+    indicators = [
+        " ".join(str(value).split())
+        for value in cluster.get("strong_indicators") or []
+        if str(value).strip()
+    ]
+    cves = list(
+        dict.fromkeys(
+            match.upper()
+            for value in [title, *indicators]
+            for match in _LONG_TERM_CVE_RE.findall(value)
+        )
+    )
+    if title:
+        if cves and not any(cve.casefold() in title.casefold() for cve in cves):
+            return f"{cves[0]} – {title}"
+        return title
+    if cves:
+        return cves[0]
+    if indicators:
+        return indicators[0]
+    return "Händelsekluster utan titel"
+
+
+def _long_term_cluster_list_item(
+    store: Any, cluster: Dict[str, Any]
+) -> Dict[str, Any]:
+    membership_revision = int(cluster.get("membership_revision") or 0)
+    summarized_revision = int(cluster.get("summarized_revision") or 0)
+    return {
+        "id": str(cluster.get("id") or ""),
+        "profile_id": str(cluster.get("profile_id") or ""),
+        "label": _long_term_cluster_label(store, cluster),
+        "status": str(cluster.get("status") or "unknown"),
+        "first_seen_ts": int(cluster.get("first_seen_ts") or 0),
+        "last_seen_ts": int(cluster.get("last_seen_ts") or 0),
+        "member_count": int(cluster.get("member_count") or 0),
+        "membership_revision": membership_revision,
+        "summarized_revision": summarized_revision,
+        "pending_revision_count": max(0, membership_revision - summarized_revision),
+        "latest_snapshot_id": cluster.get("latest_snapshot_id"),
+        "strong_indicators": [
+            str(value)
+            for value in cluster.get("strong_indicators") or []
+            if str(value).strip()
+        ],
+        "superseded_by_cluster_id": cluster.get("superseded_by_cluster_id"),
+    }
+
+
+def _long_term_cluster_page(
+    store: Any,
+    profile_id: str,
+    *,
+    status: str,
+    page: int,
+    per_page: int,
+    min_members: int,
+) -> Dict[str, Any]:
+    list_clusters = getattr(store, "list_threat_clusters", None)
+    if not callable(list_clusters):
+        raise RuntimeError("long-term cluster store methods are unavailable")
+    rows = list_clusters(
+        profile_id,
+        statuses=[status] if status else None,
+        min_member_count=min_members,
+        limit=per_page + 1,
+        offset=(page - 1) * per_page,
+        include_vectors=False,
+    ) or []
+    valid_rows = [
+        row for row in rows if isinstance(row, dict) and str(row.get("id") or "")
+    ]
+    has_next = len(valid_rows) > per_page
+    return {
+        "items": [
+            _long_term_cluster_list_item(store, row)
+            for row in valid_rows[:per_page]
+        ],
+        "page": page,
+        "per_page": per_page,
+        "has_previous": page > 1,
+        "has_next": has_next,
+    }
+
+
+def _long_term_cluster_list_parameters() -> tuple[str, int, int, int]:
+    status = str(request.args.get("status") or "").strip()
+    if status == "all":
+        status = ""
+    if status and status not in _LONG_TERM_CLUSTER_STATUSES:
+        abort(400)
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = max(1, min(100, int(request.args.get("per_page", "50"))))
+    except (TypeError, ValueError):
+        per_page = 50
+    try:
+        min_members = max(1, min(100000, int(request.args.get("min_members", "1"))))
+    except (TypeError, ValueError):
+        min_members = 1
+    return status, page, per_page, min_members
+
+
+def _long_term_clustering_settings() -> ClusteringSettings:
+    long_term = APP_CFG.get("long_term_analysis") or {}
+    clustering = long_term.get("clustering") or {} if isinstance(long_term, dict) else {}
+    clustering = clustering if isinstance(clustering, dict) else {}
+    return ClusteringSettings(
+        similarity_threshold=float(clustering.get("similarity_threshold", 0.80)),
+        ambiguity_margin=float(clustering.get("ambiguity_margin", 0.03)),
+        candidate_window_days=int(clustering.get("candidate_window_days", 60)),
+    )
+
+
+def _long_term_review_candidate_data(
+    store: Any,
+    cluster: Dict[str, Any],
+    membership: Dict[str, Any],
+) -> tuple[List[Dict[str, Any]], str]:
+    candidate_ids = [
+        str(membership.get(field) or "").strip()
+        for field in (
+            "best_candidate_cluster_id",
+            "second_candidate_cluster_id",
+        )
+    ]
+    scores = [membership.get("similarity"), membership.get("second_similarity")]
+    source = "persisted"
+    if not any(candidate_ids):
+        source = "reconstructed"
+        list_clusters = getattr(store, "list_threat_clusters", None)
+        if not callable(list_clusters):
+            raise RuntimeError("long-term cluster store methods are unavailable")
+        assigned_at = int(membership.get("assigned_at") or cluster.get("last_seen_ts") or 0)
+        candidate_documents = list_clusters(
+            str(cluster.get("profile_id") or ""),
+            statuses=["active", "dormant"],
+            embedding_model=str(cluster.get("embedding_model") or ""),
+            embedding_dimension=int(cluster.get("embedding_dimension") or 0),
+            embedding_instruction=str(cluster.get("embedding_instruction") or ""),
+            limit=10000,
+        ) or []
+        candidates = [
+            ThreatCluster.from_document(row)
+            for row in candidate_documents
+            if isinstance(row, dict)
+            and str(row.get("id") or "") != str(cluster.get("id") or "")
+            and int(row.get("first_seen_ts") or 0) <= assigned_at
+        ]
+        review = ThreatCluster.from_document(cluster)
+        decision = assign_article(
+            profile_id=review.profile_id,
+            article_ts=review.last_seen_ts,
+            embedding=review.centroid,
+            signature=review.embedding_signature,
+            candidates=candidates,
+            strong_indicators=review.strong_indicators,
+            strict_cve_identity=review.strict_cve_identity,
+            settings=_long_term_clustering_settings(),
+        )
+        candidate_ids = [
+            str(decision.best_candidate_cluster_id or ""),
+            str(decision.second_candidate_cluster_id or ""),
+        ]
+        scores = [decision.similarity, decision.second_similarity]
+
+    get_cluster = getattr(store, "get_threat_cluster", None)
+    if not callable(get_cluster):
+        raise RuntimeError("long-term cluster store methods are unavailable")
+    result: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for rank, (candidate_id, score) in enumerate(zip(candidate_ids, scores), start=1):
+        if not candidate_id or candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        document = get_cluster(candidate_id)
+        if not isinstance(document, dict):
+            continue
+        bundle = _long_term_cluster_bundle(store, candidate_id, membership_limit=20)
+        if bundle is None:
+            continue
+        item = _long_term_cluster_list_item(store, document)
+        item.update(
+            {
+                "rank": rank,
+                "similarity": float(score) if score is not None else None,
+                "memberships": bundle["memberships"],
+                "memberships_truncated": bundle["memberships_truncated"],
+                "latest_snapshot": bundle["snapshots"][0]
+                if bundle["snapshots"]
+                else None,
+                "merge_allowed": str(document.get("status") or "")
+                in {"active", "dormant"},
+            }
+        )
+        result.append(item)
+    return result, source
+
+
+def _long_term_cluster_comparison_data(
+    store: Any, cluster: Dict[str, Any], *, limit: int = 6
+) -> List[Dict[str, Any]]:
+    """Return nearby open clusters that can be compared or merged manually."""
+
+    list_clusters = getattr(store, "list_threat_clusters", None)
+    if not callable(list_clusters):
+        raise RuntimeError("long-term cluster store methods are unavailable")
+    source_id = str(cluster.get("id") or "")
+    source_centroid = [float(value) for value in cluster.get("centroid") or []]
+    source_norm = sum(value * value for value in source_centroid) ** 0.5
+    if not source_norm:
+        return []
+    source_indicators = {str(value) for value in cluster.get("strong_indicators") or []}
+    documents = list_clusters(
+        str(cluster.get("profile_id") or ""),
+        statuses=["active", "dormant"],
+        embedding_model=str(cluster.get("embedding_model") or ""),
+        embedding_dimension=int(cluster.get("embedding_dimension") or 0),
+        embedding_instruction=str(cluster.get("embedding_instruction") or ""),
+        limit=10000,
+    ) or []
+    candidates: List[Dict[str, Any]] = []
+    for document in documents:
+        candidate_id = str(document.get("id") or "")
+        if candidate_id == source_id or document.get("superseded_by_cluster_id"):
+            continue
+        centroid = [float(value) for value in document.get("centroid") or []]
+        norm = sum(value * value for value in centroid) ** 0.5
+        if len(centroid) != len(source_centroid) or not norm:
+            continue
+        similarity = sum(left * right for left, right in zip(source_centroid, centroid))
+        similarity /= source_norm * norm
+        item = _long_term_cluster_list_item(store, document)
+        item["similarity"] = round(similarity, 6)
+        item["shared_indicators"] = sorted(
+            source_indicators
+            & {str(value) for value in document.get("strong_indicators") or []}
+        )
+        bundle = _long_term_cluster_bundle(store, candidate_id, membership_limit=20)
+        if bundle is None:
+            continue
+        item["memberships"] = bundle["memberships"]
+        item["latest_snapshot"] = bundle["snapshots"][0] if bundle["snapshots"] else None
+        item["merge_allowed"] = True
+        candidates.append(item)
+    candidates.sort(key=lambda row: (-float(row["similarity"]), str(row["id"])))
+    return candidates[:limit]
+
+
+def _long_term_review_bundle(store: Any, cluster_id: str) -> Optional[Dict[str, Any]]:
+    get_cluster = getattr(store, "get_threat_cluster", None)
+    if not callable(get_cluster):
+        raise RuntimeError("long-term cluster store methods are unavailable")
+    cluster = get_cluster(cluster_id)
+    if not isinstance(cluster, dict):
+        return None
+    if str(cluster.get("status") or "") != "needs_review":
+        return None
+    bundle = _long_term_cluster_bundle(store, cluster_id, membership_limit=20)
+    if bundle is None or not bundle["memberships"]:
+        raise RuntimeError("review cluster has no retained membership")
+    membership = next(
+        (
+            row
+            for row in bundle["memberships"]
+            if str(row.get("assignment_action") or "") == "needs_review"
+        ),
+        bundle["memberships"][0],
+    )
+    candidates, source = _long_term_review_candidate_data(store, cluster, membership)
+    return {
+        **bundle,
+        "assignment": membership,
+        "candidates": candidates,
+        "candidate_source": source,
+    }
+
+
+def _long_term_membership_public_item(
+    membership: Dict[str, Any], *, article_available: bool
+) -> Dict[str, Any]:
+    item = dict(membership)
+    item["article_available"] = bool(article_available)
+    return item
+
+
+def _long_term_cluster_bundle(
+    store: Any, cluster_id: str, *, membership_limit: int
+) -> Optional[Dict[str, Any]]:
+    get_cluster = getattr(store, "get_threat_cluster", None)
+    list_memberships = getattr(store, "list_cluster_memberships", None)
+    list_snapshots = getattr(store, "list_cluster_snapshots", None)
+    if not all(
+        callable(method)
+        for method in (get_cluster, list_memberships, list_snapshots)
+    ):
+        raise RuntimeError("long-term provenance store methods are unavailable")
+
+    cluster = get_cluster(str(cluster_id))
+    if not isinstance(cluster, dict):
+        return None
+    memberships = [
+        row
+        for row in (list_memberships(str(cluster_id), limit=membership_limit) or [])
+        if isinstance(row, dict) and row.get("article_id")
+    ]
+    article_ids = [str(row["article_id"]) for row in memberships]
+    available_ids: set[str] = set()
+    get_articles = getattr(store, "get_articles_by_ids", None)
+    if callable(get_articles) and article_ids:
+        available_ids = {
+            str(row.get("id") or "")
+            for row in (get_articles(article_ids) or [])
+            if isinstance(row, dict) and row.get("id")
+        }
+    snapshots = [
+        _long_term_snapshot_list_item(row)
+        for row in (
+            list_snapshots(
+                str(cluster.get("profile_id") or ""),
+                cluster_id=str(cluster_id),
+                limit=1000,
+            )
+            or []
+        )
+        if isinstance(row, dict) and row.get("id")
+    ]
+    latest_snapshot = max(
+        snapshots,
+        key=lambda row: (int(row.get("created_at") or 0), str(row.get("id") or "")),
+        default=None,
+    )
+    superseded_by = None
+    superseding_id = str(cluster.get("superseded_by_cluster_id") or "").strip()
+    if superseding_id:
+        superseding_cluster = get_cluster(superseding_id)
+        superseding_snapshots = (
+            list_snapshots(
+                str(cluster.get("profile_id") or ""),
+                cluster_id=superseding_id,
+                limit=1000,
+            )
+            if isinstance(superseding_cluster, dict)
+            else []
+        )
+        superseding_latest = max(
+            (
+                _long_term_snapshot_list_item(row)
+                for row in superseding_snapshots or []
+                if isinstance(row, dict) and row.get("id")
+            ),
+            key=lambda row: (
+                int(row.get("created_at") or 0),
+                str(row.get("id") or ""),
+            ),
+            default=None,
+        )
+        superseded_by = {
+            "id": superseding_id,
+            "label": (
+                str(superseding_latest.get("label") or "Sammanslaget händelsekluster")
+                if superseding_latest is not None
+                else "Sammanslaget händelsekluster"
+            ),
+        }
+    member_count = int(cluster.get("member_count") or len(memberships))
+    return {
+        "cluster": _long_term_cluster_public_item(cluster),
+        "cluster_label": (
+            str(latest_snapshot.get("label") or "Händelsekluster utan titel")
+            if latest_snapshot is not None
+            else "Händelsekluster utan titel"
+        ),
+        "memberships": [
+            _long_term_membership_public_item(
+                row, article_available=str(row["article_id"]) in available_ids
+            )
+            for row in memberships
+        ],
+        "snapshots": snapshots,
+        "superseded_by": superseded_by,
+        "memberships_truncated": member_count > len(memberships),
+    }
+
+
+def _require_long_term_ui() -> None:
+    if not _long_term_ui_enabled():
+        abort(404)
+
+
+def _require_long_term_review_actions() -> None:
+    _require_long_term_ui()
+    if not _long_term_review_actions_enabled():
+        abort(403)
+
+
+def _selected_long_term_profile() -> tuple[str, List[str]]:
+    profiles = _long_term_profile_ids()
+    selected = str(request.args.get("profile") or "").strip()
+    if not selected and profiles:
+        selected = profiles[0]
+    if selected and selected not in profiles:
+        abort(404)
+    return selected, profiles
+
+
+@app.context_processor
+def _long_term_template_context() -> Dict[str, Any]:
+    long_term = APP_CFG.get("long_term_analysis") or {}
+    mode = str(long_term.get("mode") or "") if isinstance(long_term, dict) else ""
+    return {
+        "long_term_ui_enabled": _long_term_ui_enabled(),
+        "long_term_mode": mode,
+        "long_term_review_actions_enabled": _long_term_review_actions_enabled(),
+    }
 
 
 _INVALID_XML_CHARS = re.compile(
@@ -1439,6 +2088,527 @@ def api_summary(summary_id: str):
     return jsonify({"item": sdoc})
 
 
+@app.route("/api/v1/long-term/reports")
+def api_long_term_reports():
+    """List immutable threat-landscape reports for one configured profile."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    profile_id, profiles = _selected_long_term_profile()
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
+
+    if not profile_id:
+        return jsonify(
+            {
+                "schema_version": 1,
+                "items": [],
+                "active_profile": None,
+                "available_profiles": profiles,
+            }
+        )
+
+    list_reports = getattr(store, "list_threat_landscape_reports", None)
+    if not callable(list_reports):
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    try:
+        reports = list_reports(profile_id, limit=limit) or []
+    except Exception:
+        logger.exception("Could not list long-term reports for %s", profile_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+
+    return jsonify(
+        {
+            "schema_version": 1,
+            "items": [
+                _long_term_report_list_item(row)
+                for row in reports
+                if isinstance(row, dict) and row.get("id")
+            ],
+            "active_profile": profile_id,
+            "available_profiles": profiles,
+        }
+    )
+
+
+@app.route("/api/v1/long-term/reports/<report_id>")
+def api_long_term_report(report_id: str):
+    """Return one immutable threat-landscape report."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    get_report = getattr(store, "get_threat_landscape_report", None)
+    if not callable(get_report):
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    try:
+        report = get_report(str(report_id).strip())
+    except Exception:
+        logger.exception("Could not read long-term report %s", report_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    if not isinstance(report, dict):
+        abort(404)
+    return jsonify({"schema_version": 1, "item": report})
+
+
+@app.route("/api/v1/long-term/runs")
+def api_long_term_runs():
+    """List recent long-term worker runs for operational shadow review."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    profile_id, profiles = _selected_long_term_profile()
+    try:
+        limit = int(request.args.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 200))
+    if not profile_id:
+        return jsonify(
+            {
+                "schema_version": 1,
+                "items": [],
+                "active_profile": None,
+                "available_profiles": profiles,
+            }
+        )
+    list_runs = getattr(store, "list_long_term_runs", None)
+    if not callable(list_runs):
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    try:
+        runs = list_runs(profile_id, limit=limit) or []
+    except Exception:
+        logger.exception("Could not list long-term runs for %s", profile_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    return jsonify(
+        {
+            "schema_version": 1,
+            "items": [
+                _long_term_run_list_item(row)
+                for row in runs
+                if isinstance(row, dict) and row.get("id")
+            ],
+            "active_profile": profile_id,
+            "available_profiles": profiles,
+        }
+    )
+
+
+@app.route("/api/v1/long-term/snapshots/<snapshot_id>")
+def api_long_term_snapshot(snapshot_id: str):
+    """Return one immutable cluster snapshot."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    get_snapshot = getattr(store, "get_cluster_snapshot", None)
+    if not callable(get_snapshot):
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    try:
+        snapshot = get_snapshot(str(snapshot_id).strip())
+    except Exception:
+        logger.exception("Could not read long-term snapshot %s", snapshot_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    if not isinstance(snapshot, dict):
+        abort(404)
+    return jsonify({"schema_version": 1, "item": snapshot})
+
+
+@app.route("/api/v1/long-term/clusters")
+def api_long_term_clusters():
+    """List review-safe threat clusters for one configured profile."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    profile_id, profiles = _selected_long_term_profile()
+    status, page, per_page, min_members = _long_term_cluster_list_parameters()
+    if not profile_id:
+        return jsonify(
+            {
+                "schema_version": 1,
+                "items": [],
+                "active_profile": None,
+                "available_profiles": profiles,
+                "available_statuses": list(_LONG_TERM_CLUSTER_STATUSES),
+                "active_status": status or "all",
+                "page": page,
+                "per_page": per_page,
+                "min_members": min_members,
+                "has_previous": False,
+                "has_next": False,
+            }
+        )
+    try:
+        result = _long_term_cluster_page(
+            store,
+            profile_id,
+            status=status,
+            page=page,
+            per_page=per_page,
+            min_members=min_members,
+        )
+    except Exception:
+        logger.exception("Could not list long-term clusters for %s", profile_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    return jsonify(
+        {
+            "schema_version": 1,
+            **result,
+            "active_profile": profile_id,
+            "available_profiles": profiles,
+            "available_statuses": list(_LONG_TERM_CLUSTER_STATUSES),
+            "active_status": status or "all",
+            "min_members": min_members,
+        }
+    )
+
+
+@app.route("/api/v1/long-term/clusters/<cluster_id>")
+def api_long_term_cluster(cluster_id: str):
+    """Return a review-safe cluster with snapshots and retained memberships."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        membership_limit = int(request.args.get("membership_limit", "500"))
+    except (TypeError, ValueError):
+        membership_limit = 500
+    membership_limit = max(1, min(membership_limit, 2000))
+    try:
+        bundle = _long_term_cluster_bundle(
+            store,
+            str(cluster_id).strip(),
+            membership_limit=membership_limit,
+        )
+    except Exception:
+        logger.exception("Could not read long-term cluster %s", cluster_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    if bundle is None:
+        abort(404)
+    try:
+        get_cluster = getattr(store, "get_threat_cluster", None)
+        source_cluster = get_cluster(str(cluster_id).strip()) if callable(get_cluster) else None
+        comparison_candidates = _long_term_cluster_comparison_data(
+            store, source_cluster if isinstance(source_cluster, dict) else bundle["cluster"]
+        )
+    except Exception:
+        logger.exception("Could not compare long-term cluster %s", cluster_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    return jsonify(
+        {
+            "schema_version": 1,
+            "item": bundle["cluster"],
+            "memberships": bundle["memberships"],
+            "snapshots": bundle["snapshots"],
+            "memberships_truncated": bundle["memberships_truncated"],
+            "comparison_candidates": comparison_candidates,
+        }
+    )
+
+
+@app.route("/api/v1/long-term/reviews/<cluster_id>")
+def api_long_term_cluster_review(cluster_id: str):
+    """Return one ambiguous cluster and its two review candidates."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        bundle = _long_term_review_bundle(store, str(cluster_id).strip())
+    except Exception:
+        logger.exception("Could not build long-term review %s", cluster_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    if bundle is None:
+        abort(404)
+    return jsonify(
+        {
+            "schema_version": 1,
+            "item": bundle["cluster"],
+            "label": bundle["cluster_label"],
+            "assignment": bundle["assignment"],
+            "candidates": bundle["candidates"],
+            "candidate_source": bundle["candidate_source"],
+            "review_actions_enabled": _long_term_review_actions_enabled(),
+        }
+    )
+
+
+@app.route("/api/v1/long-term/clusters/<cluster_id>/review", methods=["POST"])
+def resolve_long_term_cluster_review(cluster_id: str):
+    """Apply one explicit, audited decision to an ambiguous cluster."""
+
+    _require_long_term_review_actions()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    values = request.get_json(silent=True) if request.is_json else request.form
+    values = values if isinstance(values, dict) or hasattr(values, "get") else {}
+    decision = str(values.get("decision") or "").strip()
+    reviewer = " ".join(str(values.get("reviewer") or "").split())
+    comment = str(values.get("comment") or "").strip()
+    target_cluster_id = str(values.get("target_cluster_id") or "").strip()
+    try:
+        expected_revision = int(values.get("expected_membership_revision"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "expected_membership_revision_required"}), 400
+    if decision not in {"keep_separate", "exclude", "merge"}:
+        return jsonify({"error": "invalid_review_decision"}), 400
+    if not reviewer:
+        return jsonify({"error": "reviewer_required"}), 400
+
+    cluster_id = str(cluster_id).strip()
+    try:
+        bundle = _long_term_review_bundle(store, cluster_id)
+        get_cluster = getattr(store, "get_threat_cluster", None)
+        cluster = get_cluster(cluster_id) if callable(get_cluster) else None
+        if bundle is None and decision == "merge" and isinstance(cluster, dict):
+            comparison_candidates = _long_term_cluster_comparison_data(store, cluster)
+            bundle = {
+                "cluster": cluster,
+                "candidates": comparison_candidates,
+            }
+    except Exception:
+        logger.exception("Could not load long-term review %s", cluster_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    if bundle is None or not isinstance(cluster, dict):
+        abort(404)
+    if int(cluster.get("membership_revision") or 0) != expected_revision:
+        return jsonify({"error": "cluster_revision_conflict"}), 409
+    reviewed_at = int(time.time())
+
+    try:
+        if decision == "merge":
+            allowed_ids = {str(row["id"]) for row in bundle["candidates"]}
+            if target_cluster_id not in allowed_ids:
+                return jsonify({"error": "invalid_review_target"}), 400
+            target = get_cluster(target_cluster_id)
+            if not isinstance(target, dict):
+                return jsonify({"error": "review_target_not_found"}), 404
+            list_memberships = getattr(store, "list_cluster_memberships", None)
+            apply_reconciliation = getattr(store, "apply_cluster_reconciliation", None)
+            if not callable(list_memberships) or not callable(apply_reconciliation):
+                return jsonify({"error": "long_term_store_unavailable"}), 503
+            if str(cluster.get("status") or "") == "needs_review":
+                operation = build_cluster_review_merge_operation(
+                    cluster,
+                    target,
+                    {
+                        cluster_id: list_memberships(cluster_id),
+                        target_cluster_id: list_memberships(target_cluster_id),
+                    },
+                    allowed_candidate_cluster_ids=allowed_ids,
+                    reviewed_at=reviewed_at,
+                    reviewed_by=reviewer,
+                    comment=comment,
+                )
+            else:
+                if str(cluster.get("status") or "") not in {"active", "dormant"}:
+                    return jsonify({"error": "cluster_not_open_for_merge"}), 409
+                identity = {
+                    "source": [cluster_id, int(cluster.get("membership_revision") or 0)],
+                    "target": [target_cluster_id, int(target.get("membership_revision") or 0)],
+                    "profile_id": str(cluster.get("profile_id") or ""),
+                }
+                reconciliation_id = "threat_manual_" + hashlib.sha256(
+                    json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()[:32]
+                operation = build_cluster_merge_operation(
+                    [cluster, target],
+                    {
+                        cluster_id: list_memberships(cluster_id),
+                        target_cluster_id: list_memberships(target_cluster_id),
+                    },
+                    primary_cluster_id=target_cluster_id,
+                    reconciliation_id=reconciliation_id,
+                    reconciled_at=reviewed_at,
+                )
+                for tombstone in operation["superseded_clusters"]:
+                    if str(tombstone.get("id") or "") == cluster_id:
+                        tombstone.update(
+                            {
+                                "review_decision": "merge",
+                                "reviewed_at": reviewed_at,
+                                "reviewed_by": reviewer,
+                                "review_comment": " ".join(comment.split()) or None,
+                                "reviewed_target_cluster_id": target_cluster_id,
+                            }
+                        )
+                operation["review_resolution"] = {
+                    "review_cluster_id": cluster_id,
+                    "target_cluster_id": target_cluster_id,
+                    "review_decision": "merge",
+                    "reviewed_at": reviewed_at,
+                    "reviewed_by": reviewer,
+                    "review_comment": " ".join(comment.split()) or None,
+                    "reviewed_target_cluster_id": target_cluster_id,
+                }
+            if not apply_reconciliation(operation):
+                return jsonify({"error": "cluster_revision_conflict"}), 409
+            result = {
+                "decision": decision,
+                "cluster_id": cluster_id,
+                "target_cluster_id": target_cluster_id,
+                "reconciliation_id": operation["id"],
+            }
+            redirect_cluster_id = cluster_id
+        else:
+            resolve_review = getattr(store, "resolve_threat_cluster_review", None)
+            if not callable(resolve_review):
+                return jsonify({"error": "long_term_store_unavailable"}), 503
+            resolution = build_cluster_review_resolution(
+                cluster,
+                decision=decision,
+                reviewed_at=reviewed_at,
+                reviewed_by=reviewer,
+                comment=comment,
+            )
+            if not resolve_review(
+                resolution,
+                expected_membership_revision=expected_revision,
+            ):
+                return jsonify({"error": "cluster_revision_conflict"}), 409
+            result = {
+                "decision": decision,
+                "cluster_id": cluster_id,
+                "status": resolution["status"],
+            }
+            redirect_cluster_id = cluster_id
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": "invalid_review", "detail": str(exc)}), 400
+    except Exception:
+        logger.exception("Could not resolve long-term review %s", cluster_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+
+    if request.is_json:
+        return jsonify({"schema_version": 1, "item": result})
+    return redirect(url_for("view_long_term_cluster", cluster_id=redirect_cluster_id))
+
+
+@app.route("/api/v1/long-term/clusters/<cluster_id>/members", methods=["POST"])
+def edit_long_term_cluster_membership(cluster_id: str):
+    """Move an article here or split one member into a separate cluster."""
+
+    _require_long_term_review_actions()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    values = request.get_json(silent=True) if request.is_json else request.form
+    values = values if isinstance(values, dict) or hasattr(values, "get") else {}
+    action = str(values.get("action") or "").strip()
+    article_id = str(values.get("article_id") or "").strip()
+    reviewer = " ".join(str(values.get("reviewer") or "").split())
+    comment = str(values.get("comment") or "").strip()
+    try:
+        expected_revision = int(values.get("expected_membership_revision"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "expected_membership_revision_required"}), 400
+    if action not in {"move_here", "split_out"}:
+        return jsonify({"error": "invalid_membership_action"}), 400
+    if not article_id:
+        return jsonify({"error": "article_id_required"}), 400
+    if not reviewer:
+        return jsonify({"error": "reviewer_required"}), 400
+
+    cluster_id = str(cluster_id).strip()
+    try:
+        get_cluster = getattr(store, "get_threat_cluster", None)
+        get_membership = getattr(store, "get_cluster_membership", None)
+        list_memberships = getattr(store, "list_cluster_memberships", None)
+        get_articles = getattr(store, "get_articles_by_ids", None)
+        apply_edit = getattr(store, "apply_cluster_membership_edit", None)
+        if not all(
+            callable(method)
+            for method in (
+                get_cluster,
+                get_membership,
+                list_memberships,
+                get_articles,
+                apply_edit,
+            )
+        ):
+            return jsonify({"error": "long_term_store_unavailable"}), 503
+        selected = get_cluster(cluster_id)
+        if not isinstance(selected, dict):
+            abort(404)
+        if int(selected.get("membership_revision") or 0) != expected_revision:
+            return jsonify({"error": "cluster_revision_conflict"}), 409
+        profile_id = str(selected.get("profile_id") or "")
+        current_membership = get_membership(profile_id, article_id)
+        if not isinstance(current_membership, dict):
+            return jsonify({"error": "article_has_no_cluster_membership"}), 404
+        source_id = str(current_membership.get("cluster_id") or "")
+        source = get_cluster(source_id)
+        if not isinstance(source, dict):
+            return jsonify({"error": "source_cluster_not_found"}), 404
+        articles = get_articles([article_id]) or []
+        article = next(
+            (
+                row
+                for row in articles
+                if isinstance(row, dict) and str(row.get("id") or "") == article_id
+            ),
+            None,
+        )
+        if article is None:
+            return jsonify({"error": "article_embedding_unavailable"}), 409
+        if action == "move_here":
+            target = selected
+            if source_id == cluster_id:
+                return jsonify({"error": "article_already_in_target_cluster"}), 409
+        else:
+            if source_id != cluster_id:
+                return jsonify({"error": "article_not_in_source_cluster"}), 409
+            target = None
+        operation = build_cluster_membership_edit(
+            source,
+            list_memberships(source_id, limit=100000),
+            target_cluster=target,
+            target_memberships=(
+                list_memberships(cluster_id, limit=100000) if target is not None else ()
+            ),
+            article=article,
+            article_id=article_id,
+            edited_at=int(time.time()),
+            edited_by=reviewer,
+            comment=comment,
+        )
+        if not apply_edit(operation):
+            return jsonify({"error": "cluster_revision_conflict"}), 409
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": "invalid_membership_edit", "detail": str(exc)}), 400
+    except Exception:
+        logger.exception("Could not edit membership %s for cluster %s", article_id, cluster_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+
+    result = {
+        "edit_id": operation["id"],
+        "action": operation["action"],
+        "article_id": article_id,
+        "source_cluster_id": operation["source_cluster_id"],
+        "target_cluster_id": operation["target_cluster_id"],
+    }
+    if request.is_json:
+        return jsonify({"schema_version": 1, "item": result})
+    return redirect(
+        url_for("view_long_term_cluster", cluster_id=operation["target_cluster_id"])
+    )
+
+
 @app.route("/api/v1/articles")
 def api_articles():
     """
@@ -1706,6 +2876,217 @@ def list_summaries():
         summaries=filtered_docs,
         available_topics=all_topics,
         active_topics=selected_topics,
+        format_ts=format_ts,
+    )
+
+
+@app.route("/long-term")
+def list_long_term_reports():
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+
+    profile_id, profiles = _selected_long_term_profile()
+    reports: List[Dict[str, Any]] = []
+    runs: List[Dict[str, Any]] = []
+    if profile_id:
+        list_reports = getattr(store, "list_threat_landscape_reports", None)
+        if not callable(list_reports):
+            abort(503)
+        try:
+            reports = [
+                _long_term_report_list_item(row)
+                for row in (list_reports(profile_id, limit=100) or [])
+                if isinstance(row, dict) and row.get("id")
+            ]
+        except Exception:
+            logger.exception("Could not list long-term reports for %s", profile_id)
+            abort(503)
+        list_runs = getattr(store, "list_long_term_runs", None)
+        if callable(list_runs):
+            try:
+                runs = [
+                    _long_term_run_list_item(row)
+                    for row in (list_runs(profile_id, limit=10) or [])
+                    if isinstance(row, dict) and row.get("id")
+                ]
+            except Exception:
+                logger.exception("Could not list long-term runs for %s", profile_id)
+
+    return render_template(
+        "long_term_reports.html",
+        reports=reports,
+        runs=runs,
+        active_profile=profile_id,
+        available_profiles=profiles,
+        format_ts=format_ts,
+    )
+
+
+@app.route("/long-term/report/<report_id>")
+def view_long_term_report(report_id: str):
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    get_report = getattr(store, "get_threat_landscape_report", None)
+    if not callable(get_report):
+        abort(503)
+    try:
+        report = get_report(str(report_id).strip())
+    except Exception:
+        logger.exception("Could not read long-term report %s", report_id)
+        abort(503)
+    if not isinstance(report, dict):
+        abort(404)
+    try:
+        snapshot_labels, cluster_labels = _long_term_report_link_labels(store, report)
+    except Exception:
+        logger.exception("Could not resolve long-term report labels %s", report_id)
+        snapshot_labels, cluster_labels = {}, {}
+
+    return render_template(
+        "long_term_report.html",
+        report=report,
+        report_item=_long_term_report_list_item(report),
+        analysis=(report.get("analysis") or {}),
+        forecasts=(report.get("forecast") or []),
+        quality=(report.get("quality") or {}),
+        snapshot_labels=snapshot_labels,
+        cluster_labels=cluster_labels,
+        format_ts=format_ts,
+    )
+
+
+@app.route("/long-term/snapshot/<snapshot_id>")
+def view_long_term_snapshot(snapshot_id: str):
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    get_snapshot = getattr(store, "get_cluster_snapshot", None)
+    if not callable(get_snapshot):
+        abort(503)
+    try:
+        snapshot = get_snapshot(str(snapshot_id).strip())
+    except Exception:
+        logger.exception("Could not read long-term snapshot %s", snapshot_id)
+        abort(503)
+    if not isinstance(snapshot, dict):
+        abort(404)
+    payload = snapshot.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        article_labels = _long_term_article_labels(store, snapshot)
+    except Exception:
+        logger.exception("Could not resolve long-term article labels %s", snapshot_id)
+        article_labels = {}
+    return render_template(
+        "long_term_snapshot.html",
+        snapshot=snapshot,
+        payload=payload,
+        snapshot_label=_long_term_snapshot_label(snapshot),
+        cluster_label=_long_term_snapshot_label(snapshot),
+        article_labels=article_labels,
+        format_ts=format_ts,
+    )
+
+
+@app.route("/long-term/clusters")
+def list_long_term_clusters():
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    profile_id, profiles = _selected_long_term_profile()
+    status, page, per_page, min_members = _long_term_cluster_list_parameters()
+    result: Dict[str, Any] = {
+        "items": [],
+        "page": page,
+        "per_page": per_page,
+        "has_previous": False,
+        "has_next": False,
+    }
+    if profile_id:
+        try:
+            result = _long_term_cluster_page(
+                store,
+                profile_id,
+                status=status,
+                page=page,
+                per_page=per_page,
+                min_members=min_members,
+            )
+        except Exception:
+            logger.exception("Could not list long-term clusters for %s", profile_id)
+            abort(503)
+    return render_template(
+        "long_term_clusters.html",
+        clusters=result["items"],
+        active_profile=profile_id,
+        available_profiles=profiles,
+        available_statuses=_LONG_TERM_CLUSTER_STATUSES,
+        active_status=status or "all",
+        page=result["page"],
+        per_page=result["per_page"],
+        min_members=min_members,
+        has_previous=result["has_previous"],
+        has_next=result["has_next"],
+        format_ts=format_ts,
+    )
+
+
+@app.route("/long-term/review/<cluster_id>")
+def review_long_term_cluster(cluster_id: str):
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        bundle = _long_term_review_bundle(store, str(cluster_id).strip())
+    except Exception:
+        logger.exception("Could not build long-term review %s", cluster_id)
+        abort(503)
+    if bundle is None:
+        abort(404)
+    return render_template(
+        "long_term_review.html",
+        **bundle,
+        format_ts=format_ts,
+    )
+
+
+@app.route("/long-term/cluster/<cluster_id>")
+def view_long_term_cluster(cluster_id: str):
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        bundle = _long_term_cluster_bundle(
+            store,
+            str(cluster_id).strip(),
+            membership_limit=500,
+        )
+    except Exception:
+        logger.exception("Could not read long-term cluster %s", cluster_id)
+        abort(503)
+    if bundle is None:
+        abort(404)
+    try:
+        get_cluster = getattr(store, "get_threat_cluster", None)
+        source_cluster = get_cluster(str(cluster_id).strip()) if callable(get_cluster) else None
+        bundle["comparison_candidates"] = _long_term_cluster_comparison_data(
+            store, source_cluster if isinstance(source_cluster, dict) else bundle["cluster"]
+        )
+    except Exception:
+        logger.exception("Could not compare long-term cluster %s", cluster_id)
+        abort(503)
+    return render_template(
+        "long_term_cluster.html",
+        **bundle,
         format_ts=format_ts,
     )
 

@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="row justify-content-center">
+  <main class="col-12 col-xl-11 pb-5">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+      <div>
+        <h1 class="h3 mb-1">
+          Händelsekluster
+          {% if long_term_mode == 'shadow' %}<span class="badge text-bg-warning">SHADOW</span>{% endif %}
+        </h1>
+        <p class="text-muted mb-0">Kluster som används som underlag för långtidsanalysen.</p>
+      </div>
+      <a class="btn btn-sm btn-outline-primary" href="{{ url_for('list_long_term_reports', profile=active_profile) }}">Visa rapporter</a>
+    </div>
+
+    {% if available_profiles %}
+      <form method="get" class="row row-cols-lg-auto g-2 align-items-end mb-3">
+        <div class="col-12">
+          <label class="form-label mb-1" for="profile">Profil</label>
+          <select class="form-select form-select-sm" id="profile" name="profile" onchange="this.form.submit()">
+            {% for profile_id in available_profiles %}
+              <option value="{{ profile_id }}" {% if profile_id == active_profile %}selected{% endif %}>{{ profile_id }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label mb-1" for="status">Status</label>
+          <select class="form-select form-select-sm" id="status" name="status" onchange="this.form.submit()">
+            <option value="all" {% if active_status == 'all' %}selected{% endif %}>Alla</option>
+            {% for status in available_statuses %}
+              <option value="{{ status }}" {% if status == active_status %}selected{% endif %}>
+                {% if status == 'active' %}Aktiva{% elif status == 'dormant' %}Vilande{% elif status == 'needs_review' %}Behöver granskas{% else %}Stängda{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label mb-1" for="min_members">Minst antal artiklar</label>
+          <input class="form-control form-control-sm" id="min_members" name="min_members" type="number" min="1" max="100000" value="{{ min_members }}" onchange="this.form.submit()">
+        </div>
+        <div class="col-12">
+          <label class="form-label mb-1" for="per_page">Per sida</label>
+          <select class="form-select form-select-sm" id="per_page" name="per_page" onchange="this.form.submit()">
+            {% for size in [25, 50, 100] %}
+              <option value="{{ size }}" {% if size == per_page %}selected{% endif %}>{{ size }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <noscript><div class="col-12"><button class="btn btn-sm btn-primary" type="submit">Visa</button></div></noscript>
+      </form>
+    {% endif %}
+
+    {% if not available_profiles %}
+      <div class="alert alert-warning">Ingen långtidsprofil är konfigurerad.</div>
+    {% elif not clusters %}
+      <div class="alert alert-light border">Inga kluster matchar det valda filtret.</div>
+    {% else %}
+      <div class="table-responsive">
+        <table class="table table-hover align-middle">
+          <thead>
+            <tr><th>Kluster</th><th>Status</th><th>Senast observerat</th><th class="text-end">Artiklar</th><th>Analysläge</th></tr>
+          </thead>
+          <tbody>
+            {% for cluster in clusters %}
+              <tr>
+                <td>
+                  {% if cluster.status == 'needs_review' %}
+                    <a class="fw-semibold text-decoration-none" href="{{ url_for('review_long_term_cluster', cluster_id=cluster.id) }}" title="Internt kluster-ID: {{ cluster.id }}">{{ cluster.label }}</a>
+                  {% else %}
+                    <a class="fw-semibold text-decoration-none" href="{{ url_for('view_long_term_cluster', cluster_id=cluster.id) }}" title="Internt kluster-ID: {{ cluster.id }}">{{ cluster.label }}</a>
+                  {% endif %}
+                  {% if cluster.strong_indicators %}
+                    <div class="mt-1">
+                      {% for indicator in cluster.strong_indicators[:4] %}<span class="badge text-bg-light border me-1">{{ indicator }}</span>{% endfor %}
+                    </div>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if cluster.status == 'active' %}<span class="badge text-bg-success">Aktivt</span>
+                  {% elif cluster.status == 'dormant' %}<span class="badge text-bg-secondary">Vilande</span>
+                  {% elif cluster.status == 'needs_review' %}<span class="badge text-bg-warning">Behöver granskas</span>
+                  {% elif cluster.status == 'closed' %}<span class="badge text-bg-dark">Stängt</span>
+                  {% else %}<span class="badge text-bg-light">{{ cluster.status }}</span>{% endif %}
+                  {% if cluster.superseded_by_cluster_id %}<div class="small text-muted mt-1">Sammanslaget</div>{% endif %}
+                </td>
+                <td class="text-nowrap">{{ format_ts(cluster.last_seen_ts) }}</td>
+                <td class="text-end">{{ cluster.member_count }}</td>
+                <td>
+                  {% if cluster.pending_revision_count %}
+                    <span class="badge text-bg-warning">{{ cluster.pending_revision_count }} ej summerade revisioner</span>
+                  {% elif cluster.latest_snapshot_id %}
+                    <span class="badge text-bg-success">Summerat</span>
+                  {% else %}
+                    <span class="badge text-bg-light border">Ingen snapshot</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+
+    {% if has_previous or has_next %}
+      <nav class="d-flex justify-content-between align-items-center mt-3" aria-label="Sidnavigering för kluster">
+        {% if has_previous %}
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('list_long_term_clusters', profile=active_profile, status=active_status, min_members=min_members, page=page - 1, per_page=per_page) }}">← Föregående</a>
+        {% else %}<span></span>{% endif %}
+        <span class="text-muted small">Sida {{ page }}</span>
+        {% if has_next %}
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('list_long_term_clusters', profile=active_profile, status=active_status, min_members=min_members, page=page + 1, per_page=per_page) }}">Nästa →</a>
+        {% else %}<span></span>{% endif %}
+      </nav>
+    {% endif %}
+  </main>
+</div>
+{% endblock %}

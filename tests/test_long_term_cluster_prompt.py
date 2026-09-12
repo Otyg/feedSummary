@@ -46,6 +46,24 @@ class LongTermClusterPromptTests(unittest.TestCase):
         self.assertEqual(
             "cluster-update-v1", packages["cluster_update_v1"]["prompt_version"]
         )
+        self.assertEqual(
+            "cluster-update-v2", packages["cluster_update_v2"]["prompt_version"]
+        )
+
+    def test_v2_bounds_structured_output_for_cloud_generation(self):
+        root = Path(__file__).resolve().parents[1]
+        package = yaml.safe_load(
+            (root / "config/prompts/long_term/cluster_update_v2.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        properties = package["output_schema"]["properties"]
+
+        self.assertEqual("cluster-update-v2", package["prompt_version"])
+        self.assertEqual(8, properties["facts"]["maxItems"])
+        self.assertEqual(8, properties["timeline"]["maxItems"])
+        self.assertEqual(6, properties["mitre_techniques"]["maxItems"])
+        self.assertEqual(6, properties["uncertainties"]["maxItems"])
 
 
 if __name__ == "__main__":
