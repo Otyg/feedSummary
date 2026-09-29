@@ -2,13 +2,13 @@
 {% block body %}
 <div class="row justify-content-center">
   <main class="col-12 col-xl-10 pb-5">
-    <a href="{{ url_for('list_long_term_clusters', profile=cluster.profile_id) }}" class="small">← Kluster</a>
+    <a href="{{ url_for('list_long_term_clusters') }}" class="small">← Alla kluster</a>
     <div class="d-flex flex-wrap justify-content-between gap-3 mt-2 mb-3">
       <div>
         <div class="small text-muted">Händelsekluster</div>
         <h1 class="h2 mb-1">{{ cluster_label }}</h1>
       </div>
-      <span class="badge text-bg-secondary align-self-start">{{ cluster.status }}</span>
+      <span class="badge text-bg-secondary align-self-start">{% if cluster.status == 'active' %}Aktivt{% elif cluster.status == 'dormant' %}Vilande{% elif cluster.status == 'closed' %}Stängt{% else %}Äldre kluster{% endif %}</span>
     </div>
 
     {% if superseded_by %}
@@ -20,8 +20,7 @@
     {% endif %}
     {% if cluster.status == 'needs_review' %}
       <div class="alert alert-warning">
-        Klustrets tilldelning var tvetydig.
-        <a href="{{ url_for('review_long_term_cluster', cluster_id=cluster.id) }}">Öppna granskningsjämförelsen</a>.
+        Äldre tilldelning: <a href="{{ url_for('review_long_term_cluster', cluster_id=cluster.id) }}">öppna klusterjämförelsen</a>.
       </div>
     {% endif %}
     {% if cluster.review_decision %}
@@ -41,6 +40,7 @@
         <dl class="row mb-0">
           <dt class="col-sm-3">Kluster-ID</dt><dd class="col-sm-9"><code>{{ cluster.id }}</code></dd>
           <dt class="col-sm-3">Profil</dt><dd class="col-sm-9"><code>{{ cluster.profile_id }}</code></dd>
+          {% if cluster.tag_scope %}<dt class="col-sm-3">Taggkluster</dt><dd class="col-sm-9">{{ cluster.tag_scope }}</dd>{% endif %}
           <dt class="col-sm-3">Observerat</dt><dd class="col-sm-9">{{ format_ts(cluster.first_seen_ts) }} – {{ format_ts(cluster.last_seen_ts) }}</dd>
           <dt class="col-sm-3">Medlemmar</dt><dd class="col-sm-9">{{ cluster.member_count }}</dd>
           <dt class="col-sm-3">Revision</dt><dd class="col-sm-9">{{ cluster.membership_revision }} (summerad till {{ cluster.summarized_revision or 0 }})</dd>
@@ -65,6 +65,32 @@
       {% else %}<p class="text-muted">Klustret har ännu inga snapshots.</p>{% endif %}
     </section>
 
+    {% if related_clusters %}
+      <section class="mb-4" aria-labelledby="related-clusters-heading">
+        <h2 id="related-clusters-heading" class="h4">Andra kluster med gemensamma artiklar</h2>
+        <div class="row g-3">
+          {% for tag_cluster in related_clusters %}
+            <div class="col-12 col-lg-6">
+              <section class="card h-100">
+                <div class="card-header d-flex justify-content-between gap-2">
+                  <strong>{{ tag_cluster.label }}</strong>
+                  <span class="badge text-bg-light border">{{ tag_cluster.member_count }} artiklar</span>
+                </div>
+                <div class="card-body">
+                  <div class="small text-muted mb-2">{{ tag_cluster.tag_scope or 'Utan tagg' }} · senast observerat {{ format_ts(tag_cluster.last_seen_ts) }}</div>
+                  {% if tag_cluster.latest_snapshot_id %}
+                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_long_term_cluster', cluster_id=tag_cluster.id) }}">Öppna summary</a>
+                  {% else %}
+                    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('view_long_term_cluster', cluster_id=tag_cluster.id) }}">Öppna kluster</a>
+                  {% endif %}
+                </div>
+              </section>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
     {% if comparison_candidates %}
       <section class="mb-4" aria-labelledby="comparison-heading">
         <h2 id="comparison-heading" class="h4">Jämför med andra kluster</h2>
@@ -78,6 +104,12 @@
                   <span class="badge text-bg-primary">likhet {{ '%.4f'|format(candidate.similarity) }}</span>
                 </div>
                 <div class="card-body">
+                  {% if long_term_review_actions_enabled and not read_only and cluster.status in ['active', 'dormant'] and not cluster.superseded_by_cluster_id and candidate.merge_allowed %}
+                    <label class="form-check mb-2">
+                      <input class="form-check-input" type="checkbox" name="merge_cluster_ids" value="{{ candidate.id }}" form="merge_cluster_form">
+                      <span class="form-check-label">Slå ihop med detta kluster</span>
+                    </label>
+                  {% endif %}
                   <div class="small text-muted mb-2">{{ candidate.member_count }} artiklar · {{ candidate.status }} · senast observerat {{ format_ts(candidate.last_seen_ts) }}</div>
                   {% if candidate.shared_indicators %}
                     <div class="small mb-2">Gemensamma indikatorer: {% for indicator in candidate.shared_indicators %}<span class="badge text-bg-light border me-1">{{ indicator }}</span>{% endfor %}</div>
@@ -94,25 +126,19 @@
       </section>
     {% endif %}
 
-    {% if comparison_candidates and long_term_review_actions_enabled and not read_only and cluster.status in ['active', 'dormant'] %}
+    {% if comparison_candidates and long_term_review_actions_enabled and not read_only and cluster.status in ['active', 'dormant'] and not cluster.superseded_by_cluster_id %}
       <section class="card border-danger mb-4" aria-labelledby="merge-heading">
         <div class="card-body">
           <h2 id="merge-heading" class="h4">Slå ihop kluster</h2>
-          <p class="small text-muted">Det här flyttar medlemskapen till valt målkluster och bevarar det här klustret som historisk proveniens.</p>
-          <form method="post" action="{{ url_for('resolve_long_term_cluster_review', cluster_id=cluster.id) }}">
+          <p class="small text-muted">Markera klustren ovan som ska slås ihop med det här klustret. Deras medlemskap flyttas hit och de bevaras som historisk proveniens.</p>
+          <form id="merge_cluster_form" method="post" action="{{ url_for('resolve_long_term_cluster_review', cluster_id=cluster.id) }}" onsubmit="if (!new FormData(this).getAll('merge_cluster_ids').length) { alert('Välj minst ett kluster.'); return false; } return confirm('Slå ihop valda kluster med det här klustret? Medlemskapen flyttas hit och de valda klustren stängs som historiska.');">
             <input type="hidden" name="decision" value="merge">
             <input type="hidden" name="expected_membership_revision" value="{{ cluster.membership_revision }}">
-            <div class="mb-3">
-              <label class="form-label" for="merge_target_cluster_id">Målkluster</label>
-              <select class="form-select" id="merge_target_cluster_id" name="target_cluster_id" required>
-                {% for candidate in comparison_candidates if candidate.merge_allowed %}<option value="{{ candidate.id }}">{{ candidate.label }} (likhet {{ '%.4f'|format(candidate.similarity) }})</option>{% endfor %}
-              </select>
-            </div>
             <div class="row g-2">
               <div class="col-12 col-md-4"><label class="form-label" for="merge_reviewer">Granskare</label><input class="form-control" id="merge_reviewer" name="reviewer" maxlength="120" required autocomplete="name"></div>
               <div class="col-12 col-md-8"><label class="form-label" for="merge_comment">Motivering</label><input class="form-control" id="merge_comment" name="comment" maxlength="2000"></div>
             </div>
-            <button class="btn btn-danger mt-3" type="submit" onclick="return confirm('Slå ihop klustren? Medlemskap flyttas och det här klustret stängs som historiskt.')">Slå ihop med valt målkluster</button>
+            <button class="btn btn-danger mt-3" type="submit">Slå ihop valda kluster</button>
           </form>
         </div>
       </section>

@@ -213,6 +213,12 @@ class ReadOnlyViewerTests(unittest.TestCase):
 
         self.assertEqual(401, response.status_code)
 
+    def test_article_filter_tags_is_available_read_only(self):
+        response = self.client.get("/api/v1/article-filter-tags?category=GENERAL")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(["Example tag"], [tag["name"] for tag in response.json["tags"]])
+
     def test_worker_routes_and_status_are_absent(self):
         for path, method in (
             ("/status", "GET"),

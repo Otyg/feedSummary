@@ -36,7 +36,7 @@ import json
 import logging
 import os
 import re
-import sqlite3
+import sys
 import time
 from datetime import datetime, timezone
 from email.utils import format_datetime
@@ -44,6 +44,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import markdown as md
 from flask import (
@@ -61,10 +65,11 @@ import requests
 import yaml
 
 from uicommon import (
+    build_source_options,
+    build_topic_options,
     format_ts,
     get_store,
     load_config,
-    parse_ymd_to_range,
     source_to_topics_map,
 )
 from feedsummary_core.summarizer.main import (
@@ -90,6 +95,8 @@ from feedsummary_core.prompts.loader import (
     resolve_prompt_root,
 )
 from uicommon.proofread_rounds import _strip_proofread_feedback_from_summary
+from web_viewer.article_listing import list_article_page, list_filter_tags
+from web_viewer.attack_pressure import assess_attack_pressure, valid_cve
 
 
 logger = logging.getLogger(__name__)
@@ -239,7 +246,27 @@ def _long_term_profile_ids(config: Optional[Dict[str, Any]] = None) -> List[str]
     profiles = long_term.get("profiles") or {} if isinstance(long_term, dict) else {}
     if not isinstance(profiles, dict):
         return []
-    return sorted(str(profile_id) for profile_id in profiles if str(profile_id).strip())
+    profile_ids = [str(profile_id) for profile_id in profiles if str(profile_id).strip()]
+
+    def sort_key(profile_id: str) -> tuple[bool, bool, str]:
+        profile = profiles.get(profile_id)
+        archived = (
+            not isinstance(profile, dict)
+            or profile.get("enabled") is False
+            or profile.get("clustering_enabled") is False
+        )
+        aggregate = isinstance(profile, dict) and bool(profile.get("aggregate_profiles"))
+        return archived, not aggregate, profile_id
+
+    return sorted(profile_ids, key=sort_key)
+
+
+def _long_term_profile_label(profile_id: str) -> str:
+    profiles = (APP_CFG.get("long_term_analysis") or {}).get("profiles") or {}
+    profile = profiles.get(profile_id) if isinstance(profiles, dict) else None
+    if isinstance(profile, dict):
+        return str(profile.get("display_name") or profile_id)
+    return profile_id
 
 
 def _long_term_report_list_item(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -404,7 +431,75 @@ def _long_term_cluster_public_item(cluster: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-_LONG_TERM_CLUSTER_STATUSES = ("active", "dormant", "needs_review", "closed")
+_LONG_TERM_CLUSTER_STATUSES = ("active", "dormant", "closed")
+
+
+def _normalize_long_term_cluster_tag(value: Any) -> str:
+    category, separator, name = str(value or "").partition(":")
+    category = category.strip().upper()
+    name = name.strip().casefold()
+    if not separator or not category or not name:
+        return ""
+    return f"{category}:{name}"
+
+
+def _long_term_cluster_scope_tags(value: Any) -> frozenset[str]:
+    return frozenset(
+        normalized
+        for part in str(value or "").split("|")
+        if (normalized := _normalize_long_term_cluster_tag(part))
+    )
+
+
+def _long_term_cluster_tag_options(
+    store: Any, selected_tags: List[str]
+) -> List[Dict[str, str]]:
+    long_term = APP_CFG.get("long_term_analysis") or {}
+    clustering = long_term.get("clustering") or {}
+    configured_categories = {
+        str(value).strip().upper()
+        for value in clustering.get("tag_scope_categories") or []
+        if str(value).strip()
+    }
+    configured_categories -= {"VULNERABILITY", "VULNERABILITIES"}
+    get_all_tags = getattr(store, "get_all_tags", None)
+    try:
+        stored_tags = (get_all_tags() or []) if callable(get_all_tags) else []
+    except Exception:
+        logger.exception("Could not list tags for the long-term cluster filter")
+        stored_tags = []
+
+    options: Dict[str, Dict[str, str]] = {}
+    for tag in stored_tags:
+        if not isinstance(tag, dict):
+            continue
+        category = str(tag.get("category") or "").strip().upper()
+        name = " ".join(str(tag.get("name") or "").split())
+        value = _normalize_long_term_cluster_tag(f"{category}:{name}")
+        if (
+            not value
+            or category in {"VULNERABILITY", "VULNERABILITIES"}
+            or (
+                configured_categories
+                and category not in configured_categories
+            )
+        ):
+            continue
+        options[value] = {"value": value, "label": name, "category": category}
+
+    for value in selected_tags:
+        if value in options:
+            continue
+        category, _, name = value.partition(":")
+        options[value] = {
+            "value": value,
+            "label": name,
+            "category": category,
+        }
+    return sorted(
+        options.values(),
+        key=lambda item: (item["label"].casefold(), item["category"]),
+    )
 
 
 def _long_term_cluster_label(store: Any, cluster: Dict[str, Any]) -> str:
@@ -458,6 +553,7 @@ def _long_term_cluster_list_item(
     return {
         "id": str(cluster.get("id") or ""),
         "profile_id": str(cluster.get("profile_id") or ""),
+        "tag_scope": str(cluster.get("tag_scope") or ""),
         "label": _long_term_cluster_label(store, cluster),
         "status": str(cluster.get("status") or "unknown"),
         "first_seen_ts": int(cluster.get("first_seen_ts") or 0),
@@ -484,26 +580,61 @@ def _long_term_cluster_page(
     page: int,
     per_page: int,
     min_members: int,
+    has_snapshot: bool = False,
+    required_tags: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     list_clusters = getattr(store, "list_threat_clusters", None)
     if not callable(list_clusters):
         raise RuntimeError("long-term cluster store methods are unavailable")
-    rows = list_clusters(
-        profile_id,
-        statuses=[status] if status else None,
-        min_member_count=min_members,
-        limit=per_page + 1,
-        offset=(page - 1) * per_page,
-        include_vectors=False,
-    ) or []
-    valid_rows = [
-        row for row in rows if isinstance(row, dict) and str(row.get("id") or "")
-    ]
-    has_next = len(valid_rows) > per_page
+    page_start = (page - 1) * per_page
+    requested_count = page_start + per_page + 1
+    batch_size = max(100, per_page + 1)
+    source_offset = 0
+    matching_rows: List[Dict[str, Any]] = []
+    required_tag_set = frozenset(required_tags or [])
+    filters_rows_in_memory = has_snapshot or bool(required_tag_set)
+    while len(matching_rows) < requested_count:
+        rows = list_clusters(
+            profile_id,
+            statuses=[status] if status else None,
+            min_member_count=min_members,
+            limit=batch_size if filters_rows_in_memory else per_page + 1,
+            offset=source_offset if filters_rows_in_memory else page_start,
+            include_vectors=False,
+        ) or []
+        valid_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("id") or "")
+        ]
+        if filters_rows_in_memory:
+            matching_rows.extend(
+                row
+                for row in valid_rows
+                if (
+                    not has_snapshot
+                    or str(row.get("latest_snapshot_id") or "").strip()
+                )
+                and required_tag_set.issubset(
+                    _long_term_cluster_scope_tags(row.get("tag_scope"))
+                )
+            )
+        else:
+            matching_rows = valid_rows
+        if not filters_rows_in_memory or len(rows) < batch_size:
+            break
+        source_offset += len(rows)
+
+    page_rows = (
+        matching_rows[page_start : page_start + per_page + 1]
+        if filters_rows_in_memory
+        else matching_rows
+    )
+    has_next = len(page_rows) > per_page
     return {
         "items": [
             _long_term_cluster_list_item(store, row)
-            for row in valid_rows[:per_page]
+            for row in page_rows[:per_page]
         ],
         "page": page,
         "per_page": per_page,
@@ -512,7 +643,34 @@ def _long_term_cluster_page(
     }
 
 
-def _long_term_cluster_list_parameters() -> tuple[str, int, int, int]:
+def _long_term_cluster_ui_page(
+    store: Any,
+    profile_id: str,
+    *,
+    status: str,
+    page: int,
+    per_page: int,
+    min_members: int,
+    has_snapshot: bool = False,
+    required_tags: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Keep each cluster distinct even when titles or articles overlap."""
+
+    return _long_term_cluster_page(
+        store,
+        profile_id,
+        status=status,
+        page=page,
+        per_page=per_page,
+        min_members=min_members,
+        has_snapshot=has_snapshot,
+        required_tags=required_tags,
+    )
+
+
+def _long_term_cluster_list_parameters() -> tuple[
+    str, int, int, int, bool, List[str]
+]:
     status = str(request.args.get("status") or "").strip()
     if status == "all":
         status = ""
@@ -530,7 +688,21 @@ def _long_term_cluster_list_parameters() -> tuple[str, int, int, int]:
         min_members = max(1, min(100000, int(request.args.get("min_members", "1"))))
     except (TypeError, ValueError):
         min_members = 1
-    return status, page, per_page, min_members
+    has_snapshot_value = str(request.args.get("has_snapshot") or "").strip().lower()
+    if has_snapshot_value not in {"", "0", "1", "false", "true", "off", "on"}:
+        abort(400)
+    has_snapshot = has_snapshot_value in {"1", "true", "on"}
+    raw_tags = [str(value).strip() for value in request.args.getlist("tag")]
+    if len(raw_tags) > 50 or any(len(value) > 256 for value in raw_tags):
+        abort(400)
+    selected_tags: List[str] = []
+    for raw_tag in raw_tags:
+        normalized = _normalize_long_term_cluster_tag(raw_tag)
+        if not normalized:
+            abort(400)
+        if normalized not in selected_tags:
+            selected_tags.append(normalized)
+    return status, page, per_page, min_members, has_snapshot, selected_tags
 
 
 def _long_term_clustering_settings() -> ClusteringSettings:
@@ -541,6 +713,7 @@ def _long_term_clustering_settings() -> ClusteringSettings:
         similarity_threshold=float(clustering.get("similarity_threshold", 0.80)),
         ambiguity_margin=float(clustering.get("ambiguity_margin", 0.03)),
         candidate_window_days=int(clustering.get("candidate_window_days", 60)),
+        min_shared_tags=int(clustering.get("min_shared_tags", 2)),
     )
 
 
@@ -588,6 +761,7 @@ def _long_term_review_candidate_data(
             candidates=candidates,
             strong_indicators=review.strong_indicators,
             strict_cve_identity=review.strict_cve_identity,
+            tag_scope=review.tag_scope,
             settings=_long_term_clustering_settings(),
         )
         candidate_ids = [
@@ -622,7 +796,8 @@ def _long_term_review_candidate_data(
                 if bundle["snapshots"]
                 else None,
                 "merge_allowed": str(document.get("status") or "")
-                in {"active", "dormant"},
+                in {"active", "dormant"}
+                and str(document.get("tag_scope") or "") == str(cluster.get("tag_scope") or ""),
             }
         )
         result.append(item)
@@ -654,7 +829,8 @@ def _long_term_cluster_comparison_data(
     candidates: List[Dict[str, Any]] = []
     for document in documents:
         candidate_id = str(document.get("id") or "")
-        if candidate_id == source_id or document.get("superseded_by_cluster_id"):
+        if (candidate_id == source_id or document.get("superseded_by_cluster_id")
+            or str(document.get("tag_scope") or "") != str(cluster.get("tag_scope") or "")):
             continue
         centroid = [float(value) for value in document.get("centroid") or []]
         norm = sum(value * value for value in centroid) ** 0.5
@@ -799,9 +975,9 @@ def _long_term_cluster_bundle(
     return {
         "cluster": _long_term_cluster_public_item(cluster),
         "cluster_label": (
-            str(latest_snapshot.get("label") or "Händelsekluster utan titel")
-            if latest_snapshot is not None
-            else "Händelsekluster utan titel"
+            str(latest_snapshot["label"])
+            if latest_snapshot is not None and latest_snapshot.get("label")
+            else _long_term_cluster_label(store, cluster)
         ),
         "memberships": [
             _long_term_membership_public_item(
@@ -834,6 +1010,26 @@ def _selected_long_term_profile() -> tuple[str, List[str]]:
     if selected and selected not in profiles:
         abort(404)
     return selected, profiles
+
+
+def _long_term_replacement_profile(profile_id: str) -> str:
+    long_term = APP_CFG.get("long_term_analysis") or {}
+    profiles = long_term.get("profiles") or {} if isinstance(long_term, dict) else {}
+    if not isinstance(profiles, dict):
+        return ""
+    selected = profiles.get(profile_id)
+    if not isinstance(selected, dict) or selected.get("clustering_enabled") is not False:
+        return ""
+    return next(
+        (
+            str(candidate_id)
+            for candidate_id, candidate in profiles.items()
+            if isinstance(candidate, dict)
+            and candidate.get("enabled") is True
+            and candidate.get("rebuild_source_profile_id") == profile_id
+        ),
+        "",
+    )
 
 
 @app.context_processor
@@ -1635,233 +1831,6 @@ def _article_published_ts(a: Dict[str, Any]) -> float:
     return _coerce_positive_ts(a.get("published_ts"))
 
 
-def _sqlite_store_path_from_cfg() -> Optional[str]:
-    st = APP_CFG.get("store") if isinstance(APP_CFG, dict) else None
-    if not isinstance(st, dict):
-        return None
-    provider = str(st.get("provider") or "").strip().lower()
-    path = str(st.get("path") or "").strip()
-    if provider != "sqlite" or not path:
-        return None
-    return path
-
-
-def _list_article_dates_fast(store, *, max_days: int) -> List[Dict[str, Any]]:
-    """
-    Return [{date: 'YYYY-MM-DD', count: N}, ...] ordered desc.
-    Uses fast SQL path for sqlite store; falls back to in-memory grouping.
-    """
-    sqlite_path = _sqlite_store_path_from_cfg()
-    if sqlite_path:
-        try:
-            con = sqlite3.connect(sqlite_path)
-            try:
-                cur = con.execute(
-                    """
-                    SELECT
-                      DATE(COALESCE(NULLIF(published_ts, 0), fetched_at), 'unixepoch', 'localtime') AS day_key,
-                      COUNT(*) AS cnt
-                    FROM articles
-                    WHERE COALESCE(NULLIF(published_ts, 0), fetched_at, 0) > 0
-                    GROUP BY day_key
-                    ORDER BY day_key DESC
-                    LIMIT ?
-                    """,
-                    (max_days,),
-                )
-                rows = cur.fetchall()
-            finally:
-                con.close()
-            out: List[Dict[str, Any]] = []
-            for day_key, cnt in rows:
-                if day_key:
-                    out.append({"date": str(day_key), "count": int(cnt or 0)})
-            return out
-        except Exception:
-            pass
-
-    # Fallback for non-sqlite stores.
-    raw = store.list_articles(limit=50000) or []
-    counts: Dict[str, int] = {}
-    for a in raw:
-        if not isinstance(a, dict):
-            continue
-        tsv = int(_article_published_ts(a))
-        if tsv <= 0:
-            continue
-        day_key = datetime.fromtimestamp(tsv).strftime("%Y-%m-%d")
-        counts[day_key] = counts.get(day_key, 0) + 1
-    days = sorted(counts.keys(), reverse=True)[:max_days]
-    return [{"date": d, "count": counts[d]} for d in days]
-
-
-def _list_articles_for_day_fast(
-    store, *, date_ymd: str, limit: int
-) -> List[Dict[str, Any]]:
-    """
-    Return lightweight article rows for one date only.
-    """
-    dr = parse_ymd_to_range(date_ymd)
-    if not dr:
-        return []
-    start_ts, end_ts = dr
-
-    sqlite_path = _sqlite_store_path_from_cfg()
-    if sqlite_path:
-        try:
-            con = sqlite3.connect(sqlite_path)
-            try:
-                cur = con.execute(
-                    """
-                    SELECT id, title, source, url, published_ts, fetched_at
-                    FROM articles
-                    WHERE COALESCE(NULLIF(published_ts, 0), fetched_at, 0) BETWEEN ? AND ?
-                    ORDER BY COALESCE(NULLIF(published_ts, 0), fetched_at, 0) DESC
-                    LIMIT ?
-                    """,
-                    (int(start_ts), int(end_ts), int(limit)),
-                )
-                rows = cur.fetchall()
-            finally:
-                con.close()
-            out: List[Dict[str, Any]] = []
-            for rid, title, source, url, published_ts, fetched_at in rows:
-                out.append(
-                    {
-                        "id": rid,
-                        "title": title or "",
-                        "source": source or "",
-                        "url": url or "",
-                        "published_ts": int(_coerce_positive_ts(published_ts)),
-                        "fetched_at": int(_coerce_positive_ts(fetched_at)),
-                    }
-                )
-            return out
-        except Exception:
-            pass
-
-    # Fallback for non-sqlite stores.  A date tab represents every stored
-    # article for that day, including articles from feeds that have since been
-    # removed from the configuration.  Passing configured sources here made
-    # the tab count and its article list describe different datasets.
-    rows: List[Dict[str, Any]] = []
-    try:
-        rows = (
-            store.list_articles_by_filter(
-                sources=[],
-                since_ts=int(start_ts),
-                until_ts=int(end_ts),
-                limit=int(limit),
-            )
-            or []
-        )
-    except Exception:
-        rows = []
-    if not rows:
-        raw = store.list_articles(limit=50000) or []
-        rows = []
-        for a in raw:
-            if not isinstance(a, dict):
-                continue
-            tsv = int(_article_published_ts(a))
-            if start_ts <= tsv <= end_ts:
-                rows.append(a)
-        rows.sort(key=_article_published_ts, reverse=True)
-        rows = rows[:limit]
-
-    out: List[Dict[str, Any]] = []
-    for a in rows:
-        if isinstance(a, dict) and a.get("id"):
-            out.append(
-                {
-                    "id": a.get("id"),
-                    "title": a.get("title") or "",
-                    "source": a.get("source") or "",
-                    "url": a.get("url") or "",
-                    "published_ts": int(_article_published_ts(a)),
-                    "fetched_at": int(_coerce_positive_ts(a.get("fetched_at"))),
-                }
-            )
-    return out
-
-
-def _list_recent_articles_fast(store, *, limit: int) -> List[Dict[str, Any]]:
-    """Return the newest stored articles, regardless of the store's batch order."""
-    sqlite_path = _sqlite_store_path_from_cfg()
-    if sqlite_path:
-        try:
-            con = sqlite3.connect(sqlite_path)
-            try:
-                rows = con.execute(
-                    """
-                    SELECT id, title, source, url, published_ts, fetched_at
-                    FROM articles
-                    ORDER BY COALESCE(NULLIF(published_ts, 0), fetched_at, 0) DESC
-                    LIMIT ?
-                    """,
-                    (int(limit),),
-                ).fetchall()
-            finally:
-                con.close()
-            return [
-                {
-                    "id": rid,
-                    "title": title or "",
-                    "source": source or "",
-                    "url": url or "",
-                    "published_ts": int(_coerce_positive_ts(published_ts)),
-                    "fetched_at": int(_coerce_positive_ts(fetched_at)),
-                }
-                for rid, title, source, url, published_ts, fetched_at in rows
-            ]
-        except Exception:
-            pass
-
-    provider = str(
-        (APP_CFG.get("store") or {}).get("provider")
-        if isinstance(APP_CFG.get("store"), dict)
-        else ""
-    ).strip().lower()
-    if provider == "mongodb":
-        try:
-            collection = store.db.articles
-            cursor = (
-                collection.find(
-                    {},
-                    {
-                        "_id": 0,
-                        "id": 1,
-                        "title": 1,
-                        "source": 1,
-                        "url": 1,
-                        "published_ts": 1,
-                        "fetched_at": 1,
-                    },
-                )
-                .sort("_mongo_sort_ts", -1)
-                .limit(int(limit))
-            )
-            return [dict(article) for article in cursor if article.get("id")]
-        except Exception:
-            pass
-
-    # list_articles is intentionally oldest-first in the persistence API because
-    # the summarization pipeline uses that order for stable batching. Scan a
-    # wider window here and apply the UI limit only after sorting newest-first.
-    raw = store.list_articles(limit=max(50000, int(limit))) or []
-    rows = [
-        article
-        for article in raw
-        if isinstance(article, dict) and article.get("id")
-    ]
-    rows.sort(
-        key=lambda article: _article_published_ts(article)
-        or _coerce_positive_ts(article.get("fetched_at")),
-        reverse=True,
-    )
-    return rows[:limit]
-
-
 def _load_yaml_file(path: str) -> dict:
     p = Path(path)
     if not p.exists():
@@ -1900,23 +1869,8 @@ def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
             (Path(APP_CONFIG_PATH).resolve().parent / "config" / "feeds.yaml").resolve()
         )
 
-    feeds = _load_yaml_file(feeds_path)
-    sources: List[str] = []
-    topics: List[str] = []
-
-    if isinstance(feeds, dict):
-        for name, f in feeds.items():
-            if isinstance(name, str) and name.strip():
-                sources.append(name.strip())
-            if isinstance(f, dict):
-                ts = f.get("topics") or f.get("topic") or []
-                if isinstance(ts, str) and ts.strip():
-                    topics.append(ts.strip())
-                elif isinstance(ts, list):
-                    for t in ts:
-                        t = str(t).strip()
-                        if t:
-                            topics.append(t)
+    sources = [option["name"] for option in build_source_options(cfg)]
+    topics = build_topic_options(cfg)
 
     # ---- Prompts: directory-based packages (legacy single files also work) ----
     prompts_path = _resolve_prompt_root(cfg)
@@ -1925,8 +1879,8 @@ def _collect_ui_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
     except (FileNotFoundError, ValueError):
         out["prompt_packages"] = []
 
-    out["sources"] = sorted(list(dict.fromkeys(sources)))
-    out["topics"] = sorted(list(dict.fromkeys(topics)))
+    out["sources"] = list(dict.fromkeys(sources))
+    out["topics"] = topics
 
     out["feeds_path"] = feeds_path
     out["prompts_path"] = str(prompts_path)
@@ -2137,6 +2091,33 @@ def api_long_term_reports():
     )
 
 
+@app.route("/api/v1/long-term/attack-pressure")
+def api_long_term_attack_pressure():
+    """Return a conservative TEF multiplier for a profile and exact CVE ID."""
+
+    _require_long_term_ui()
+    profile_id = str(request.args.get("profile") or "").strip()
+    cve_id = valid_cve(request.args.get("cve") or "")
+    if not profile_id or not cve_id:
+        return jsonify({"error": "profile_and_valid_cve_required"}), 400
+    profiles = (APP_CFG.get("long_term_analysis") or {}).get("profiles") or {}
+    if profile_id not in profiles:
+        return jsonify({"error": "unknown_profile"}), 404
+    store = APP_STORE
+    if store is None or not all(callable(getattr(store, name, None)) for name in (
+        "list_threat_landscape_reports", "list_threat_clusters", "get_cluster_snapshot"
+    )):
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    try:
+        result = assess_attack_pressure(
+            store, profile_id, cve_id, profiles[profile_id] or {}
+        )
+    except Exception:
+        logger.exception("Could not assess attack pressure for %s", profile_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    return jsonify(result)
+
+
 @app.route("/api/v1/long-term/reports/<report_id>")
 def api_long_term_report(report_id: str):
     """Return one immutable threat-landscape report."""
@@ -2233,7 +2214,9 @@ def api_long_term_clusters():
     if store is None:
         abort(500)
     profile_id, profiles = _selected_long_term_profile()
-    status, page, per_page, min_members = _long_term_cluster_list_parameters()
+    status, page, per_page, min_members, has_snapshot, selected_tags = (
+        _long_term_cluster_list_parameters()
+    )
     if not profile_id:
         return jsonify(
             {
@@ -2246,6 +2229,8 @@ def api_long_term_clusters():
                 "page": page,
                 "per_page": per_page,
                 "min_members": min_members,
+                "has_snapshot": has_snapshot,
+                "selected_tags": selected_tags,
                 "has_previous": False,
                 "has_next": False,
             }
@@ -2258,6 +2243,8 @@ def api_long_term_clusters():
             page=page,
             per_page=per_page,
             min_members=min_members,
+            has_snapshot=has_snapshot,
+            required_tags=selected_tags,
         )
     except Exception:
         logger.exception("Could not list long-term clusters for %s", profile_id)
@@ -2271,6 +2258,8 @@ def api_long_term_clusters():
             "available_statuses": list(_LONG_TERM_CLUSTER_STATUSES),
             "active_status": status or "all",
             "min_members": min_members,
+            "has_snapshot": has_snapshot,
+            "selected_tags": selected_tags,
         }
     )
 
@@ -2362,6 +2351,14 @@ def resolve_long_term_cluster_review(cluster_id: str):
     reviewer = " ".join(str(values.get("reviewer") or "").split())
     comment = str(values.get("comment") or "").strip()
     target_cluster_id = str(values.get("target_cluster_id") or "").strip()
+    merge_cluster_ids = (
+        values.getlist("merge_cluster_ids")
+        if hasattr(values, "getlist")
+        else values.get("merge_cluster_ids", [])
+    )
+    if not isinstance(merge_cluster_ids, list):
+        return jsonify({"error": "invalid_merge_cluster_ids"}), 400
+    merge_cluster_ids = [str(value).strip() for value in merge_cluster_ids]
     try:
         expected_revision = int(values.get("expected_membership_revision"))
     except (TypeError, ValueError):
@@ -2393,79 +2390,161 @@ def resolve_long_term_cluster_review(cluster_id: str):
 
     try:
         if decision == "merge":
-            allowed_ids = {str(row["id"]) for row in bundle["candidates"]}
-            if target_cluster_id not in allowed_ids:
-                return jsonify({"error": "invalid_review_target"}), 400
-            target = get_cluster(target_cluster_id)
-            if not isinstance(target, dict):
-                return jsonify({"error": "review_target_not_found"}), 404
-            list_memberships = getattr(store, "list_cluster_memberships", None)
-            apply_reconciliation = getattr(store, "apply_cluster_reconciliation", None)
-            if not callable(list_memberships) or not callable(apply_reconciliation):
-                return jsonify({"error": "long_term_store_unavailable"}), 503
-            if str(cluster.get("status") or "") == "needs_review":
-                operation = build_cluster_review_merge_operation(
-                    cluster,
-                    target,
-                    {
-                        cluster_id: list_memberships(cluster_id),
-                        target_cluster_id: list_memberships(target_cluster_id),
-                    },
-                    allowed_candidate_cluster_ids=allowed_ids,
-                    reviewed_at=reviewed_at,
-                    reviewed_by=reviewer,
-                    comment=comment,
-                )
-            else:
-                if str(cluster.get("status") or "") not in {"active", "dormant"}:
+            allowed_ids = {
+                str(row["id"])
+                for row in bundle["candidates"]
+                if row.get("merge_allowed")
+            }
+            if merge_cluster_ids and target_cluster_id:
+                return jsonify({"error": "ambiguous_merge_targets"}), 400
+            is_open_cluster = str(cluster.get("status") or "") in {"active", "dormant"}
+            if merge_cluster_ids or (not target_cluster_id and is_open_cluster):
+                if not is_open_cluster:
                     return jsonify({"error": "cluster_not_open_for_merge"}), 409
+                if (
+                    not merge_cluster_ids
+                    or len(set(merge_cluster_ids)) != len(merge_cluster_ids)
+                    or any(
+                        candidate_id not in allowed_ids
+                        for candidate_id in merge_cluster_ids
+                    )
+                ):
+                    return jsonify({"error": "invalid_merge_cluster_ids"}), 400
+                list_memberships = getattr(store, "list_cluster_memberships", None)
+                apply_reconciliation = getattr(store, "apply_cluster_reconciliation", None)
+                if not callable(list_memberships) or not callable(apply_reconciliation):
+                    return jsonify({"error": "long_term_store_unavailable"}), 503
+                selected_clusters = [cluster]
+                for candidate_id in merge_cluster_ids:
+                    candidate = get_cluster(candidate_id)
+                    if not isinstance(candidate, dict):
+                        return jsonify({"error": "review_target_not_found"}), 404
+                    if (
+                        str(candidate.get("status") or "") not in {"active", "dormant"}
+                        or candidate.get("superseded_by_cluster_id")
+                    ):
+                        return jsonify({"error": "cluster_not_open_for_merge"}), 409
+                    selected_clusters.append(candidate)
                 identity = {
-                    "source": [cluster_id, int(cluster.get("membership_revision") or 0)],
-                    "target": [target_cluster_id, int(target.get("membership_revision") or 0)],
+                    "clusters": sorted(
+                        [str(row["id"]), int(row.get("membership_revision") or 0)]
+                        for row in selected_clusters
+                    ),
+                    "primary_cluster_id": cluster_id,
                     "profile_id": str(cluster.get("profile_id") or ""),
                 }
                 reconciliation_id = "threat_manual_" + hashlib.sha256(
                     json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest()[:32]
                 operation = build_cluster_merge_operation(
-                    [cluster, target],
+                    selected_clusters,
                     {
-                        cluster_id: list_memberships(cluster_id),
-                        target_cluster_id: list_memberships(target_cluster_id),
+                        str(row["id"]): list_memberships(str(row["id"]))
+                        for row in selected_clusters
                     },
-                    primary_cluster_id=target_cluster_id,
+                    primary_cluster_id=cluster_id,
                     reconciliation_id=reconciliation_id,
                     reconciled_at=reviewed_at,
                 )
                 for tombstone in operation["superseded_clusters"]:
-                    if str(tombstone.get("id") or "") == cluster_id:
-                        tombstone.update(
-                            {
-                                "review_decision": "merge",
-                                "reviewed_at": reviewed_at,
-                                "reviewed_by": reviewer,
-                                "review_comment": " ".join(comment.split()) or None,
-                                "reviewed_target_cluster_id": target_cluster_id,
-                            }
-                        )
-                operation["review_resolution"] = {
-                    "review_cluster_id": cluster_id,
-                    "target_cluster_id": target_cluster_id,
-                    "review_decision": "merge",
+                    tombstone.update(
+                        {
+                            "review_decision": "merge",
+                            "reviewed_at": reviewed_at,
+                            "reviewed_by": reviewer,
+                            "review_comment": " ".join(comment.split()) or None,
+                            "reviewed_target_cluster_id": cluster_id,
+                        }
+                    )
+                operation["manual_merge"] = {
+                    "primary_cluster_id": cluster_id,
+                    "merged_cluster_ids": sorted(merge_cluster_ids),
                     "reviewed_at": reviewed_at,
                     "reviewed_by": reviewer,
                     "review_comment": " ".join(comment.split()) or None,
-                    "reviewed_target_cluster_id": target_cluster_id,
                 }
-            if not apply_reconciliation(operation):
-                return jsonify({"error": "cluster_revision_conflict"}), 409
-            result = {
-                "decision": decision,
-                "cluster_id": cluster_id,
-                "target_cluster_id": target_cluster_id,
-                "reconciliation_id": operation["id"],
-            }
-            redirect_cluster_id = cluster_id
+                if not apply_reconciliation(operation):
+                    return jsonify({"error": "cluster_revision_conflict"}), 409
+                result = {
+                    "decision": decision,
+                    "cluster_id": cluster_id,
+                    "merged_cluster_ids": sorted(merge_cluster_ids),
+                    "reconciliation_id": operation["id"],
+                }
+                redirect_cluster_id = cluster_id
+            else:
+                if target_cluster_id not in allowed_ids:
+                    return jsonify({"error": "invalid_review_target"}), 400
+                target = get_cluster(target_cluster_id)
+                if not isinstance(target, dict):
+                    return jsonify({"error": "review_target_not_found"}), 404
+                list_memberships = getattr(store, "list_cluster_memberships", None)
+                apply_reconciliation = getattr(store, "apply_cluster_reconciliation", None)
+                if not callable(list_memberships) or not callable(apply_reconciliation):
+                    return jsonify({"error": "long_term_store_unavailable"}), 503
+                if str(cluster.get("status") or "") == "needs_review":
+                    operation = build_cluster_review_merge_operation(
+                        cluster,
+                        target,
+                        {
+                            cluster_id: list_memberships(cluster_id),
+                            target_cluster_id: list_memberships(target_cluster_id),
+                        },
+                        allowed_candidate_cluster_ids=allowed_ids,
+                        reviewed_at=reviewed_at,
+                        reviewed_by=reviewer,
+                        comment=comment,
+                    )
+                else:
+                    if str(cluster.get("status") or "") not in {"active", "dormant"}:
+                        return jsonify({"error": "cluster_not_open_for_merge"}), 409
+                    identity = {
+                        "source": [cluster_id, int(cluster.get("membership_revision") or 0)],
+                        "target": [target_cluster_id, int(target.get("membership_revision") or 0)],
+                        "profile_id": str(cluster.get("profile_id") or ""),
+                    }
+                    reconciliation_id = "threat_manual_" + hashlib.sha256(
+                        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+                    ).hexdigest()[:32]
+                    operation = build_cluster_merge_operation(
+                        [cluster, target],
+                        {
+                            cluster_id: list_memberships(cluster_id),
+                            target_cluster_id: list_memberships(target_cluster_id),
+                        },
+                        primary_cluster_id=target_cluster_id,
+                        reconciliation_id=reconciliation_id,
+                        reconciled_at=reviewed_at,
+                    )
+                    for tombstone in operation["superseded_clusters"]:
+                        if str(tombstone.get("id") or "") == cluster_id:
+                            tombstone.update(
+                                {
+                                    "review_decision": "merge",
+                                    "reviewed_at": reviewed_at,
+                                    "reviewed_by": reviewer,
+                                    "review_comment": " ".join(comment.split()) or None,
+                                    "reviewed_target_cluster_id": target_cluster_id,
+                                }
+                            )
+                    operation["review_resolution"] = {
+                        "review_cluster_id": cluster_id,
+                        "target_cluster_id": target_cluster_id,
+                        "review_decision": "merge",
+                        "reviewed_at": reviewed_at,
+                        "reviewed_by": reviewer,
+                        "review_comment": " ".join(comment.split()) or None,
+                        "reviewed_target_cluster_id": target_cluster_id,
+                    }
+                if not apply_reconciliation(operation):
+                    return jsonify({"error": "cluster_revision_conflict"}), 409
+                result = {
+                    "decision": decision,
+                    "cluster_id": cluster_id,
+                    "target_cluster_id": target_cluster_id,
+                    "reconciliation_id": operation["id"],
+                }
+                redirect_cluster_id = cluster_id
         else:
             resolve_review = getattr(store, "resolve_threat_cluster_review", None)
             if not callable(resolve_review):
@@ -2548,7 +2627,20 @@ def edit_long_term_cluster_membership(cluster_id: str):
         if int(selected.get("membership_revision") or 0) != expected_revision:
             return jsonify({"error": "cluster_revision_conflict"}), 409
         profile_id = str(selected.get("profile_id") or "")
-        current_membership = get_membership(profile_id, article_id)
+        list_article_memberships = getattr(store, "list_article_cluster_memberships", None)
+        if callable(list_article_memberships):
+            article_memberships = list_article_memberships(profile_id, article_id)
+            selected_scope = str(selected.get("tag_scope") or "")
+            current_membership = next(
+                (
+                    row for row in article_memberships
+                    if (str(row.get("cluster_id") or "") == cluster_id
+                        if action == "split_out"
+                        else str(row.get("tag_scope") or "") == selected_scope)
+                ), None,
+            )
+        else:
+            current_membership = get_membership(profile_id, article_id)
         if not isinstance(current_membership, dict):
             return jsonify({"error": "article_has_no_cluster_membership"}), 404
         source_id = str(current_membership.get("cluster_id") or "")
@@ -2887,13 +2979,17 @@ def list_long_term_reports():
     if store is None:
         abort(500)
 
-    profile_id, profiles = _selected_long_term_profile()
-    reports: List[Dict[str, Any]] = []
-    runs: List[Dict[str, Any]] = []
-    if profile_id:
-        list_reports = getattr(store, "list_threat_landscape_reports", None)
-        if not callable(list_reports):
-            abort(503)
+    selected = str(request.args.get("profile") or "").strip()
+    profiles = _long_term_profile_ids()
+    if selected and selected not in profiles:
+        abort(404)
+    visible_profiles = [selected] if selected else profiles
+    list_reports = getattr(store, "list_threat_landscape_reports", None)
+    if visible_profiles and not callable(list_reports):
+        abort(503)
+    list_runs = getattr(store, "list_long_term_runs", None)
+    groups: List[Dict[str, Any]] = []
+    for profile_id in visible_profiles:
         try:
             reports = [
                 _long_term_report_list_item(row)
@@ -2903,7 +2999,7 @@ def list_long_term_reports():
         except Exception:
             logger.exception("Could not list long-term reports for %s", profile_id)
             abort(503)
-        list_runs = getattr(store, "list_long_term_runs", None)
+        runs: List[Dict[str, Any]] = []
         if callable(list_runs):
             try:
                 runs = [
@@ -2913,12 +3009,20 @@ def list_long_term_reports():
                 ]
             except Exception:
                 logger.exception("Could not list long-term runs for %s", profile_id)
+        groups.append({
+            "profile_id": profile_id,
+            "label": _long_term_profile_label(profile_id),
+            "is_aggregate": bool(
+                (APP_CFG.get("long_term_analysis") or {})
+                .get("profiles", {}).get(profile_id, {}).get("aggregate_profiles")
+            ),
+            "reports": reports,
+            "runs": runs,
+        })
 
     return render_template(
         "long_term_reports.html",
-        reports=reports,
-        runs=runs,
-        active_profile=profile_id,
+        groups=groups,
         available_profiles=profiles,
         format_ts=format_ts,
     )
@@ -2949,6 +3053,7 @@ def view_long_term_report(report_id: str):
     return render_template(
         "long_term_report.html",
         report=report,
+        profile_label=_long_term_profile_label(str(report.get("profile_id") or "")),
         report_item=_long_term_report_list_item(report),
         analysis=(report.get("analysis") or {}),
         forecasts=(report.get("forecast") or []),
@@ -3000,40 +3105,53 @@ def list_long_term_clusters():
     store = APP_STORE
     if store is None:
         abort(500)
-    profile_id, profiles = _selected_long_term_profile()
-    status, page, per_page, min_members = _long_term_cluster_list_parameters()
-    result: Dict[str, Any] = {
-        "items": [],
-        "page": page,
-        "per_page": per_page,
-        "has_previous": False,
-        "has_next": False,
-    }
-    if profile_id:
+    selected = str(request.args.get("profile") or "").strip()
+    profiles = _long_term_profile_ids()
+    if selected and selected not in profiles:
+        abort(404)
+    visible_profiles = [selected] if selected else profiles
+    status, page, per_page, min_members, has_snapshot, selected_tags = (
+        _long_term_cluster_list_parameters()
+    )
+    available_cluster_tags = _long_term_cluster_tag_options(store, selected_tags)
+    groups: List[Dict[str, Any]] = []
+    for profile_id in visible_profiles:
         try:
-            result = _long_term_cluster_page(
+            result = _long_term_cluster_ui_page(
                 store,
                 profile_id,
                 status=status,
                 page=page,
                 per_page=per_page,
                 min_members=min_members,
+                has_snapshot=has_snapshot,
+                required_tags=selected_tags,
             )
         except Exception:
             logger.exception("Could not list long-term clusters for %s", profile_id)
             abort(503)
+        groups.append({
+            "profile_id": profile_id,
+            "label": _long_term_profile_label(profile_id),
+            "clusters": result["items"],
+            "has_next": result["has_next"],
+            "replacement_profile": _long_term_replacement_profile(profile_id),
+        })
     return render_template(
         "long_term_clusters.html",
-        clusters=result["items"],
-        active_profile=profile_id,
+        groups=groups,
+        selected_profile=selected,
         available_profiles=profiles,
         available_statuses=_LONG_TERM_CLUSTER_STATUSES,
         active_status=status or "all",
-        page=result["page"],
-        per_page=result["per_page"],
+        page=page,
+        per_page=per_page,
         min_members=min_members,
-        has_previous=result["has_previous"],
-        has_next=result["has_next"],
+        has_snapshot=has_snapshot,
+        selected_cluster_tags=selected_tags,
+        available_cluster_tags=available_cluster_tags,
+        has_previous=page > 1,
+        has_next=any(group["has_next"] for group in groups),
         format_ts=format_ts,
     )
 
@@ -3081,6 +3199,21 @@ def view_long_term_cluster(cluster_id: str):
         bundle["comparison_candidates"] = _long_term_cluster_comparison_data(
             store, source_cluster if isinstance(source_cluster, dict) else bundle["cluster"]
         )
+        list_article_memberships = getattr(store, "list_article_cluster_memberships", None)
+        related_ids: set[str] = set()
+        if callable(list_article_memberships):
+            for membership in bundle["memberships"]:
+                for related_membership in list_article_memberships(
+                    bundle["cluster"]["profile_id"], membership["article_id"]
+                ) or []:
+                    related_id = str(related_membership.get("cluster_id") or "")
+                    if related_id and related_id != cluster_id:
+                        related_ids.add(related_id)
+        bundle["related_clusters"] = [
+            _long_term_cluster_list_item(store, row)
+            for related_id in sorted(related_ids)
+            if isinstance((row := get_cluster(related_id)), dict)
+        ] if callable(get_cluster) else []
     except Exception:
         logger.exception("Could not compare long-term cluster %s", cluster_id)
         abort(503)
@@ -3247,95 +3380,128 @@ def view_summary_proofread_audit(summary_id: str):
     )
 
 
+_CATEGORY_COLOR_TOKENS = {
+    "bg-primary": "#0d6efd",
+    "bg-secondary": "#6c757d",
+    "bg-success": "#198754",
+    "bg-danger": "#dc3545",
+    "bg-warning": "#ffc107",
+    "bg-info": "#0dcaf0",
+    "bg-light": "#f8f9fa",
+    "bg-dark": "#212529",
+    "text-dark": "#212529",
+    "text-light": "#f8f9fa",
+    "text-white": "#fff",
+}
+
+
+def _category_css_color(value: Any, fallback: str) -> str:
+    color = str(value or "").strip()
+    if color in _CATEGORY_COLOR_TOKENS:
+        return _CATEGORY_COLOR_TOKENS[color]
+    if re.fullmatch(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", color):
+        return color
+    return fallback
+
+
 @app.route("/articles")
 def list_articles():
     store = APP_STORE
     if store is None:
         abort(500)
 
-    try:
-        limit = int(request.args.get("limit", "2000"))
-    except Exception:
-        limit = 2000
-    limit = max(1, min(limit, 50000))
+    from datetime import timedelta
 
-    try:
-        max_days = int(request.args.get("days", "3650"))
-    except Exception:
-        max_days = 3650
-    max_days = max(1, min(max_days, 10000))
-
-    date_rows = _list_article_dates_fast(store, max_days=max_days)
-    date_tabs = [str(r.get("date") or "") for r in date_rows if r.get("date")]
-    date_counts: Dict[str, int] = {
-        str(r.get("date")): int(r.get("count") or 0) for r in date_rows if r.get("date")
-    }
-
-    def _format_published_ts_iso(a: Dict[str, Any]) -> str:
-        tsv = _article_published_ts(a)
-        if tsv <= 0:
-            return ""
-        whole = int(tsv)
-        frac2 = int(round((tsv - whole) * 100))
-        if frac2 >= 100:
-            whole += 1
-            frac2 = 0
-        return f"{datetime.fromtimestamp(whole).strftime('%Y-%m-%dT%H:%M:%S')}.{frac2:02d}"
-
-    requested_date = str(request.args.get("date") or "").strip()
-    active_date = requested_date if requested_date in date_counts else ""
-
-    active_articles: List[Dict[str, Any]] = []
-    if active_date:
-        active_articles = _list_articles_for_day_fast(
-            store, date_ymd=active_date, limit=limit
-        )
-        # Add tags to each article
-        for a in active_articles:
-            try:
-                article_id = a.get("id")
-                if article_id:
-                    article_tags = store.get_article_tags(article_id) or []
-                    tags = []
-                    for t in article_tags:
-                        if isinstance(t, dict):
-                            tags.append({
-                                "id": t.get("id"),
-                                "name": t.get("name", ""),
-                                "category": t.get("category", "GENERAL")
-                            })
-                    a["tags"] = tags
-            except Exception as e:
-                logger.debug(f"Error loading tags for article {a.get('id')}: {e}")
-                a["tags"] = []
+    now = datetime.now().replace(microsecond=0)
+    if "range" in request.args:
+        start_value = str(request.args.get("start") or "").strip()
+        end_value = str(request.args.get("end") or "").strip()
     else:
-        raw = _list_recent_articles_fast(store, limit=limit)
-        for a in raw:
-            if isinstance(a, dict) and a.get("id"):
-                active_articles.append(_article_list_item(a))
+        start_value = (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        end_value = now.strftime("%Y-%m-%dT%H:%M:%S")
+    try:
+        start_ts = int(datetime.fromisoformat(start_value).timestamp()) if start_value else None
+        end_ts = int(datetime.fromisoformat(end_value).timestamp()) if end_value else None
+    except ValueError:
+        abort(400, "Ogiltigt datumfilter")
+    if start_ts is not None and end_ts is not None and start_ts > end_ts:
+        abort(400, "Startdatum måste vara före slutdatum")
 
-    active_articles.sort(key=_article_published_ts, reverse=True)
-    tag_filter_tags, tag_filter_descendants = _article_tag_filter_tree(
-        store, active_articles
+    try:
+        per_page = int(request.args.get("per_page", "25"))
+        page = int(request.args.get("page", "1"))
+    except ValueError:
+        abort(400, "Ogiltig sidstorlek eller sidnummer")
+    if per_page not in (25, 50, 100) or page < 1:
+        abort(400, "Ogiltig sidstorlek eller sidnummer")
+
+    categories = [item for item in (store.get_all_categories() or []) if isinstance(item, dict)]
+    category_colors = {
+        str(item.get("name") or ""): {
+            "bg_color": _category_css_color(item.get("bg_color"), "#6c757d"),
+            "text_color": _category_css_color(item.get("text_color"), "#212529"),
+        }
+        for item in categories
+    }
+    category_names = {str(item.get("name") or "") for item in categories}
+    selected_categories = list(dict.fromkeys(
+        value for value in request.args.getlist("category") if value in category_names
+    ))
+    sources = list(dict.fromkeys(
+        option["name"] for option in build_source_options(APP_CFG)
+    ))
+    selected_sources = list(dict.fromkeys(
+        value for value in request.args.getlist("source") if value in sources
+    ))
+    try:
+        selected_tags = list(dict.fromkeys(
+            int(value) for value in request.args.getlist("tag")
+        ))
+    except ValueError:
+        abort(400, "Ogiltigt taggfilter")
+    selected_tags = [value for value in selected_tags if value > 0]
+
+    result = list_article_page(
+        store, start_ts=start_ts, end_ts=end_ts, sources=selected_sources,
+        categories=selected_categories, selected_tags=selected_tags,
+        page=page, per_page=per_page,
     )
+    selected_tags = result["selected_tags"]
+
+    def page_url(number: int) -> str:
+        return url_for(
+            "list_articles", range="custom", start=start_value, end=end_value,
+            source=selected_sources, category=selected_categories,
+            tag=selected_tags, per_page=per_page, page=number,
+        )
 
     return render_template(
         "articles.html",
-        articles=active_articles,
-        tag_filter_tags=tag_filter_tags,
-        tag_filter_descendants=tag_filter_descendants,
-        date_tabs=date_tabs,
-        date_counts=date_counts,
-        total_article_count=(
-            sum(date_counts.values())
-            if not active_date
-            else date_counts.get(active_date, len(active_articles))
-        ),
-        active_date=active_date,
-        format_published_ts_iso=_format_published_ts_iso,
+        articles=result["articles"], total=result["total"],
+        page=result["page"], pages=result["pages"], per_page=per_page,
+        start_value=start_value, end_value=end_value,
+        sources=sources, selected_sources=selected_sources,
+        categories=categories, selected_categories=selected_categories,
+        category_colors=category_colors,
+        selected_tags=selected_tags, filter_tags=result["filter_tags"], page_url=page_url,
         format_ts=format_ts,
         error=None,
     )
+
+
+@app.route("/api/v1/article-filter-tags")
+def api_article_filter_tags():
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    category_names = {
+        str(item.get("name") or "") for item in (store.get_all_categories() or [])
+        if isinstance(item, dict)
+    }
+    selected = list(dict.fromkeys(
+        value for value in request.args.getlist("category") if value in category_names
+    ))
+    return jsonify({"tags": list_filter_tags(store, selected)})
 
 
 @app.route("/article/<article_id>")
@@ -3397,7 +3563,32 @@ def view_article(article_id: str):
     a["tags"] = tags
     logger.info(f"[Article] Final tags list: {tags}")
 
-    return render_template("article.html", a=a, format_ts=format_ts)
+    cluster_memberships: List[Dict[str, Any]] = []
+    list_article_memberships = getattr(store, "list_article_cluster_memberships", None)
+    get_cluster = getattr(store, "get_threat_cluster", None)
+    if _long_term_ui_enabled() and callable(list_article_memberships) and callable(get_cluster):
+        seen_clusters: set[tuple[str, str]] = set()
+        for profile_id in _long_term_profile_ids():
+            for membership in list_article_memberships(profile_id, str(article_id)) or []:
+                cluster_id = str(membership.get("cluster_id") or "")
+                key = (profile_id, cluster_id)
+                if not cluster_id or key in seen_clusters:
+                    continue
+                seen_clusters.add(key)
+                cluster = get_cluster(cluster_id)
+                if not isinstance(cluster, dict):
+                    continue
+                cluster_memberships.append({
+                    "id": cluster_id,
+                    "profile": _long_term_profile_label(profile_id),
+                    "label": _long_term_cluster_label(store, cluster),
+                    "tag_scope": str(membership.get("tag_scope") or "").split("#cluster:", 1)[0],
+                    "status": str(cluster.get("status") or ""),
+                })
+    return render_template(
+        "article.html", a=a, format_ts=format_ts,
+        cluster_memberships=cluster_memberships,
+    )
 
 
 @app.route("/status")
@@ -3641,7 +3832,7 @@ def api_reclassify_article_with_existing_tags(article_id: str):
     The LLM is instructed that it's OK to suggest no tags if none are relevant.
     
     Request body:
-        max_tags: Maximum number of tags to suggest (default 5)
+        max_tags: Maximum number of tags to suggest (default 20)
     
     Response:
         suggested_tags: List of suggested tags with 'id', 'name', 'category', 'reasoning'
@@ -3652,8 +3843,8 @@ def api_reclassify_article_with_existing_tags(article_id: str):
     
     try:
         data = request.get_json() or {}
-        max_tags = int(data.get("max_tags", 5))
-        max_tags = max(1, min(max_tags, 10))  # Limit between 1-10
+        max_tags = int(data.get("max_tags", 20))
+        max_tags = max(1, min(max_tags, 20))
         
         # Get article
         article = store.get_article(article_id)

@@ -42,8 +42,13 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from flask import Flask, abort, jsonify, request
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -72,6 +77,7 @@ READ_ROUTES = (
     ("/api/v1/summaries/latest", "api_summaries_latest"),
     ("/api/v1/summary/<summary_id>", "api_summary"),
     ("/api/v1/long-term/reports", "api_long_term_reports"),
+    ("/api/v1/long-term/attack-pressure", "api_long_term_attack_pressure"),
     ("/api/v1/long-term/reports/<report_id>", "api_long_term_report"),
     ("/api/v1/long-term/runs", "api_long_term_runs"),
     ("/api/v1/long-term/snapshots/<snapshot_id>", "api_long_term_snapshot"),
@@ -104,6 +110,7 @@ READ_ROUTES = (
     ("/long-term/review/<cluster_id>", "review_long_term_cluster"),
     ("/long-term/cluster/<cluster_id>", "view_long_term_cluster"),
     ("/articles", "list_articles"),
+    ("/api/v1/article-filter-tags", "api_article_filter_tags"),
     ("/article/<article_id>", "view_article"),
     ("/tags", "manage_tags"),
     ("/categories", "manage_categories"),

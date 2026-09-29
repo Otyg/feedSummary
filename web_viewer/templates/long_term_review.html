@@ -2,13 +2,13 @@
 {% block body %}
 <div class="row justify-content-center">
   <main class="col-12 col-xl-11 pb-5">
-    <a href="{{ url_for('list_long_term_clusters', profile=cluster.profile_id, status='needs_review') }}" class="small">← Granskningskön</a>
+    <a href="{{ url_for('list_long_term_clusters', profile=cluster.profile_id) }}" class="small">← Alla kluster</a>
     <div class="d-flex flex-wrap justify-content-between gap-3 mt-2 mb-3">
       <div>
         <div class="small text-muted">Manuell klustergranskning</div>
         <h1 class="h3 mb-1">{{ cluster_label }}</h1>
       </div>
-      <span class="badge text-bg-warning align-self-start">Behöver granskas</span>
+      <span class="badge text-bg-warning align-self-start">Äldre tilldelning</span>
     </div>
 
     <div class="alert alert-info">

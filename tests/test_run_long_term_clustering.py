@@ -5,12 +5,61 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import yaml
-from feedsummary_core.long_term import IncrementalBatchResult
+from feedsummary_core.long_term import (
+    ClusteringSettings,
+    EmbeddingSignature,
+    IncrementalBatchResult,
+    assign_article,
+    create_cluster,
+)
 
 import run_long_term_clustering as cli
+from feedsummary_core.long_term.processor import _tag_scopes
 
 
 class LongTermClusteringCliTests(unittest.TestCase):
+    def test_tag_scope_is_the_article_tag_union_and_ignores_vulnerabilities(self):
+        scopes = _tag_scopes(
+            [
+                {"category": "MALWARE", "name": "Alpha"},
+                {"category": "SECTOR", "name": "Healthcare"},
+                {"category": "LOCATION", "name": "Europe"},
+                {"category": "VULNERABILITY", "name": "CVE-2026-1"},
+            ],
+            frozenset({"MALWARE", "SECTOR", "LOCATION", "VULNERABILITY"}),
+        )
+
+        self.assertEqual(
+            (
+                "LOCATION:europe|MALWARE:alpha|SECTOR:healthcare",
+            ),
+            scopes,
+        )
+
+    def test_embedding_candidates_can_reuse_a_larger_tag_union(self):
+        signature = EmbeddingSignature("model", 2, "instruction")
+        cluster = create_cluster(
+            profile_id="profile",
+            article_id="old",
+            article_ts=100,
+            embedding=[1.0, 0.0],
+            signature=signature,
+            tag_scope="MALWARE:alpha|SECTOR:healthcare|LOCATION:europe",
+        )
+
+        decision = assign_article(
+            profile_id="profile",
+            article_ts=110,
+            embedding=[1.0, 0.0],
+            signature=signature,
+            candidates=[cluster],
+            tag_scope="MALWARE:alpha",
+            settings=ClusteringSettings(similarity_threshold=0.8, min_shared_tags=1),
+        )
+
+        self.assertEqual("match", decision.action.value)
+        self.assertEqual(cluster.id, decision.cluster_id)
+
     def test_all_sources_bypasses_profile_source_resolution(self):
         result = IncrementalBatchResult(
             run_id="run",
@@ -61,6 +110,17 @@ class LongTermClusteringCliTests(unittest.TestCase):
             )
 
         self.assertIsNone(run.call_args.kwargs["sources"])
+        self.assertEqual(
+            (
+                "DOMAIN_ENTITY",
+                "MALWARE",
+                "THREAT_ACTOR",
+                "SECTOR",
+                "LOCATION",
+                "ORGANIZATION",
+            ),
+            run.call_args.kwargs["settings"].tag_scope_categories,
+        )
 
     def test_resolves_profile_categories_to_feed_sources(self):
         with TemporaryDirectory() as directory:
@@ -81,6 +141,37 @@ class LongTermClusteringCliTests(unittest.TestCase):
                 {"categories": ["Cybersecurity"], "sources": ["Manual feed"]},
             )
         self.assertEqual(["Manual feed", "Security feed"], sources)
+
+    def test_aggregate_profile_uses_union_of_member_sources(self):
+        config = {
+            "feeds": [
+                {"name": "Security feed", "topics": ["Cybersecurity"]},
+                {"name": "Health feed", "topics": ["Healthcare"]},
+            ],
+            "long_term_analysis": {
+                "profiles": {
+                    "security": {"enabled": True, "categories": ["Cybersecurity"]},
+                    "health": {
+                        "enabled": True,
+                        "categories": ["Healthcare"],
+                        "sources": ["Security feed"],
+                    },
+                    "all_profiles": {
+                        "enabled": True,
+                        "aggregate_profiles": ["security", "health"],
+                    },
+                }
+            },
+        }
+        profile = config["long_term_analysis"]["profiles"]["all_profiles"]
+
+        self.assertEqual(
+            ["Health feed", "Security feed"],
+            cli._resolve_sources(config, Path("config.yaml"), profile),
+        )
+        config["long_term_analysis"]["profiles"]["health"]["required_tags"] = ["health"]
+        with self.assertRaisesRegex(ValueError, "required_tags"):
+            cli._resolve_sources(config, Path("config.yaml"), profile)
 
     def test_timestamp_supports_unix_and_iso_8601(self):
         self.assertEqual(100, cli._timestamp("100"))

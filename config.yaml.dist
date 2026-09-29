@@ -34,6 +34,7 @@ batching:
   topic_max_workers: 4
 tagging:
   summary_max_tags: 20
+  article_max_tags: 20
   # Minsta cosinuslikhet för att ersätta en föreslagen tagg med en befintlig.
   embedding_replacement_threshold: 0.8
   # Sätt till false för att inte skapa en separat tagg för varje CVE-ID i sammanfattningar.
@@ -56,7 +57,7 @@ tagging:
     model_path: data/tagging_ml/domain_entity_sgd_embeddings.joblib
     min_label_support: 5
     min_training_articles: 30
-    max_tags_per_article: 5
+    max_tags_per_article: 20
     threshold: 0.5
     alpha: 0.0001
     random_state: 42
@@ -97,9 +98,13 @@ long_term_analysis:
     reduce_max_output_tokens: 2500
   clustering:
     embedding_purpose: similarity
+    # Ett medlemskap per artikel och tagg; embeddings delar händelser inom samma tagg.
+    # Äldre semantiska kluster behålls som historik och migreras inte automatiskt.
+    tag_scope_categories: [DOMAIN_ENTITY, MALWARE, THREAT_ACTOR, SECTOR, VULNERABILITY]
     similarity_threshold: 0.80
     ambiguity_margin: 0.03
     candidate_window_days: 60
+    min_shared_tags: 2
     dormant_after_days: 30
     close_after_days: 180
   reconciliation:
@@ -131,10 +136,31 @@ long_term_analysis:
     max_snapshot_records: 10000
     generation_attempts: 3
   profiles:
+    all_profiles:
+      enabled: true
+      display_name: Samlad analys
+      region: Global
+      sector: all
+      # Källorna hämtas som union av profilerna nedan när klustringen körs.
+      aggregate_profiles: [healthcare_europe, critical_infrastructure, global_events]
     healthcare_europe:
       enabled: true
+      region: Europe
+      sector: healthcare
       categories: [Cybersecurity, Dataskydd, Breaches, Sårbarheter]
       priority_tags: [Europe, healthcare]
+    critical_infrastructure:
+      enabled: true
+      region: Global
+      sector: critical infrastructure
+      categories: [Cybersecurity, Dataskydd, Breaches, Sårbarheter]
+      priority_tags: [critical infrastructure, energy, ICS, OT]
+    global_events:
+      enabled: true
+      region: Global
+      sector: global events
+      categories: [Cybersecurity, Dataskydd, Breaches, Sårbarheter]
+      priority_tags: [geopolitics, global]
 cleanup:
   enabled: true
   run_every_minutes: 60

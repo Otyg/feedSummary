@@ -9,7 +9,7 @@
 {%- endmacro %}
 <div class="row justify-content-center">
   <main class="col-12 col-xl-9 pb-5">
-    <a href="{{ url_for('list_long_term_reports', profile=report.profile_id) }}" class="small">← Tidigare rapporter</a>
+    <a href="{{ url_for('list_long_term_reports') }}" class="small">← Alla rapporter</a>
     <div class="d-flex flex-wrap justify-content-between gap-3 mt-2 mb-3">
       <div>
         <h1 class="h2 mb-1">
@@ -18,7 +18,7 @@
         </h1>
         <div class="text-muted">
           {{ format_ts(report.period_start_ts) }} – {{ format_ts(report.period_end_ts) }}
-          · profil <code>{{ report.profile_id }}</code>
+          · profil {{ profile_label }} <code>{{ report.profile_id }}</code>
         </div>
       </div>
       <div class="text-end small text-muted">

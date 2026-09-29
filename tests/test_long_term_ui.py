@@ -32,6 +32,8 @@
 import os
 import unittest
 
+from feedsummary_core.long_term import validate_cluster_merge_operation
+
 _previous_auto_init = os.environ.get("FEEDSUMMARY_SKIP_VIEWER_AUTO_INIT")
 os.environ["FEEDSUMMARY_SKIP_VIEWER_AUTO_INIT"] = "1"
 try:
@@ -227,6 +229,8 @@ class _LongTermStore:
         self.review_resolutions = []
         self.applied_reconciliations = []
         self.applied_membership_edits = []
+        self.extra_clusters = []
+        self.extra_memberships = []
 
     def list_threat_landscape_reports(self, profile_id, *, limit=100):
         self.list_calls.append((profile_id, limit))
@@ -241,7 +245,7 @@ class _LongTermStore:
         return dict(self.snapshot) if snapshot_id == self.snapshot["id"] else None
 
     def get_threat_cluster(self, cluster_id):
-        rows = (self.cluster, self.other_cluster, self.review_cluster)
+        rows = (self.cluster, self.other_cluster, self.review_cluster, *self.extra_clusters)
         return next((dict(row) for row in rows if cluster_id == row["id"]), None)
 
     def list_threat_clusters(
@@ -264,7 +268,7 @@ class _LongTermStore:
                 **filters,
             }
         )
-        rows = [self.cluster, self.other_cluster, self.review_cluster]
+        rows = [self.cluster, self.other_cluster, self.review_cluster, *self.extra_clusters]
         rows = [row for row in rows if row["profile_id"] == profile_id]
         if statuses:
             rows = [row for row in rows if row["status"] in statuses]
@@ -283,6 +287,11 @@ class _LongTermStore:
         return result
 
     def list_cluster_memberships(self, cluster_id, *, limit=10000):
+        if any(row["id"] == cluster_id for row in self.extra_clusters):
+            return [
+                dict(row) for row in self.extra_memberships
+                if row["cluster_id"] == cluster_id
+            ][:limit]
         if cluster_id == self.cluster["id"]:
             return [dict(row) for row in self.memberships[:limit]]
         if cluster_id == self.review_cluster["id"]:
@@ -314,6 +323,12 @@ class _LongTermStore:
             None,
         )
 
+    def list_article_cluster_memberships(self, profile_id, article_id):
+        rows = [*self.memberships, self.other_membership, self.review_membership,
+                *self.extra_memberships]
+        return [dict(row) for row in rows
+                if row["profile_id"] == profile_id and row["article_id"] == article_id]
+
     def apply_cluster_membership_edit(self, operation):
         self.applied_membership_edits.append(dict(operation))
         return True
@@ -341,6 +356,14 @@ class _LongTermStore:
             if "article-1" in article_ids
             else []
         )
+
+    def get_all_tags(self):
+        return [
+            {"id": 1, "name": "Attack Analysis", "category": "DOMAIN_ENTITY"},
+            {"id": 2, "name": "Data Breach", "category": "DOMAIN_ENTITY"},
+            {"id": 3, "name": "Espionage", "category": "THREAT_ACTOR"},
+            {"id": 4, "name": "Healthcare", "category": "SECTOR"},
+        ]
 
     def list_long_term_runs(self, profile_id, *, limit=100):
         if profile_id != "healthcare_europe":
@@ -473,6 +496,47 @@ class LongTermUiTests(unittest.TestCase):
         self.assertIn("long_term_pipeline", html)
         self.assertIn("model unavailable", html)
 
+    def test_default_pages_show_each_profile_without_dropdown(self):
+        profiles = webapp_viewer.APP_CFG["long_term_analysis"]["profiles"]
+        profiles["public_sector"]["enabled"] = True
+        profiles["all_profiles"] = {
+            "enabled": True,
+            "display_name": "Samlad analys",
+            "aggregate_profiles": ["healthcare_europe", "public_sector"],
+        }
+        self.store.reports.insert(0, {
+            **_report("report-aggregate"),
+            "profile_id": "all_profiles",
+            "analysis": {"executive_summary": "Samlad lägesbild."},
+        })
+        self.store.reports.append({
+            **_report("report-public"),
+            "profile_id": "public_sector",
+            "analysis": {"executive_summary": "Offentlig sektor."},
+        })
+        self.store.extra_clusters.append({
+            **self.store.other_cluster,
+            "id": "cluster-public",
+            "profile_id": "public_sector",
+            "latest_snapshot_id": None,
+        })
+
+        reports = self.client.get("/long-term")
+        clusters = self.client.get("/long-term/clusters")
+
+        self.assertEqual(200, reports.status_code)
+        self.assertEqual(200, clusters.status_code)
+        report_html = reports.get_data(as_text=True)
+        cluster_html = clusters.get_data(as_text=True)
+        self.assertIn("Samlad lägesbild.", report_html)
+        self.assertIn("Offentlig sektor.", report_html)
+        self.assertIn("Tre oberoende händelser", report_html)
+        self.assertLess(report_html.index("Samlad analys"), report_html.index("healthcare_europe"))
+        self.assertNotIn('name="profile"', report_html)
+        self.assertIn("cluster-public", cluster_html)
+        self.assertIn("healthcare_europe", cluster_html)
+        self.assertNotIn('<select class="form-select form-select-sm" id="profile"', cluster_html)
+
     def test_runs_api_exposes_compact_operational_status(self):
         response = self.client.get(
             "/api/v1/long-term/runs?profile=healthcare_europe&limit=1"
@@ -517,6 +581,43 @@ class LongTermUiTests(unittest.TestCase):
             self.store.cluster_list_calls[-1],
         )
 
+    def test_cluster_list_defaults_to_active_profile_after_rebuild(self):
+        profiles = webapp_viewer.APP_CFG["long_term_analysis"]["profiles"]
+        profiles["healthcare_europe"]["clustering_enabled"] = False
+        profiles["healthcare_europe_tagged_v2"] = {
+            "enabled": True,
+            "clustering_enabled": True,
+            "rebuild_source_profile_id": "healthcare_europe",
+        }
+        self.store.cluster["profile_id"] = "healthcare_europe_tagged_v2"
+
+        response = self.client.get("/api/v1/long-term/clusters")
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual("healthcare_europe_tagged_v2", payload["active_profile"])
+        self.assertEqual("cluster-1", payload["items"][0]["id"])
+        self.assertEqual(
+            "healthcare_europe_tagged_v2", payload["available_profiles"][0]
+        )
+        self.assertEqual(
+            "healthcare_europe_tagged_v2",
+            self.store.cluster_list_calls[-1]["profile_id"],
+        )
+
+        page = self.client.get("/long-term/clusters")
+        self.assertEqual(200, page.status_code)
+        self.assertIn("cluster-1", page.get_data(as_text=True))
+
+        archived_page = self.client.get(
+            "/long-term/clusters?profile=healthcare_europe"
+        )
+        self.assertEqual(200, archived_page.status_code)
+        self.assertIn("Den här profilen är arkiverad", archived_page.get_data(as_text=True))
+        self.assertIn(
+            "profile=healthcare_europe_tagged_v2",
+            archived_page.get_data(as_text=True),
+        )
+
     def test_cluster_list_page_links_readable_titles_and_next_page(self):
         response = self.client.get(
             "/long-term/clusters?profile=healthcare_europe&per_page=1"
@@ -529,9 +630,127 @@ class LongTermUiTests(unittest.TestCase):
             "CVE-2026-65974 – ERPNext Server-Side Template Injection", html
         )
         self.assertIn("/long-term/cluster/cluster-1", html)
+        self.assertIn("/long-term/snapshot/snapshot-1", html)
+        self.assertIn("Öppna senaste snapshot", html)
         self.assertNotIn(">cluster-1</a>", html)
         self.assertIn("Nästa →", html)
         self.assertIn("per_page=1", html)
+
+    def test_cluster_list_can_only_show_clusters_with_snapshots(self):
+        response = self.client.get(
+            "/api/v1/long-term/clusters"
+            "?profile=healthcare_europe&has_snapshot=1&per_page=1"
+        )
+        page = self.client.get(
+            "/long-term/clusters"
+            "?profile=healthcare_europe&has_snapshot=1&per_page=1"
+        )
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertTrue(payload["has_snapshot"])
+        self.assertFalse(payload["has_next"])
+        self.assertEqual(["cluster-1"], [row["id"] for row in payload["items"]])
+        self.assertEqual(200, page.status_code)
+        html = page.get_data(as_text=True)
+        self.assertIn('id="has_snapshot"', html)
+        self.assertIn("checked", html)
+        self.assertNotIn("cluster-2", html)
+
+    def test_cluster_list_snapshot_filter_is_preserved_across_pages(self):
+        self.store.other_cluster["latest_snapshot_id"] = "snapshot-1"
+
+        response = self.client.get(
+            "/long-term/clusters"
+            "?profile=healthcare_europe&has_snapshot=1&per_page=1"
+        )
+        next_page = self.client.get(
+            "/api/v1/long-term/clusters"
+            "?profile=healthcare_europe&has_snapshot=1&per_page=1&page=2"
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertIn("has_snapshot=1", response.get_data(as_text=True))
+        self.assertEqual(["cluster-2"], [
+            row["id"] for row in next_page.get_json()["items"]
+        ])
+
+    def test_cluster_list_tag_filter_requires_every_selected_tag(self):
+        selected_tags = [
+            "DOMAIN_ENTITY:attack analysis",
+            "DOMAIN_ENTITY:data breach",
+            "THREAT_ACTOR:espionage",
+        ]
+        self.store.cluster["tag_scope"] = "|".join([
+            *selected_tags,
+            "SECTOR:healthcare",
+        ])
+        self.store.other_cluster["tag_scope"] = "|".join(selected_tags[:2])
+        query = {
+            "profile": "healthcare_europe",
+            "tag": selected_tags,
+        }
+
+        response = self.client.get(
+            "/api/v1/long-term/clusters", query_string=query
+        )
+        page = self.client.get("/long-term/clusters", query_string=query)
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual(selected_tags, payload["selected_tags"])
+        self.assertEqual(["cluster-1"], [row["id"] for row in payload["items"]])
+        self.assertEqual(200, page.status_code)
+        html = page.get_data(as_text=True)
+        self.assertIn("Ett kluster måste innehålla samtliga valda taggar", html)
+        self.assertIn("Attack Analysis", html)
+        self.assertEqual(3, html.count("checked"))
+        self.assertNotIn("cluster-2", html)
+
+    def test_cluster_list_keeps_same_label_clusters_separate(self):
+        self.store.cluster["tag_scope"] = "VULNERABILITY"
+        self.store.other_cluster["latest_snapshot_id"] = "snapshot-1"
+        self.store.other_cluster["tag_scope"] = "MALWARE"
+
+        response = self.client.get("/long-term/clusters?profile=healthcare_europe")
+
+        self.assertEqual(200, response.status_code)
+        html = response.get_data(as_text=True)
+        label = "CVE-2026-65974 – ERPNext Server-Side Template Injection"
+        self.assertEqual(2, html.count(label))
+        self.assertIn("VULNERABILITY", html)
+        self.assertIn("MALWARE", html)
+        self.assertIn("/long-term/cluster/cluster-1", html)
+        self.assertIn("/long-term/cluster/cluster-2", html)
+
+    def test_cluster_detail_shows_clusters_sharing_an_article(self):
+        self.store.cluster["tag_scope"] = "VULNERABILITY"
+        self.store.other_cluster["latest_snapshot_id"] = "snapshot-1"
+        self.store.other_cluster["tag_scope"] = "MALWARE"
+        self.store.other_membership["article_id"] = "article-1"
+
+        response = self.client.get("/long-term/cluster/cluster-1")
+
+        self.assertEqual(200, response.status_code)
+        html = response.get_data(as_text=True)
+        self.assertIn("Andra kluster med gemensamma artiklar", html)
+        self.assertIn("MALWARE", html)
+        self.assertIn("/long-term/cluster/cluster-2", html)
+
+    def test_article_page_lists_all_cluster_memberships(self):
+        self.store.other_membership["article_id"] = "article-1"
+        self.store.get_article = lambda article_id: {
+            "id": article_id, "title": "Tillgänglig artikel", "text": "Text"
+        }
+        self.store.get_article_tags = lambda article_id: []
+
+        response = self.client.get("/article/article-1")
+
+        self.assertEqual(200, response.status_code)
+        html = response.get_data(as_text=True)
+        self.assertIn("Artikeln kan ingå i flera kluster", html)
+        self.assertIn("/long-term/cluster/cluster-1", html)
+        self.assertIn("/long-term/cluster/cluster-2", html)
 
     def test_cluster_list_status_filter_and_validation(self):
         response = self.client.get(
@@ -542,9 +761,14 @@ class LongTermUiTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(["cluster-2"], [row["id"] for row in payload["items"]])
         self.assertEqual(["dormant"], self.store.cluster_list_calls[-1]["statuses"])
+        self.assertNotIn("needs_review", payload["available_statuses"])
         self.assertEqual(
             400,
             self.client.get("/long-term/clusters?status=invalid").status_code,
+        )
+        self.assertEqual(
+            400,
+            self.client.get("/long-term/clusters?status=needs_review").status_code,
         )
 
     def test_cluster_list_filters_by_minimum_member_count(self):
@@ -729,7 +953,77 @@ class LongTermUiTests(unittest.TestCase):
         self.assertIn("Jämför med andra kluster", html)
         self.assertIn("Papercut incident", html)
         self.assertIn("Slå ihop kluster", html)
-        self.assertIn("target_cluster_id", html)
+        self.assertIn('name="merge_cluster_ids" value="cluster-2"', html)
+        self.assertIn('form="merge_cluster_form"', html)
+        self.assertNotIn('name="target_cluster_id"', html)
+
+    def test_selected_comparison_clusters_merge_into_open_cluster_together(self):
+        webapp_viewer.APP_CFG["long_term_analysis"]["enabled"] = True
+        webapp_viewer.APP_CFG["long_term_analysis"]["ui"][
+            "review_actions_enabled"
+        ] = True
+        self.store.extra_clusters.append({
+            **self.store.other_cluster,
+            "id": "cluster-3",
+            "centroid": [0.99, 0.01],
+            "vector_sum": [0.99, 0.01],
+        })
+        self.store.extra_memberships.append({
+            **self.store.other_membership,
+            "article_id": "article-3",
+            "cluster_id": "cluster-3",
+            "evidence": {"title": "Another incident"},
+        })
+
+        page = self.client.get("/long-term/cluster/cluster-1")
+        self.assertEqual(200, page.status_code)
+        html = page.get_data(as_text=True)
+        self.assertIn('name="merge_cluster_ids" value="cluster-2"', html)
+        self.assertIn('name="merge_cluster_ids" value="cluster-3"', html)
+
+        response = self.client.post(
+            "/api/v1/long-term/clusters/cluster-1/review",
+            data={
+                "decision": "merge",
+                "merge_cluster_ids": ["cluster-2", "cluster-3"],
+                "reviewer": "Analyst One",
+                "comment": "Same incident.",
+                "expected_membership_revision": "2",
+            },
+        )
+        self.assertEqual(302, response.status_code)
+        self.assertTrue(response.location.endswith("/long-term/cluster/cluster-1"))
+        self.assertEqual(1, len(self.store.applied_reconciliations))
+        operation = self.store.applied_reconciliations[0]
+        validate_cluster_merge_operation(operation)
+        self.assertEqual("cluster-1", operation["primary_cluster_id"])
+        self.assertEqual(
+            ["cluster-1", "cluster-2", "cluster-3"], operation["source_cluster_ids"]
+        )
+        self.assertEqual("Analyst One", operation["manual_merge"]["reviewed_by"])
+        self.assertEqual(
+            {"cluster-2", "cluster-3"},
+            {row["id"] for row in operation["superseded_clusters"]},
+        )
+
+    def test_multi_merge_rejects_unselected_or_duplicate_clusters(self):
+        webapp_viewer.APP_CFG["long_term_analysis"]["enabled"] = True
+        webapp_viewer.APP_CFG["long_term_analysis"]["ui"][
+            "review_actions_enabled"
+        ] = True
+        for selected_ids in ([], ["cluster-review"], ["cluster-2", "cluster-2"]):
+            with self.subTest(selected_ids=selected_ids):
+                response = self.client.post(
+                    "/api/v1/long-term/clusters/cluster-1/review",
+                    json={
+                        "decision": "merge",
+                        "merge_cluster_ids": selected_ids,
+                        "reviewer": "Analyst One",
+                        "expected_membership_revision": 2,
+                    },
+                )
+                self.assertEqual(400, response.status_code)
+        self.assertEqual([], self.store.applied_reconciliations)
 
     def test_active_cluster_can_be_merged_with_comparison_candidate(self):
         webapp_viewer.APP_CFG["long_term_analysis"]["enabled"] = True
@@ -767,6 +1061,17 @@ class LongTermUiTests(unittest.TestCase):
         self.assertIn("Bortgallrad artikel", html)
         self.assertIn("Artikel bortgallrad", html)
         self.assertNotIn("[1.0, 0.0]", html)
+
+    def test_cluster_page_uses_article_title_when_snapshot_is_missing(self):
+        list_response = self.client.get(
+            "/api/v1/long-term/clusters?profile=healthcare_europe&status=dormant"
+        )
+        page_response = self.client.get("/long-term/cluster/cluster-2")
+
+        self.assertEqual(200, list_response.status_code)
+        self.assertEqual("Papercut incident", list_response.get_json()["items"][0]["label"])
+        self.assertEqual(200, page_response.status_code)
+        self.assertIn(">Papercut incident</h1>", page_response.get_data(as_text=True))
 
     def test_membership_split_action_is_audited(self):
         webapp_viewer.APP_CFG["long_term_analysis"]["enabled"] = True

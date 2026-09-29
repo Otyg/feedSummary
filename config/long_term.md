@@ -146,12 +146,12 @@
   senaste observation och väntande snapshotrevisioner. Motsvarande versionerade
   läs-API är `/api/v1/long-term/clusters`; listfrågan hämtar inte lagrade
   embedding-vektorer. Ett första manuellt granskningsflöde finns också via
-  `/long-term/review/<cluster_id>`: den tvetydiga artikeln jämförs med de två
-  kandidaterna och den skrivbara viewern kan registrera `merge`,
+  `/long-term/review/<cluster_id>` för äldre granskningskluster: artikeln jämförs
+  med kandidaterna och den skrivbara viewern kan registrera `merge`,
   `keep_separate` eller `exclude`. Besluten är revisionskontrollerade och
   loggar granskare, tid och motivering; merge återanvänder det atomiska
-  reconciliation-kontraktet. Nya tvetydiga tilldelningar sparar kandidat-ID:n,
-  medan äldre poster rekonstrueras och märks tydligt som sådana. Skrivning
+  reconciliation-kontraktet. Nya tvetydiga tilldelningar sparas i flera kluster;
+  äldre granskningsposter rekonstrueras och märks tydligt som sådana. Skrivning
   kräver den separata flaggan `long_term_analysis.ui.review_actions_enabled`;
   read-only-viewern blockerar alltid åtgärderna. Olösta och exkluderade
   granskningskluster ignoreras nu i nya trendmått. Nästa UI-steg är paginering för mycket stora klusters
@@ -314,7 +314,7 @@ Ett kluster representerar en sammanhållen incident, kampanj eller utveckling:
 id: string
 profile_id: string
 schema_version: 1
-status: active | dormant | closed | needs_review
+status: active | dormant | closed
 name: string
 first_seen_ts: int
 last_seen_ts: int
@@ -459,10 +459,10 @@ Bearbeta artiklar deterministiskt i ordningen `(article_ts, article_id)`.
    tidsavstånd samt överlapp i starka indikatorer som CVE, namngiven aktör,
    organisation eller produkt. Taggöverlapp får stödja men inte ensam skapa en
    matchning.
-4. Matcha bästa kandidat endast om tröskeln uppnås och marginalen till näst
-   bästa kandidat är tillräcklig. Tvetydiga fall får `needs_review` eller ett
-   eget kluster; felaktig sammanslagning är dyrare än tillfällig uppdelning.
-5. Skriv medlemskapet med unik nyckel och uppdatera `vector_sum`, centroid,
+4. Matcha alla kompatibla kandidater över likhetströskeln. När kandidaterna
+   ligger nära varandra får artikeln medlemskap i flera kluster. Om ingen
+   kandidat når tröskeln skapas ett nytt kluster.
+5. Skriv varje medlemskap med unik nyckel och uppdatera `vector_sum`, centroid,
    `member_count`, `last_seen_ts` och `membership_revision` atomiskt.
 
 Rena CVE-poster identifieras konservativt: titeln ska ha katalogformat och hela
@@ -519,16 +519,11 @@ hand hög precision och få felaktiga sammanslagningar.
 - `dormant`: ingen ny evidens inom 30 dagar; visas normalt inte i aktuell
   syntes men historiken bevaras.
 - `closed`: analytiskt avslutad händelse eller passerad maximal återöppningstid.
-- `needs_review`: inkompatibla data, tvetydig sammanslagning eller misslyckad
-  validering.
 
-I den nuvarande onlineklustringen betyder `needs_review` specifikt att både den
-bästa och näst bästa kandidaten nådde likhetströskeln men låg närmare varandra
-än `ambiguity_margin`. Artikeln läggs då i ett separat säkerhetskluster. Den
-manuella granskningen bedömer konkret händelseidentitet och väljer att slå ihop
-med en kandidat, behålla som separat aktiv händelse eller exkludera från
-långtidsanalysen. Statusen och exkluderade beslut räknas inte in i nya
-landskapsmått innan de har lösts.
+Nya tvetydiga tilldelningar skapar inte `needs_review`-kluster. Den statusen
+kan finnas kvar i äldre lagrade data och kan fortfarande öppnas för manuell
+hantering. Äldre sådana kluster räknas inte in i nya landskapsmått förrän de
+har hanterats.
 
 Tiderna är profilkonfiguration, inte hårdkodade 60 dagar. Livscykeln styr vilka
 kluster som tas med i rapporten; den raderar aldrig kluster eller snapshots.

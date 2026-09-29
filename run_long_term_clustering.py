@@ -20,6 +20,7 @@ from feedsummary_core.long_term import (
     IncrementalSettings,
     run_incremental_clustering,
 )
+from feedsummary_core.long_term.processor import DEFAULT_TAG_SCOPE_CATEGORIES
 from feedsummary_core.persistence import create_store
 
 
@@ -73,6 +74,24 @@ def _profile_config(config: dict[str, Any], profile_id: str) -> tuple[dict[str, 
 def _resolve_sources(
     config: dict[str, Any], config_path: Path, profile: dict[str, Any]
 ) -> list[str]:
+    aggregate_profiles = profile.get("aggregate_profiles")
+    if aggregate_profiles is not None:
+        if not isinstance(aggregate_profiles, list) or not aggregate_profiles:
+            raise ValueError("aggregate_profiles måste vara en lista med profiler")
+        combined: set[str] = set()
+        for profile_id in aggregate_profiles:
+            profile_name = str(profile_id).strip()
+            _, child = _profile_config(config, profile_name)
+            if child.get("aggregate_profiles") is not None:
+                raise ValueError("Nästlade samlingsprofiler stöds inte")
+            if child.get("required_tags"):
+                raise ValueError(
+                    f"Samlingsprofilen kan inte slå ihop required_tags från {profile_name}"
+                )
+            if child.get("include_all_sources"):
+                return []
+            combined.update(_resolve_sources(config, config_path, child))
+        return sorted(combined)
     sources = {
         str(source).strip()
         for source in profile.get("sources") or []
@@ -133,6 +152,9 @@ def _settings(long_term: dict[str, Any], limit: int | None) -> IncrementalSettin
     clustering = long_term.get("clustering") or {}
     if not isinstance(clustering, dict):
         raise TypeError("long_term_analysis.clustering måste vara ett YAML-objekt")
+    categories = clustering.get("tag_scope_categories", DEFAULT_TAG_SCOPE_CATEGORIES)
+    if not isinstance(categories, (list, tuple)):
+        raise TypeError("long_term_analysis.clustering.tag_scope_categories måste vara en lista")
     return IncrementalSettings(
         batch_size=int(limit or long_term.get("batch_size") or 200),
         lease_seconds=int(long_term.get("lease_seconds") or 300),
@@ -143,6 +165,10 @@ def _settings(long_term: dict[str, Any], limit: int | None) -> IncrementalSettin
             similarity_threshold=float(clustering.get("similarity_threshold", 0.80)),
             ambiguity_margin=float(clustering.get("ambiguity_margin", 0.03)),
             candidate_window_days=int(clustering.get("candidate_window_days", 60)),
+            min_shared_tags=int(clustering.get("min_shared_tags", 1)),
+        ),
+        tag_scope_categories=tuple(
+            str(category) for category in categories
         ),
     )
 
@@ -178,6 +204,8 @@ def execute_long_term_clustering(
     active_store = store
     try:
         long_term, profile = _profile_config(resolved_config, args.profile)
+        if profile.get("clustering_enabled") is False:
+            raise ValueError(f"Långtidsklustring är avstängd för arkivprofilen: {args.profile}")
         if not args.dry_run and not long_term.get("enabled", False):
             raise ValueError(
                 "long_term_analysis.enabled är false; använd --dry-run eller aktivera funktionen"

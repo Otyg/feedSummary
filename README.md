@@ -126,15 +126,11 @@ Knappen **Refresh** öppnar en modal där du väljer:
 När du trycker **Kör refresh** startas en pipeline i bakgrunden. UI lyssnar på status via SSE och uppdaterar statusrad.
 
 ### Artikelsidan (`/articles`)
-Visar en lista över artiklar i store och har filter (infällbar panel):
-- datumintervall (`from`/`to`)
-- ämnen (topics)
-- källor (sources)
-
-Om du väljer ämnen markeras matchande källor i UI.
-På servern gäller:
-- om `sources` är valda → filtrera på exakt de källorna
-- annars om `topics` är valda → härled tillåtna källor från config och filtrera på dem
+Visar senaste dygnet som standard. Start- och slutdatum, källor, taggkategorier
+och taggar filtreras i backend. Välj först en eller flera taggkategorier för att
+hämta taggvalen. Sidstorleken kan vara 25, 50 eller 100 artiklar. Paginering
+hämtar endast den valda sidans artiklar och taggar från databasen. Lämna båda
+datumfälten tomma och tryck **Filtrera** för att visa alla datum.
 
 ---
 
@@ -247,11 +243,15 @@ Taggning av färdiga sammanfattningar:
 ```yaml
 tagging:
   summary_max_tags: 20
+  article_max_tags: 20
   summary_include_cve_tags: false
   embedding_replacement_threshold: 0.8
 ```
 
 - `summary_max_tags`: max antal vanliga taggar; CVE-taggar räknas inte in när de är aktiverade.
+- `article_max_tags`: max antal vanliga taggar vid automatisk artikeltaggning.
+  Direkta CVE-taggar räknas fortsatt utanför gränsen. `tagging.ml.max_tags_per_article`
+  begränsar separat ML-delens förslag och är också satt till 20 i exempelkonfigurationen.
 - `summary_include_cve_tags`: sätt till `false` för att behålla CVE-ID:n i
   sammanfattningstexten utan att skapa separata CVE-taggar.
 - `embedding_replacement_threshold`: minsta cosinuslikhet för att ersätta en
@@ -329,6 +329,16 @@ Filter per feed baserat på RSS-entry tags/kategorier:
   url: https://www.tv4.se/rss
   category_include: ["Inrikes", "Utrikes"]
 ```
+
+#### `feed_timeout_s`
+Timeout i sekunder för hämtningen av själva RSS-flödet. Standardvärdet är 20.
+Ange ett positivt heltal för flöden som svarar långsamt:
+```yaml
+- name: Securityfocus Advisories
+  url: https://psirt.com/feed/advisories.xml
+  feed_timeout_s: 90
+```
+Detta påverkar inte timeouten för hämtning av länkade artikelsidor.
 
 ### `config/extraction.yaml`
 
@@ -430,6 +440,60 @@ skiftlägesokänsligt. Förhandsgranska besluten utan databasändringar eller LL
 `--dry-run`. Det äldre kommandot `audit_location_synonyms.py` finns kvar och använder
 `LOCATION` när `--category` utelämnas.
 
+### Hitta troliga synonymer bland befintliga taggar
+
+`audit_tag_synonym_candidates.py` söker först igenom alla taggnamn och sparade alias i
+en vald kategori. Det visar samtliga kandidatgrupper innan du väljer en huvudtagg i
+varje grupp. För varje annan tagg väljer du synonym, barntagg eller hoppa över.
+Kandidaterna hittas genom gemensamma alias, namn som ingår i varandra och särskiljande
+gemensamma namnord. Varje tagg i en grupp måste ha en direkt namnkoppling till de andra;
+ett gemensamt leverantörsnamn eller produktord räcker inte ensamt. Granska förslagen
+manuellt: namnlika taggar kan ha olika betydelse.
+
+```bash
+.venv/bin/python audit_tag_synonym_candidates.py \
+  --config config.yaml \
+  --category DOMAIN_ENTITY \
+  --output tag-candidates.json
+```
+
+När en befintlig tagg blir synonym flyttas dess artikelkopplingar till huvudtaggen,
+dess alias förs över och den gamla taggen tas bort. Taggar med befintliga
+föräldra- eller barnrelationer kan inte slås ihop förrän relationerna granskats.
+En barntagg behåller sina artikelkopplingar och eventuella andra föräldrar.
+Använd `--dry-run` för att gå igenom valen utan att ändra databasen.
+
+### Kontrollera organisationstaggar för produkter
+
+`audit_product_organizations.py` parar `PRODUCT` med `ORGANIZATION` när ett
+organisationsnamn eller ett sparat alias står i början av produktnamnet eller ett
+produktalias. Exempelvis paras `cisco asyncos` med `cisco`. Paren sparas i
+JSON-rapporten; de skrivs inte som taggrelationer eftersom relationer mellan
+olika kategorier inte stöds. Skriptet söker sedan upp artiklar med de parade
+produkterna och rapporterar saknade organisationstaggar utan att ändra databasen:
+
+```bash
+.venv/bin/python audit_product_organizations.py \
+  --config config.yaml \
+  --output product-organization-audit.json
+```
+
+Granska och vid behov redigera listan `pairs` i rapporten. Varje par innehåller
+produktens och organisationens ID och namn. Spara rapporten under ett nytt namn
+och använd den som parlista när saknade organisationstaggar ska läggas till:
+
+```bash
+.venv/bin/python audit_product_organizations.py \
+  --config config.yaml \
+  --pairs-file reviewed-product-organization-audit.json \
+  --apply \
+  --output product-organization-applied.json
+```
+
+Taggarnas ID, namn och kategorier valideras mot den aktuella databasen före
+tillämpning. En organisation läggs bara till en gång per artikel, även om flera
+produkter på artikeln har samma organisationspartner.
+
 ## Träna om produktionsmodellen helt
 
 När embeddingmodell, dimension eller instructions ändras behöver befintliga artiklar
@@ -521,6 +585,92 @@ annars används `FEEDSUMMARY_CONFIG` eller `./config.yaml`. Taggnamn kan fortfar
 som positionella argument om bara ett urval ska granskas, exempelvis `ray comfast`.
 
 ---
+
+## Bygg om långtidskluster efter byte till taggstyrd modell
+
+`rebuild_long_term_clusters.py` visar först en skrivskyddad plan. Vid `--apply`
+stängs alla öppna kluster i vald källprofil och artiklarna klustras om i en ny
+profil med egen cursor. Gamla medlemskap, snapshots och rapporter bevaras.
+Som standard skrivs den nya profilkonfigurationen atomiskt tillbaka till samma
+config-fil, så den nya profilen blir aktiv direkt. Kör med långtidsjobben
+pausade och granska planen innan du tillämpar ändringen:
+
+```bash
+python rebuild_long_term_clusters.py --config config.yaml --profile healthcare_europe
+python rebuild_long_term_clusters.py --config config.yaml --profile healthcare_europe \
+  --apply
+```
+
+Den uppdaterade konfigurationen behåller arkivprofilen för historik men stänger
+av ny klustring där. Den nya profilen heter normalt
+`healthcare_europe_tagged_v2` och är aktiv direkt efter `--apply`. Vid avbrott
+kan samma kommando köras igen med `--config config.yaml --profile
+healthcare_europe --apply`; den nya
+profilens cursor gör att färdiga batcher inte upprepas. Endast artiklar som
+fortfarande finns i artikellagret kan byggas om; saknade embeddings hamnar i
+karantän och redovisas i resultatet.
+
+Det separata config-flödet finns kvar som ett alternativ:
+`--output-config config.tagged.yaml --apply`. Då skrivs ingen ändring till
+`config.yaml`.
+
+Om profilen är låst av ett pågående långtidsjobb (till exempel `long_term_map`),
+vänta tills jobbet är klart innan återbyggnaden körs igen. Ett tidigare försök
+kan redan ha skapat en separat config utan att ändra något kluster. Använd i så
+fall den filen som `--config` vid omkörningen och utelämna `--output-config`.
+
+## Samlad långtidsanalys
+
+Långtidsvyerna `/long-term` och `/long-term/clusters` visar alla konfigurerade
+profiler i separata sektioner. Rapportvyn uppdateras var femte minut när den är
+öppen. En samlingsprofil kan skapa en egen fortlöpande långtidsanalys över
+källunionen från de angivna profilerna. Den kör samma klustring, Map och Reduce
+som vanliga profiler och sparar därför egna kluster, snapshots och rapporter.
+
+Exemplet `all_profiles` finns i `config.yaml.dist`. Ange de aktiva profilernas
+ID i `aggregate_profiles` i den lokala `config.yaml`, och lägg jobben från
+`config/long_term_all_profiles_schedule.example.yml` i den aktiva
+`config/schedule.yaml`. Samlingsprofilens rapport visas överst i rapportvyn.
+Det utlösta jobbet `long_term_pipeline_all_profiles_pilot` kan användas för en
+första manuell körning; de övriga jobben fortsätter automatiskt varje timme,
+var sjätte timme och dagligen.
+Källunionen stöder profiler med `sources` och `categories`; om en ingående
+profil har `required_tags` stoppas körningen med ett tydligt fel, eftersom ett
+enkelt källurval inte kan återskapa den profilens taggvillkor.
+
+## Angreppstryck för CVE och TEF
+
+`GET /api/v1/long-term/attack-pressure?profile=healthcare_europe&cve=CVE-2026-12345`
+finns i både vanliga och skrivskyddade viewern när
+`long_term_analysis.ui.enabled` är `true`. CVE måste vara ett helt CVE-ID;
+profilen måste finnas i konfigurationen. Profilens `region` och `sector` är
+etiketter för profilens omfattning.
+
+Svaret ger separata `factor` för `region`, `sector` och `vulnerability`.
+`tef_adjustment` visar komponenterna, vikterna och den slutliga skalären:
+`1 + 0,25×(region−1) + 0,25×(sector−1) + 0,50×(cve−1)`.
+Multiplicera `min`, `mode` och `max` från cveRisk med slutlig `factor` och
+klipp till 1,0. cveRisk kan göra detta med
+`TEFCalculator.calculate_tef(cve_id, pressure)`.
+
+Region och sektor är uttryckligen märkta som **delad profiltrendproxy** eftersom
+long-term-rapporterna ännu inte har separata geografiska eller sektoriella
+händelseserier. Varje komponent får faktor 1,1 bara om rapportens 30-dagarstrend
+är godkänd och fortfarande stiger när CVE-klustren räknas bort. Annars är
+komponenten neutral (1,0), även om profilen heter `healthcare_europe`.
+
+CVE-komponenten söker exakta `cve:`-indikatorer i aktuella kluster från de
+senaste 30 dagarna, oberoende av när den senaste rapporten skapades. Ett eller
+två matchande kluster ger faktor 1,1; minst tre ger 1,2. Om en nyare
+klustersnapshot uttryckligen säger att just CVE:n utnyttjas aktivt blir
+CVE-faktorn 1,4. `evidence_cluster_ids`, `evidence_snapshot_ids` och
+`evidence_article_ids` visar underlaget. Snapshotens utsaga är ett rapporterat
+exploateringsbelägg, inte en oberoende verifiering. En gammal eller ofullständig
+rapport gör bara region och sektor neutrala; den döljer inte ny CVE-evidens.
+Exploateringsbelägget kan ligga i ett explicit tidslinjepåstående eller i en
+sammanfattning som direkt knyter en exploaterad sårbarhetskedja till dess CVE:er.
+Om även CVE-evidens saknas blir hela justeringen 1,0. Heuristiken är ännu
+okalibrerad och ersätter inte EPSS eller CISA KEV.
 
 ## Tips & felsökning
 
