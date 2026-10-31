@@ -142,6 +142,7 @@ class _ReadStore:
             "membership_revision": 1,
             "summarized_revision": 0,
             "strong_indicators": ["organization:example"],
+            "tag_scope": "SECTOR:healthcare|REGION:europe",
             "centroid": [1.0, 0.0],
         }
         rows = [cluster] if profile_id == cluster["profile_id"] else []
@@ -155,6 +156,10 @@ class _ReadStore:
                 row.pop("centroid", None)
         return rows
 
+    def get_threat_cluster(self, cluster_id):
+        rows = self.list_threat_clusters("healthcare_europe")
+        return next((row for row in rows if row["id"] == cluster_id), None)
+
     def list_cluster_memberships(self, cluster_id, *, limit=10000):
         if cluster_id != "cluster-1":
             return []
@@ -164,6 +169,11 @@ class _ReadStore:
                 "evidence": {"title": "Readable clustered incident"},
             }
         ][:limit]
+
+    def list_article_cluster_memberships(self, profile_id, article_id):
+        if profile_id != "healthcare_europe" or article_id != "article-1":
+            return []
+        return [{"profile_id": profile_id, "article_id": article_id, "cluster_id": "cluster-1"}]
 
 
 class ReadOnlyViewerTests(unittest.TestCase):
@@ -320,6 +330,34 @@ class ReadOnlyViewerTests(unittest.TestCase):
         self.assertIn("/long-term/cluster/cluster-1", html)
         self.assertEqual(200, api_response.status_code)
         self.assertEqual("cluster-1", api_response.get_json()["items"][0]["id"])
+
+    def test_long_term_cluster_tag_network_is_available_read_only(self):
+        page_response = self.client.get(
+            "/long-term/cluster/cluster-1/tag-network?up=1&down=1"
+        )
+        api_response = self.client.get(
+            "/api/v1/long-term/clusters/cluster-1/tag-network?up=1&down=1"
+        )
+
+        self.assertEqual(200, page_response.status_code)
+        self.assertIn("Tagghierarki", page_response.get_data(as_text=True))
+        self.assertEqual(200, api_response.status_code)
+        self.assertEqual("cluster-1", api_response.get_json()["base_cluster_id"])
+
+    def test_long_term_cluster_article_network_is_available_read_only(self):
+        page_response = self.client.get(
+            "/long-term/cluster/cluster-1/article-network"
+        )
+        api_response = self.client.get(
+            "/api/v1/long-term/clusters/cluster-1/article-network"
+        )
+
+        self.assertEqual(200, page_response.status_code)
+        self.assertIn(
+            "Kraftstyrt artikelnätverk", page_response.get_data(as_text=True)
+        )
+        self.assertEqual(200, api_response.status_code)
+        self.assertEqual("cluster-1", api_response.get_json()["base_cluster_id"])
 
 
 if __name__ == "__main__":

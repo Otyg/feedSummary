@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
 {% set warnings = quality.get('warning_codes', []) if quality is mapping else [] %}
+{% set profile_failures = quality.get('aggregate_profile_update_failures', []) if quality is mapping else [] %}
 {% macro cluster_link(cluster_id) -%}
   <a class="me-1" href="{{ url_for('view_long_term_cluster', cluster_id=cluster_id) }}" title="Internt kluster-ID: {{ cluster_id }}">{{ cluster_labels.get(cluster_id) or 'Händelsekluster utan titel' }}</a>
 {%- endmacro %}
@@ -15,6 +16,7 @@
         <h1 class="h2 mb-1">
           Långtidsanalys av hotlandskapet
           {% if long_term_mode == 'shadow' %}<span class="badge text-bg-warning">SHADOW</span>{% endif %}
+          {% if quality.get('completeness') == 'partial' %}<span class="badge text-bg-danger">OFULLSTÄNDIG</span>{% endif %}
         </h1>
         <div class="text-muted">
           {{ format_ts(report.period_start_ts) }} – {{ format_ts(report.period_end_ts) }}
@@ -32,6 +34,25 @@
         <h2 id="quality-heading" class="h5">Kvalitetsvarningar</h2>
         <ul class="mb-0">
           {% for warning in warnings %}<li><code>{{ warning }}</code></li>{% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% if profile_failures %}
+      <section class="alert alert-danger" aria-labelledby="profile-failures-heading">
+        <h2 id="profile-failures-heading" class="h5">Profiluppdateringar misslyckades</h2>
+        <p>Rapporten bygger på senast tillgängliga underlag för följande profiler.</p>
+        <ul class="mb-0">
+          {% for failure in profile_failures %}
+            <li>
+              <code>{{ failure.get('profile_id') }}</code>
+              · {{ failure.get('stage') }}
+              · {{ failure.get('error_type') }}: {{ failure.get('error') }}
+              {% if failure.get('last_successful_update_at') %}
+                · senast lyckad {{ format_ts(failure.get('last_successful_update_at')) }}
+              {% endif %}
+            </li>
+          {% endfor %}
         </ul>
       </section>
     {% endif %}

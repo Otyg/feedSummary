@@ -145,7 +145,23 @@
   klusteröversikt med profil- och statusfilter, mänskliga rubriker, medlemsantal,
   senaste observation och väntande snapshotrevisioner. Motsvarande versionerade
   läs-API är `/api/v1/long-term/clusters`; listfrågan hämtar inte lagrade
-  embedding-vektorer. Ett första manuellt granskningsflöde finns också via
+  embedding-vektorer. Från klusterdetaljen kan användaren öppna ett
+  profilavgränsat taggnätverk och styra djupet uppåt och nedåt. Uppåt används de
+  existerande klustren vars taggmängder är strikta delmängder. Varje ny nivå
+  väljer den största tillgängliga subset-storleken, så ett hopp kan ta bort flera
+  taggar men taggantalet är gemensamt inom nivån. Nedåt används samma relations
+  exakta invers, vilket gör att varje visad föräldrakant också kan följas tillbaka
+  till barnet. Vyn har konfigurerbara gränser för djup, noder och inlästa kandidater
+  och finns även i read-only-viewern. Ett separat artikelnätverk placerar
+  basklustret i centrum och viktar grannkluster efter antalet unika gemensamma
+  artikelmedlemskap. Alla visade klusterpar med överlappning förbinds och läggs
+  ut med repulsion, kollisionsavstånd och viktad attraktion. Andelen gemensamma
+  artiklar med basklustret låser radialavståndet monotont, medan grannklustrens
+  inbördes kopplingar påverkar deras vinklar. En koncentrisk reservlayout bevarar
+  samma ordning och lika avstånd för lika överlappning. Minsta procentuella
+  överlappning och maximalt antal grannar kan styras i vyn. Basrelationer använder
+  basklustrets artikelantal som nämnare; övriga kanter använder Jaccard-andelen.
+  Ett första granskningsflöde finns via
   `/long-term/review/<cluster_id>` för äldre granskningskluster: artikeln jämförs
   med kandidaterna och den skrivbara viewern kan registrera `merge`,
   `keep_separate` eller `exclude`. Besluten är revisionskontrollerade och
@@ -248,6 +264,19 @@ RSS -> artikel + taggar + similarity_embedding
                          v
        rapport, evidensgraf och kvalitetsdata
 ```
+
+En profil med `aggregate_profiles` är ett orkestrerings- och rapportlager. Den
+ska inte skapa en parallell uppsättning Map-sammanfattningar. Vid körning
+uppdateras barnprofilerna idempotent, deras senaste snapshots projiceras till
+samlingsprofilens rapportunderlag och identiska kluster dedupliceras utifrån
+embedding-signatur, taggscope och artikelmedlemskap. Originalens snapshot- och
+kluster-ID:n bevaras för spårbarhet.
+
+Misslyckade barnprofiluppdateringar stoppar inte samlingsrapporten. Senast
+tillgängliga underlag används och rapporten markeras som ofullständig med
+`quality.completeness: partial`, `aggregate_profile_update_failed` och en
+strukturerad fellista. Varningarna ingår också i Reduce-prompten så att modellen
+inte behandlar ofullständig täckning som fullständig evidens.
 
 En **analysprofil** avgränsar exempelvis geografi, sektorer, källor och
 rapporthorisont. Samma artikel kan ingå i flera profiler, men högst en gång per

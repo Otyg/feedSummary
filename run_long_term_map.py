@@ -114,7 +114,12 @@ async def execute_long_term_map(
 
     resolved_config_path = config_path or _config_path(args.config)
     resolved_config = config or _load_config(resolved_config_path)
-    long_term, _ = _profile_config(resolved_config, args.profile)
+    long_term, profile = _profile_config(resolved_config, args.profile)
+    if profile.get("aggregate_profiles") is not None:
+        raise ValueError(
+            "Samlingsprofiler återanvänder barnprofilernas Map-snapshots; "
+            "kör samlingsprofilen via worker-jobbet"
+        )
     if not args.dry_run and not long_term.get("enabled", False):
         raise ValueError(
             "long_term_analysis.enabled är false; använd --dry-run eller aktivera funktionen"

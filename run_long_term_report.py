@@ -26,6 +26,12 @@ from feedsummary_core.long_term import (
 )
 from feedsummary_core.persistence import create_store
 
+from long_term_aggregate import (
+    AGGREGATE_UPDATE_WARNING,
+    AggregateReportStore,
+    aggregate_profile_ids,
+    normalize_profile_failures,
+)
 from run_long_term_clustering import (
     _config_path,
     _load_config,
@@ -157,6 +163,7 @@ async def execute_long_term_report(
     config: dict[str, Any] | None = None,
     store: Any = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    aggregate_profile_failures: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Execute one report publication for CLI or worker callers."""
 
@@ -173,6 +180,8 @@ async def execute_long_term_report(
     provider_name = str((long_term.get("llm") or {}).get("reduce_provider") or "configured_chain")
     llm_config = _reduce_llm_config(resolved_config, provider_name)
     reduce_settings = _reduce_settings(long_term, llm_config)
+    aggregate_children = aggregate_profile_ids(long_term, args.profile)
+    normalized_failures = normalize_profile_failures(aggregate_profile_failures)
     owns_store = store is None
     active_store = store
     if active_store is None:
@@ -207,14 +216,40 @@ async def execute_long_term_report(
                 lease_seconds=lease_seconds,
             )
             await heartbeat.start()
+        report_store = active_store
+        if aggregate_children:
+            reports = long_term.get("reports") or {}
+            report_store = AggregateReportStore(
+                active_store,
+                aggregate_profile_id=args.profile,
+                child_profile_ids=aggregate_children,
+                period_end_ts=period_end_ts,
+                max_memberships_per_cluster=int(
+                    reports.get("max_memberships_per_cluster", 10000)
+                ),
+                max_snapshot_records=reduce_settings.max_snapshot_records,
+                profile_update_failures=normalized_failures,
+            )
         metrics = build_landscape_metrics(
-            active_store,
+            report_store,
             profile_id=args.profile,
             period_end_ts=period_end_ts,
             settings=_metric_settings(long_term),
         )
+        if aggregate_children:
+            aggregate_quality = report_store.report_quality()
+            quality = metrics.setdefault("quality", {})
+            quality.update(aggregate_quality)
+            warning_codes = {
+                str(value)
+                for value in quality.get("warning_codes") or []
+                if str(value)
+            }
+            if normalized_failures:
+                warning_codes.add(AGGREGATE_UPDATE_WARNING)
+            quality["warning_codes"] = sorted(warning_codes)
         snapshots = select_report_snapshots(
-            active_store,
+            report_store,
             profile_id=args.profile,
             metrics=metrics,
             settings=reduce_settings,
@@ -238,14 +273,31 @@ async def execute_long_term_report(
                     snapshot_eligible_ids - snapshot_cluster_ids
                 ),
                 "quality_warning_codes": metrics["quality"]["warning_codes"],
+                "completeness": metrics["quality"].get("completeness", "complete"),
+                "aggregate_profile_update_failures": normalized_failures,
+                "aggregate_profile_ids": list(aggregate_children),
+                "aggregate_input_cluster_count": metrics["quality"].get(
+                    "aggregate_input_cluster_count", 0
+                ),
+                "aggregate_deduplicated_cluster_count": metrics["quality"].get(
+                    "aggregate_deduplicated_cluster_count", 0
+                ),
             }
         llm_client = create_llm_client(llm_config)
         reports = long_term.get("reports") or {}
         result = await run_landscape_reduce(
-            active_store,
+            report_store,
             llm_client,
             profile_id=args.profile,
-            profile_context={"id": args.profile, **profile},
+            profile_context={
+                "id": args.profile,
+                **profile,
+                "aggregate_profile_ids": list(aggregate_children),
+                "aggregate_completeness": (metrics.get("quality") or {}).get(
+                    "completeness", "complete"
+                ),
+                "aggregate_profile_update_failures": normalized_failures,
+            },
             metrics=metrics,
             final_prompt_package=_prompt_package(
                 resolved_config_path, "landscape_report_v1"
@@ -269,6 +321,17 @@ async def execute_long_term_report(
             "profile_id": args.profile,
             "dry_run": False,
             "mode": mode,
+            "completeness": (metrics.get("quality") or {}).get(
+                "completeness", "complete"
+            ),
+            "aggregate_profile_update_failures": normalized_failures,
+            "aggregate_profile_ids": list(aggregate_children),
+            "aggregate_input_cluster_count": (metrics.get("quality") or {}).get(
+                "aggregate_input_cluster_count", 0
+            ),
+            "aggregate_deduplicated_cluster_count": (
+                metrics.get("quality") or {}
+            ).get("aggregate_deduplicated_cluster_count", 0),
             **asdict(result),
         }
     finally:

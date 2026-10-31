@@ -1,13 +1,19 @@
 import unittest
 
+from sklearn.linear_model import LogisticRegression
+
 from benchmark_tagging_ml import (
     ArticleExample,
+    _benchmark_categories,
     _category_scopes,
     _combination_comparison,
     _embedding_subset,
     _candidate_factories,
+    _configured_algorithm_names,
+    _configured_benchmark_setup,
     _fit_features,
     _format_default_names,
+    _is_ml_generated_relation,
     _merge_categories,
     _select_common_embedding_examples,
     _transform_features,
@@ -22,6 +28,81 @@ def _example(index, *labels):
 
 
 class BenchmarkDatasetTests(unittest.TestCase):
+    def test_organization_extends_configured_categories(self):
+        self.assertEqual(
+            ["DOMAIN_ENTITY", "MALWARE", "ORGANIZATION"],
+            _benchmark_categories(("DOMAIN_ENTITY", "MALWARE"), None),
+        )
+        self.assertEqual(
+            ["PRODUCT"],
+            _benchmark_categories(("DOMAIN_ENTITY",), "product"),
+        )
+
+    def test_ml_generated_relation_provenance_is_recognized(self):
+        self.assertTrue(
+            _is_ml_generated_relation(
+                "Predicted by embedding logistic_regression model "
+                "(probability=0.912)."
+            )
+        )
+        self.assertFalse(_is_ml_generated_relation("Selected by the LLM."))
+        self.assertFalse(_is_ml_generated_relation(""))
+
+    def test_configured_setup_drives_default_comparison(self):
+        config = {
+            "tagging": {
+                "ml": {
+                    "enabled": True,
+                    "classifier": "logistic_regression",
+                    "representation": "embedding",
+                    "categories": ["DOMAIN_ENTITY", "MALWARE"],
+                    "embedding_model": "",
+                    "min_label_support": 7,
+                    "regularization_c": 2.5,
+                    "max_iter": 321,
+                    "tolerance": 0.002,
+                    "random_state": 17,
+                }
+            },
+            "llm": [
+                {
+                    "provider": "ollama_local",
+                    "embedding_model": "configured-embedding",
+                }
+            ],
+        }
+
+        setup = _configured_benchmark_setup(config)
+        names = _configured_algorithm_names(setup.settings.algorithm, None)
+        candidates = _candidate_factories(setup.settings)
+        estimator = candidates[setup.settings.algorithm].factory(999, 1)
+
+        self.assertEqual(("DOMAIN_ENTITY", "MALWARE"), setup.settings.categories)
+        self.assertEqual("embedding", setup.representation)
+        self.assertEqual("configured-embedding", setup.settings.embedding_model)
+        self.assertEqual(
+            ["logistic_regression", "multinomial_nb", "complement_nb"], names
+        )
+        self.assertIsInstance(estimator, LogisticRegression)
+        self.assertEqual(2.5, estimator.C)
+        self.assertEqual(321, estimator.max_iter)
+        self.assertEqual(0.002, estimator.tol)
+        self.assertEqual(999, estimator.random_state)
+        self.assertEqual(
+            0.75,
+            _candidate_factories(
+                setup.settings, naive_bayes_alpha=0.75
+            )["complement_nb"].factory(17, 1).alpha,
+        )
+
+    def test_cli_algorithms_replace_configured_comparison(self):
+        self.assertEqual(
+            ["sgd", "multinomial_nb"],
+            _configured_algorithm_names(
+                "logistic_regression", "sgd,multinomial_nb,sgd"
+            ),
+        )
+
     def test_single_default_category_is_not_split_into_characters(self):
         self.assertEqual("DOMAIN_ENTITY", _format_default_names("DOMAIN_ENTITY"))
         self.assertEqual(
@@ -150,7 +231,9 @@ class BenchmarkDatasetTests(unittest.TestCase):
 
     def test_all_representations_receive_the_same_embedding_covered_corpus(self):
         examples = [
-            ArticleExample("1", "one", 1, ("tag",), (1.0, 2.0), "model"),
+            ArticleExample(
+                "1", "one", 1, ("tag",), (1.0, 2.0), "model", ("tag",)
+            ),
             ArticleExample("2", "two", 2, (), None, ""),
             ArticleExample("3", "three", 3, ("tag",), (3.0, 4.0), "model"),
         ]
@@ -163,6 +246,7 @@ class BenchmarkDatasetTests(unittest.TestCase):
         self.assertEqual(3, dataset["source_articles"])
         self.assertEqual(2, dataset["articles"])
         self.assertEqual(2, dataset["target_relations"])
+        self.assertEqual(1, dataset["ml_generated_target_relations"])
         self.assertEqual(2, embedding["embedding_articles"])
 
     def test_hybrid_features_are_nonnegative_for_naive_bayes(self):

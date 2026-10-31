@@ -8,7 +8,11 @@
         <div class="small text-muted">Händelsekluster</div>
         <h1 class="h2 mb-1">{{ cluster_label }}</h1>
       </div>
-      <span class="badge text-bg-secondary align-self-start">{% if cluster.status == 'active' %}Aktivt{% elif cluster.status == 'dormant' %}Vilande{% elif cluster.status == 'closed' %}Stängt{% else %}Äldre kluster{% endif %}</span>
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_long_term_cluster_tag_network', cluster_id=cluster.id) }}">Visa taggnätverk</a>
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_long_term_cluster_article_network', cluster_id=cluster.id) }}">Visa artikelnätverk</a>
+        <span class="badge text-bg-secondary">{% if cluster.status == 'active' %}Aktivt{% elif cluster.status == 'dormant' %}Vilande{% elif cluster.status == 'closed' %}Stängt{% else %}Äldre kluster{% endif %}</span>
+      </div>
     </div>
 
     {% if superseded_by %}

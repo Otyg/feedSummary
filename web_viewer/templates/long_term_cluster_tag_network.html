@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block body %}
+<style>
+  .tag-network-canvas { min-height: 34rem; overflow: auto; background: linear-gradient(#f8f9fa 1px, transparent 1px), linear-gradient(90deg, #f8f9fa 1px, transparent 1px); background-size: 24px 24px; }
+  .tag-network-svg { display: block; max-width: none; transition: width .15s ease; }
+  .tag-network-edge { fill: none; stroke: #adb5bd; stroke-width: 2; }
+  .tag-network-edge-label { fill: #6c757d; font-size: 11px; }
+  .tag-network-node rect { fill: #fff; stroke: #6c757d; stroke-width: 1.5; rx: 10; }
+  .tag-network-node:hover rect, .tag-network-node:focus rect { fill: #eef5ff; stroke: #0d6efd; stroke-width: 2.5; }
+  .tag-network-node--base rect { fill: #fff3cd; stroke: #b58105; stroke-width: 3; }
+  .tag-network-node text { fill: #212529; pointer-events: none; }
+  .tag-network-node--closed rect { fill: #e9ecef; stroke: #adb5bd; }
+  .tag-network-node--closed text { fill: #6c757d; }
+  .tag-network-node--closed:hover rect, .tag-network-node--closed:focus rect { fill: #dee2e6; stroke: #495057; }
+  .tag-network-node--base.tag-network-node--closed rect { fill: #dee2e6; stroke: #6c757d; stroke-width: 3; }
+  .tag-network-level { fill: #6c757d; font-size: 13px; font-weight: 600; }
+</style>
+<div class="container-fluid pb-5">
+  <a href="{{ url_for('view_long_term_cluster', cluster_id=graph.base_cluster_id) }}" class="small">← Till klustret</a>
+  <div class="d-flex flex-wrap justify-content-between gap-3 mt-2 mb-3">
+    <div>
+      <div class="small text-muted">Tagghierarki · <code>{{ graph.profile_id }}</code></div>
+      <h1 class="h2 mb-1">{{ base_node.label }}</h1>
+      <p class="text-muted mb-0">Uppåt visas existerande strikta delmängder i gemensamma taggskikt: alla kluster på samma föräldranivå har lika många taggar. Nedåt visas den exakta inversen, så varje föräldrarelation kan följas tillbaka till sina barn även när hoppet omfattar flera taggar.</p>
+    </div>
+  </div>
+
+  <form class="card card-body mb-3" method="get">
+    <div class="row g-3 align-items-end">
+      <div class="col-6 col-md-3">
+        <label class="form-label" for="up">Nivåer uppåt</label>
+        <input class="form-control" id="up" name="up" type="number" min="0" max="{{ max_levels }}" value="{{ graph.up_levels }}">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label" for="down">Nivåer nedåt</label>
+        <input class="form-control" id="down" name="down" type="number" min="0" max="{{ max_levels }}" value="{{ graph.down_levels }}">
+      </div>
+      <div class="col-12 col-md-auto"><button class="btn btn-primary" type="submit">Uppdatera nätverket</button></div>
+      <div class="col-12 col-md-auto ms-md-auto d-flex gap-2">
+        <button class="btn btn-sm btn-outline-secondary" id="zoom-out" type="button" aria-label="Zooma ut">−</button>
+        <button class="btn btn-sm btn-outline-secondary" id="zoom-reset" type="button">100 %</button>
+        <button class="btn btn-sm btn-outline-secondary" id="zoom-in" type="button" aria-label="Zooma in">+</button>
+      </div>
+      {% if graph.base_original_tags %}
+        <fieldset class="col-12">
+          <legend class="form-label mb-1">Ignorera taggar från basnoden</legend>
+          <div class="small text-muted mb-2">Valda taggar räknas bort från basnoden och från samtliga kluster innan relationerna beräknas.</div>
+          <div class="d-flex flex-wrap gap-2">
+            {% for tag in graph.base_original_tags %}
+              <label class="form-check border rounded px-2 py-1 mb-0">
+                <input class="form-check-input ms-0 me-1" type="checkbox" name="exclude" value="{{ tag }}"{% if tag in graph.excluded_tags %} checked{% endif %}>
+                <span class="form-check-label"><code>{{ tag }}</code></span>
+              </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if graph.excluded_tags %}
+    <div class="alert alert-info py-2">Ignorerade taggar: {% for tag in graph.excluded_tags %}<span class="badge text-bg-light border me-1">{{ tag }}</span>{% endfor %} Basklustret räknas som {{ graph.base_tags|length }} taggar i nätverket.</div>
+  {% endif %}
+  {% if graph.truncated %}
+    <div class="alert alert-warning">Nätverket har begränsats till {{ max_nodes }} noder eller så nåddes gränsen för inlästa kluster. Minska djupet för en fullständig vy.</div>
+  {% endif %}
+  {% if not graph.base_tags and graph.excluded_tags %}
+    <div class="alert alert-info">Alla basnodens taggar är ignorerade. Det finns därför inga taggar kvar att bygga nätverket från.</div>
+  {% elif not graph.base_tags %}
+    <div class="alert alert-info">Basklustret saknar ett giltigt taggmoln och kan därför inte kopplas till andra taggkluster.</div>
+  {% endif %}
+  {% if graph.base_tags|length > 1 and graph.up_levels > 0 and not graph.upward_parent_found %}
+    <div class="alert alert-warning">Inget existerande kluster med en strikt delmängd av basklustrets taggar hittades inom de inlästa kandidaterna.</div>
+  {% endif %}
+
+  <section class="card mb-4" aria-labelledby="network-heading">
+    <div class="card-header d-flex flex-wrap justify-content-between gap-2">
+      <strong id="network-heading">Nätverk</strong>
+      <span class="small text-muted">{{ graph.nodes|length }} kluster · {{ graph.edges|length }} relationer · <span class="badge text-bg-secondary">Stängt</span> visas grått · klicka på en nod för att öppna klustret</span>
+    </div>
+    <div id="tag-network" class="tag-network-canvas" role="region" aria-label="Interaktivt taggnätverk"></div>
+  </section>
+
+  <section aria-labelledby="level-list-heading">
+    <h2 id="level-list-heading" class="h4">Kluster per nivå</h2>
+    {% for level in graph.levels %}
+      <div class="mb-3">
+        <h3 class="h6">{% if level < 0 %}{{ -level }} nivå{% if level != -1 %}er{% endif %} uppåt{% elif level > 0 %}{{ level }} nivå{% if level != 1 %}er{% endif %} nedåt{% else %}Baskluster{% endif %}</h3>
+        <div class="row g-2">
+          {% for node in graph.nodes if node.level == level %}
+            <div class="col-12 col-md-6 col-xl-4">
+              <a class="card card-body h-100 text-decoration-none{% if node.status == 'closed' %} bg-light text-muted{% endif %}" href="{{ node.url }}">
+                <strong>{{ node.label }}{% if node.status == 'closed' %} <span class="badge text-bg-secondary">Stängt</span>{% endif %}</strong>
+                <span class="small text-muted">{{ node.member_count }} artiklar · {{ node.last_seen_label }}</span>
+                <span class="small mt-1">{% for tag in node.tags %}<span class="badge text-bg-light border me-1 mb-1">{{ tag }}</span>{% endfor %}</span>
+              </a>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
+  </section>
+</div>
+
+<script>
+(() => {
+  const graph = {{ graph|tojson }};
+  const host = document.getElementById("tag-network");
+  const ns = "http://www.w3.org/2000/svg";
+  const nodeWidth = 210;
+  const nodeHeight = 112;
+  const gapX = 42;
+  const gapY = 96;
+  const marginX = 80;
+  const marginY = 58;
+  const levels = [...new Set(graph.nodes.map(node => node.level))].sort((a, b) => a - b);
+  const grouped = new Map(levels.map(level => [level, graph.nodes.filter(node => node.level === level)]));
+  const widest = Math.max(1, ...[...grouped.values()].map(nodes => nodes.length));
+  const layoutWidth = Math.max(960, marginX * 2 + widest * nodeWidth + (widest - 1) * gapX);
+  const layoutHeight = Math.max(520, marginY * 2 + levels.length * nodeHeight + Math.max(0, levels.length - 1) * gapY);
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${layoutWidth} ${layoutHeight}`);
+  svg.setAttribute("width", layoutWidth);
+  svg.setAttribute("height", layoutHeight);
+  svg.classList.add("tag-network-svg");
+  const positions = new Map();
+
+  levels.forEach((level, row) => {
+    const nodes = grouped.get(level);
+    const rowWidth = nodes.length * nodeWidth + Math.max(0, nodes.length - 1) * gapX;
+    const startX = (layoutWidth - rowWidth) / 2;
+    const y = marginY + row * (nodeHeight + gapY);
+    const levelLabel = document.createElementNS(ns, "text");
+    levelLabel.setAttribute("x", 14);
+    levelLabel.setAttribute("y", y + nodeHeight / 2);
+    levelLabel.classList.add("tag-network-level");
+    levelLabel.textContent = level < 0 ? `Upp ${Math.abs(level)}` : level > 0 ? `Ned ${level}` : "Bas";
+    svg.appendChild(levelLabel);
+    nodes.forEach((node, column) => positions.set(node.id, {x: startX + column * (nodeWidth + gapX), y}));
+  });
+
+  graph.edges.forEach(edge => {
+    const source = positions.get(edge.source);
+    const target = positions.get(edge.target);
+    if (!source || !target) return;
+    const x1 = source.x + nodeWidth / 2;
+    const y1 = source.y + nodeHeight;
+    const x2 = target.x + nodeWidth / 2;
+    const y2 = target.y;
+    const path = document.createElementNS(ns, "path");
+    const middleY = (y1 + y2) / 2;
+    path.setAttribute("d", `M ${x1} ${y1} C ${x1} ${middleY}, ${x2} ${middleY}, ${x2} ${y2}`);
+    path.classList.add("tag-network-edge");
+    const title = document.createElementNS(ns, "title");
+    title.textContent = `Tillagda taggar: ${edge.added_tags.join(", ")}`;
+    path.appendChild(title);
+    svg.appendChild(path);
+    if (graph.edges.length <= 30) {
+      const label = document.createElementNS(ns, "text");
+      label.setAttribute("x", (x1 + x2) / 2 + 5);
+      label.setAttribute("y", middleY - 5);
+      label.classList.add("tag-network-edge-label");
+      label.textContent = `+ ${edge.added_tags.join(", ")}`;
+      svg.appendChild(label);
+    }
+  });
+
+  graph.nodes.forEach(node => {
+    const position = positions.get(node.id);
+    const link = document.createElementNS(ns, "a");
+    link.setAttribute("href", node.url);
+    link.classList.add("tag-network-node");
+    if (node.is_base) link.classList.add("tag-network-node--base");
+    if (node.status === "closed") link.classList.add("tag-network-node--closed");
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", position.x);
+    rect.setAttribute("y", position.y);
+    rect.setAttribute("width", nodeWidth);
+    rect.setAttribute("height", nodeHeight);
+    link.appendChild(rect);
+    const title = document.createElementNS(ns, "title");
+    title.textContent = `${node.label}\n${node.tags.join(" | ")}`;
+    link.appendChild(title);
+    const statusPrefix = node.status === "closed" ? "Stängt · " : "";
+    const lines = [node.label, `${statusPrefix}${node.tag_count} taggar · ${node.member_count} artiklar`, ...node.tags.slice(0, 2)];
+    lines.forEach((line, index) => {
+      const text = document.createElementNS(ns, "text");
+      text.setAttribute("x", position.x + 12);
+      text.setAttribute("y", position.y + 24 + index * 21);
+      text.setAttribute("font-size", index === 0 ? "13" : "11");
+      if (index === 0) text.setAttribute("font-weight", "600");
+      const limit = index === 0 ? 28 : 31;
+      text.textContent = line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
+      link.appendChild(text);
+    });
+    svg.appendChild(link);
+  });
+  host.appendChild(svg);
+
+  let scale = Math.min(1, Math.max(0.45, host.clientWidth / layoutWidth));
+  const updateZoom = () => {
+    svg.style.width = `${layoutWidth * scale}px`;
+    svg.style.height = `${layoutHeight * scale}px`;
+    document.getElementById("zoom-reset").textContent = `${Math.round(scale * 100)} %`;
+  };
+  document.getElementById("zoom-out").addEventListener("click", () => { scale = Math.max(.3, scale - .1); updateZoom(); });
+  document.getElementById("zoom-in").addEventListener("click", () => { scale = Math.min(1.8, scale + .1); updateZoom(); });
+  document.getElementById("zoom-reset").addEventListener("click", () => { scale = 1; updateZoom(); });
+  updateZoom();
+})();
+</script>
+{% endblock %}

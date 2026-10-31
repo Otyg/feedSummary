@@ -66,6 +66,7 @@ from feedsummary_core.summarizer.main import (
     run_tag_based_summary,
 )
 
+from long_term_aggregate import aggregate_profile_ids
 from run_long_term_clustering import execute_long_term_clustering
 from run_long_term_map import execute_long_term_map
 from run_long_term_report import execute_long_term_report
@@ -824,6 +825,15 @@ def _positive_entry_limit(entry: Dict[str, Any], key: str, default: int) -> int:
 
 
 def _compact_long_term_result(stage: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    if result.get("aggregate"):
+        return {
+            "profile_id": result.get("profile_id"),
+            "aggregate": True,
+            "dry_run": bool(result.get("dry_run")),
+            "child_profile_ids": list(result.get("child_profile_ids") or []),
+            "children": dict(result.get("children") or {}),
+            "failures": list(result.get("failures") or []),
+        }
     if stage == "clustering":
         return {
             key: value
@@ -839,6 +849,146 @@ def _compact_long_term_result(stage: str, result: Dict[str, Any]) -> Dict[str, A
             "updates": updates,
         }
     return dict(result)
+
+
+def _latest_successful_profile_update(store: Any, profile_id: str, stage: str) -> int:
+    list_runs = getattr(store, "list_long_term_runs", None)
+    if not callable(list_runs):
+        return 0
+    try:
+        rows = list_runs(profile_id, limit=100) or []
+    except Exception:
+        return 0
+    return max(
+        (
+            int(row.get("finished_at") or 0)
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("status") or "") == "done"
+            and (
+                str(row.get("run_type") or "")
+                in {f"long_term_{stage}", "long_term_pipeline"}
+                or stage in (row.get("stages") or [])
+                or stage in (row.get("results") or {})
+            )
+        ),
+        default=0,
+    )
+
+
+def _aggregate_failure(
+    store: Any,
+    *,
+    profile_id: str,
+    stage: str,
+    error: BaseException | str,
+) -> Dict[str, Any]:
+    exception = error if isinstance(error, BaseException) else None
+    message = str(error)
+    return {
+        "profile_id": profile_id,
+        "stage": stage,
+        "error_type": type(exception).__name__ if exception else "LongTermWorkerBlocked",
+        "error": " ".join(message.split())[:1000],
+        "observed_at": int(time.time()),
+        "last_successful_update_at": _latest_successful_profile_update(
+            store, profile_id, stage
+        ),
+    }
+
+
+async def _run_aggregate_child_stage(
+    *,
+    stage: str,
+    child_profile_ids: Tuple[str, ...],
+    config_path: str,
+    cfg: Dict[str, Any],
+    store: Any,
+    entry: Dict[str, Any],
+    owner_prefix: str,
+    dry_run: bool,
+    all_sources: bool,
+    force: bool,
+) -> Dict[str, Any]:
+    """Fan out one aggregate stage and retain failures for a partial report."""
+
+    children: Dict[str, Any] = {}
+    failures: List[Dict[str, Any]] = []
+    resolved_path = Path(config_path).resolve()
+    for child_profile_id in child_profile_ids:
+        try:
+            if stage == "clustering":
+                child_result = execute_long_term_clustering(
+                    argparse.Namespace(
+                        config=config_path,
+                        profile=child_profile_id,
+                        limit=entry.get("limit"),
+                        since=entry.get("since"),
+                        until=entry.get("until"),
+                        all_sources=all_sources,
+                        dry_run=dry_run,
+                        owner_id=f"{owner_prefix}:child:{child_profile_id}:clustering",
+                    ),
+                    config_path=resolved_path,
+                    config=cfg,
+                    store=store,
+                )
+                blocked_reason = str(child_result.get("blocked_reason") or "").strip()
+                if blocked_reason:
+                    failures.append(
+                        _aggregate_failure(
+                            store,
+                            profile_id=child_profile_id,
+                            stage=stage,
+                            error=blocked_reason,
+                        )
+                    )
+                children[child_profile_id] = _compact_long_term_result(
+                    stage, child_result
+                )
+            elif stage == "map":
+                child_result = await execute_long_term_map(
+                    argparse.Namespace(
+                        config=config_path,
+                        profile=child_profile_id,
+                        cluster=entry.get("cluster"),
+                        limit=_positive_entry_limit(entry, "map_limit", 20),
+                        force=force,
+                        continue_on_error=False,
+                        dry_run=dry_run,
+                        owner_id=f"{owner_prefix}:child:{child_profile_id}:map",
+                    ),
+                    config_path=resolved_path,
+                    config=cfg,
+                    store=store,
+                )
+                children[child_profile_id] = _compact_long_term_result(
+                    stage, child_result
+                )
+            else:
+                raise ValueError(f"Ogiltig samlingsprofilfas: {stage}")
+        except Exception as error:  # noqa: BLE001 - failure becomes report quality
+            log.exception(
+                "Aggregate profile child update failed: profile=%s stage=%s",
+                child_profile_id,
+                stage,
+            )
+            failures.append(
+                _aggregate_failure(
+                    store,
+                    profile_id=child_profile_id,
+                    stage=stage,
+                    error=error,
+                )
+            )
+    return {
+        "profile_id": "",
+        "aggregate": True,
+        "dry_run": dry_run,
+        "child_profile_ids": list(child_profile_ids),
+        "children": children,
+        "failures": failures,
+    }
 
 
 async def _run_long_term_entry(
@@ -901,6 +1051,36 @@ async def _run_long_term_entry(
     current_stage = stage_names[0]
     owner_prefix = f"{socket.gethostname()}:{os.getpid()}:worker:{run_id}"
     resolved_path = Path(config_path).resolve()
+    aggregate_children = aggregate_profile_ids(long_term, profile)
+    aggregate_failures: List[Dict[str, Any]] = []
+    aggregate_completed_stages: set[str] = set()
+
+    async def run_aggregate_stage(stage: str) -> Dict[str, Any]:
+        aggregate_result = await _run_aggregate_child_stage(
+            stage=stage,
+            child_profile_ids=aggregate_children,
+            config_path=config_path,
+            cfg=cfg,
+            store=store,
+            entry=entry,
+            owner_prefix=owner_prefix,
+            dry_run=dry_run,
+            all_sources=all_sources,
+            force=force,
+        )
+        aggregate_result["profile_id"] = profile
+        aggregate_failures.extend(aggregate_result.get("failures") or [])
+        aggregate_completed_stages.add(stage)
+        return aggregate_result
+
+    async def ensure_aggregate_stage(stage: str, result_key: str) -> None:
+        if not aggregate_children or stage in aggregate_completed_stages:
+            return
+        preflight_result = await run_aggregate_stage(stage)
+        stage_results[result_key] = _compact_long_term_result(
+            stage, preflight_result
+        )
+
     try:
         for current_stage in stage_names:
             if run_created:
@@ -914,40 +1094,54 @@ async def _run_long_term_entry(
                         "Kunde inte uppdatera långtidsjobbets aktuella fas"
                     )
             if current_stage == "clustering":
-                result = execute_long_term_clustering(
-                    argparse.Namespace(
-                        config=config_path,
-                        profile=profile,
-                        limit=entry.get("limit"),
-                        since=entry.get("since"),
-                        until=entry.get("until"),
-                        all_sources=all_sources,
-                        dry_run=dry_run,
-                        owner_id=f"{owner_prefix}:clustering",
-                    ),
-                    config_path=resolved_path,
-                    config=cfg,
-                    store=store,
-                )
-                if result.get("blocked_reason"):
-                    raise LongTermWorkerBlocked(str(result["blocked_reason"]))
+                if aggregate_children:
+                    result = await run_aggregate_stage("clustering")
+                else:
+                    result = execute_long_term_clustering(
+                        argparse.Namespace(
+                            config=config_path,
+                            profile=profile,
+                            limit=entry.get("limit"),
+                            since=entry.get("since"),
+                            until=entry.get("until"),
+                            all_sources=all_sources,
+                            dry_run=dry_run,
+                            owner_id=f"{owner_prefix}:clustering",
+                        ),
+                        config_path=resolved_path,
+                        config=cfg,
+                        store=store,
+                    )
+                    if result.get("blocked_reason"):
+                        raise LongTermWorkerBlocked(str(result["blocked_reason"]))
             elif current_stage == "map":
-                result = await execute_long_term_map(
-                    argparse.Namespace(
-                        config=config_path,
-                        profile=profile,
-                        cluster=entry.get("cluster"),
-                        limit=_positive_entry_limit(entry, "map_limit", 20),
-                        force=force,
-                        continue_on_error=False,
-                        dry_run=dry_run,
-                        owner_id=f"{owner_prefix}:map",
-                    ),
-                    config_path=resolved_path,
-                    config=cfg,
-                    store=store,
-                )
+                if aggregate_children:
+                    await ensure_aggregate_stage(
+                        "clustering", "clustering_preflight"
+                    )
+                    result = await run_aggregate_stage("map")
+                else:
+                    result = await execute_long_term_map(
+                        argparse.Namespace(
+                            config=config_path,
+                            profile=profile,
+                            cluster=entry.get("cluster"),
+                            limit=_positive_entry_limit(entry, "map_limit", 20),
+                            force=force,
+                            continue_on_error=False,
+                            dry_run=dry_run,
+                            owner_id=f"{owner_prefix}:map",
+                        ),
+                        config_path=resolved_path,
+                        config=cfg,
+                        store=store,
+                    )
             else:
+                if aggregate_children:
+                    await ensure_aggregate_stage(
+                        "clustering", "clustering_preflight"
+                    )
+                    await ensure_aggregate_stage("map", "map_preflight")
                 result = await execute_long_term_report(
                     argparse.Namespace(
                         config=config_path,
@@ -959,6 +1153,7 @@ async def _run_long_term_entry(
                     config_path=resolved_path,
                     config=cfg,
                     store=store,
+                    aggregate_profile_failures=aggregate_failures,
                 )
             stage_results[current_stage] = _compact_long_term_result(
                 current_stage, result

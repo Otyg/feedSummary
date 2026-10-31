@@ -38,6 +38,7 @@ import os
 import re
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from functools import lru_cache
@@ -94,9 +95,16 @@ from feedsummary_core.prompts.loader import (
     load_prompt_package,
     resolve_prompt_root,
 )
+from retrain_tagging_ml import main as retrain_tagging_ml
 from uicommon.proofread_rounds import _strip_proofread_feedback_from_summary
+from uicommon.tagging_ml_retrain import CoalescingRetrainer
 from web_viewer.article_listing import list_article_page, list_filter_tags
 from web_viewer.attack_pressure import assess_attack_pressure, valid_cve
+from web_viewer.long_term_cluster_graph import (
+    build_cluster_tag_network,
+    cluster_scope_tags,
+    normalize_cluster_tag,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -117,6 +125,54 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_host=1, x_port=1, x_proto=1, x_prefix=1)
 APP_CONFIG_PATH: str = ""
 APP_CFG: Dict[str, Any] = {}
 APP_STORE = None
+
+
+def _run_tagging_ml_retrain() -> None:
+    """Force a complete rebuild using a separate store connection."""
+    config_path = APP_CONFIG_PATH
+    if not config_path:
+        raise RuntimeError("Viewer configuration path is unavailable")
+    exit_code = retrain_tagging_ml(["--config", config_path])
+    if exit_code != 0:
+        raise RuntimeError(f"Tagging ML retraining exited with status {exit_code}")
+
+
+_TAGGING_ML_RETRAINER = CoalescingRetrainer(
+    _run_tagging_ml_retrain,
+    debounce_seconds=2.0,
+    logger=logger,
+)
+
+
+def _schedule_tagging_ml_retrain(*, article_id: str, tag_id: int, action: str) -> str:
+    """Schedule retraining after a successful user-initiated tag mutation."""
+    tagging = APP_CFG.get("tagging") if isinstance(APP_CFG.get("tagging"), dict) else {}
+    ml = tagging.get("ml") if isinstance(tagging.get("ml"), dict) else {}
+    if not bool(ml.get("enabled", False)):
+        return "disabled"
+    if not bool(ml.get("retrain_on_manual_tag_change", False)):
+        return "disabled"
+
+    try:
+        status = _TAGGING_ML_RETRAINER.request(
+            f"{action} tag {int(tag_id)} on article {article_id}"
+        )
+    except Exception:  # noqa: BLE001 - the tag mutation has already succeeded
+        logger.exception(
+            "[TagAPI] Could not queue ML retraining after %s of tag %s on article %s",
+            action,
+            tag_id,
+            article_id,
+        )
+        return "queue_failed"
+    logger.info(
+        "[TagAPI] ML retraining %s after %s of tag %s on article %s",
+        status,
+        action,
+        tag_id,
+        article_id,
+    )
+    return status
 
 
 @lru_cache(maxsize=8)
@@ -435,20 +491,303 @@ _LONG_TERM_CLUSTER_STATUSES = ("active", "dormant", "closed")
 
 
 def _normalize_long_term_cluster_tag(value: Any) -> str:
-    category, separator, name = str(value or "").partition(":")
-    category = category.strip().upper()
-    name = name.strip().casefold()
-    if not separator or not category or not name:
-        return ""
-    return f"{category}:{name}"
+    return normalize_cluster_tag(value)
 
 
 def _long_term_cluster_scope_tags(value: Any) -> frozenset[str]:
-    return frozenset(
-        normalized
-        for part in str(value or "").split("|")
-        if (normalized := _normalize_long_term_cluster_tag(part))
+    return cluster_scope_tags(value)
+
+
+def _long_term_tag_network_options() -> tuple[int, int, int, int, int]:
+    ui = (APP_CFG.get("long_term_analysis") or {}).get("ui") or {}
+    max_levels = max(1, min(int(ui.get("tag_network_max_levels") or 6), 12))
+    max_nodes = max(10, min(int(ui.get("tag_network_max_nodes") or 250), 1000))
+    candidate_limit = max(
+        max_nodes,
+        min(int(ui.get("tag_network_candidate_limit") or 10000), 50000),
     )
+    default_levels = max(
+        0,
+        min(int(ui.get("tag_network_default_levels") or 2), max_levels),
+    )
+    requested_both = request.args.get("levels")
+    try:
+        up_levels = int(request.args.get("up", requested_both or default_levels))
+        down_levels = int(request.args.get("down", requested_both or default_levels))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("up, down and levels must be integers") from exc
+    if not 0 <= up_levels <= max_levels or not 0 <= down_levels <= max_levels:
+        raise ValueError(f"up and down must be between 0 and {max_levels}")
+    return up_levels, down_levels, max_levels, max_nodes, candidate_limit
+
+
+def _long_term_cluster_tag_network(
+    store: Any,
+    cluster_id: str,
+    *,
+    up_levels: int,
+    down_levels: int,
+    max_nodes: int,
+    candidate_limit: int,
+    excluded_tags: List[str],
+) -> Optional[Dict[str, Any]]:
+    get_cluster = getattr(store, "get_threat_cluster", None)
+    list_clusters = getattr(store, "list_threat_clusters", None)
+    if not callable(get_cluster) or not callable(list_clusters):
+        raise RuntimeError("Long-term cluster storage is unavailable")
+    base = get_cluster(cluster_id)
+    if not isinstance(base, dict):
+        return None
+    profile_id = str(base.get("profile_id") or "").strip()
+    candidates = list_clusters(
+        profile_id,
+        statuses=list(_LONG_TERM_CLUSTER_STATUSES),
+        limit=candidate_limit,
+        include_vectors=False,
+    ) or []
+    candidate_rows = [row for row in candidates if isinstance(row, dict)]
+    if not any(str(row.get("id") or "") == cluster_id for row in candidate_rows):
+        candidate_rows.append(base)
+    rows_by_id = {
+        str(row.get("id") or ""): row
+        for row in candidate_rows
+        if str(row.get("id") or "").strip()
+    }
+    graph = build_cluster_tag_network(
+        candidate_rows,
+        cluster_id,
+        up_levels=up_levels,
+        down_levels=down_levels,
+        max_nodes=max_nodes,
+        excluded_tags=excluded_tags,
+    )
+    graph["source_clusters_truncated"] = len(candidates) >= candidate_limit
+    graph["truncated"] = bool(
+        graph["truncated"] or graph["source_clusters_truncated"]
+    )
+    for node in graph["nodes"]:
+        row = rows_by_id[node["id"]]
+        item = _long_term_cluster_list_item(store, row)
+        node["label"] = item["label"]
+        node["url"] = url_for("view_long_term_cluster", cluster_id=node["id"])
+        node["last_seen_label"] = format_ts(node["last_seen_ts"])
+    return graph
+
+
+def _long_term_article_network_options() -> tuple[float, int, int, int]:
+    ui = (APP_CFG.get("long_term_analysis") or {}).get("ui") or {}
+    max_neighbors_limit = max(
+        1, min(int(ui.get("article_network_max_neighbors") or 200), 1000)
+    )
+    default_max_neighbors = max(
+        1,
+        min(
+            int(ui.get("article_network_default_max_neighbors") or 40),
+            max_neighbors_limit,
+        ),
+    )
+    membership_limit = max(
+        100, min(int(ui.get("article_network_membership_limit") or 5000), 20000)
+    )
+    try:
+        min_overlap_percent = float(request.args.get("min_overlap", "1"))
+        max_neighbors = int(
+            request.args.get("max_neighbors", str(default_max_neighbors))
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("min_overlap must be a number and max_neighbors an integer") from exc
+    if not 0 <= min_overlap_percent <= 100:
+        raise ValueError("min_overlap must be between 0 and 100")
+    if not 1 <= max_neighbors <= max_neighbors_limit:
+        raise ValueError(
+            f"max_neighbors must be between 1 and {max_neighbors_limit}"
+        )
+    return (
+        min_overlap_percent,
+        max_neighbors,
+        max_neighbors_limit,
+        membership_limit,
+    )
+
+
+def _long_term_cluster_article_network(
+    store: Any,
+    cluster_id: str,
+    *,
+    min_overlap_percent: float,
+    max_neighbors: int,
+    membership_limit: int,
+) -> Optional[Dict[str, Any]]:
+    get_cluster = getattr(store, "get_threat_cluster", None)
+    list_memberships = getattr(store, "list_cluster_memberships", None)
+    list_article_memberships = getattr(store, "list_article_cluster_memberships", None)
+    if not all(
+        callable(method)
+        for method in (get_cluster, list_memberships, list_article_memberships)
+    ):
+        raise RuntimeError("Long-term membership storage is unavailable")
+    base = get_cluster(cluster_id)
+    if not isinstance(base, dict):
+        return None
+    profile_id = str(base.get("profile_id") or "").strip()
+    membership_rows = list_memberships(cluster_id, limit=membership_limit + 1) or []
+    memberships_truncated = len(membership_rows) > membership_limit
+    unique_memberships: Dict[str, Dict[str, Any]] = {}
+    for membership in membership_rows[:membership_limit]:
+        if not isinstance(membership, dict):
+            continue
+        article_id = str(membership.get("article_id") or "").strip()
+        if article_id:
+            unique_memberships.setdefault(article_id, membership)
+
+    def article_item(membership: Dict[str, Any]) -> Dict[str, Any]:
+        evidence = membership.get("evidence") or {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        article_id = str(membership.get("article_id") or "")
+        return {
+            "id": article_id,
+            "title": " ".join(str(evidence.get("title") or article_id).split()),
+            "source": " ".join(str(evidence.get("source") or "").split()),
+            "url": str(evidence.get("url") or ""),
+            "published_ts": int(
+                evidence.get("published_ts") or membership.get("article_ts") or 0
+            ),
+        }
+
+    shared_by_cluster: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    for article_id, membership in unique_memberships.items():
+        article = article_item(membership)
+        for related in list_article_memberships(profile_id, article_id) or []:
+            if not isinstance(related, dict):
+                continue
+            related_id = str(related.get("cluster_id") or "").strip()
+            if related_id and related_id != cluster_id:
+                shared_by_cluster[related_id][article_id] = article
+
+    relations: List[Dict[str, Any]] = []
+    for related_id, articles_by_id in shared_by_cluster.items():
+        shared_articles = sorted(
+            articles_by_id.values(),
+            key=lambda item: (-int(item["published_ts"]), item["id"]),
+        )
+        overlap_ratio = (
+            len(shared_articles) / len(unique_memberships)
+            if unique_memberships
+            else 0.0
+        )
+        if overlap_ratio * 100 < min_overlap_percent:
+            continue
+        related_cluster = get_cluster(related_id)
+        if (
+            not isinstance(related_cluster, dict)
+            or str(related_cluster.get("profile_id") or "") != profile_id
+        ):
+            continue
+        item = _long_term_cluster_list_item(store, related_cluster)
+        relations.append(
+            {
+                **item,
+                "shared_article_count": len(shared_articles),
+                "shared_articles": shared_articles,
+                "overlap_ratio": overlap_ratio,
+                "url": url_for("view_long_term_cluster", cluster_id=related_id),
+            }
+        )
+    relations.sort(
+        key=lambda item: (
+            -int(item["shared_article_count"]),
+            -int(item["last_seen_ts"]),
+            item["id"],
+        )
+    )
+    neighbor_count = len(relations)
+    relations = relations[:max_neighbors]
+    base_item = _long_term_cluster_list_item(store, base)
+    memberships_by_cluster: Dict[str, Dict[str, Dict[str, Any]]] = {
+        cluster_id: unique_memberships
+    }
+    article_items: Dict[str, Dict[str, Any]] = {
+        article_id: article_item(membership)
+        for article_id, membership in unique_memberships.items()
+    }
+    truncated_cluster_ids = [cluster_id] if memberships_truncated else []
+    for relation in relations:
+        related_id = str(relation["id"])
+        related_rows = list_memberships(
+            related_id, limit=membership_limit + 1
+        ) or []
+        if len(related_rows) > membership_limit:
+            truncated_cluster_ids.append(related_id)
+        related_memberships: Dict[str, Dict[str, Any]] = {}
+        for membership in related_rows[:membership_limit]:
+            if not isinstance(membership, dict):
+                continue
+            article_id = str(membership.get("article_id") or "").strip()
+            if not article_id:
+                continue
+            related_memberships.setdefault(article_id, membership)
+            article_items.setdefault(article_id, article_item(membership))
+        memberships_by_cluster[related_id] = related_memberships
+        relation["article_count"] = len(related_memberships)
+
+    base_node = {
+        **base_item,
+        "url": url_for("view_long_term_cluster", cluster_id=cluster_id),
+        "article_count": len(unique_memberships),
+        "is_base": True,
+    }
+    nodes = [
+        base_node,
+        *({**relation, "is_base": False} for relation in relations),
+    ]
+    edges: List[Dict[str, Any]] = []
+    for source_index, source_node in enumerate(nodes):
+        source_id = str(source_node["id"])
+        source_articles = set(memberships_by_cluster.get(source_id, {}))
+        for target_node in nodes[source_index + 1 :]:
+            target_id = str(target_node["id"])
+            shared_ids = sorted(
+                source_articles & set(memberships_by_cluster.get(target_id, {}))
+            )
+            target_articles = set(memberships_by_cluster.get(target_id, {}))
+            connects_base = cluster_id in {source_id, target_id}
+            denominator = (
+                len(unique_memberships)
+                if connects_base
+                else len(source_articles | target_articles)
+            )
+            overlap_ratio = len(shared_ids) / denominator if denominator else 0.0
+            if not shared_ids or overlap_ratio * 100 < min_overlap_percent:
+                continue
+            edges.append(
+                {
+                    "id": f"edge-{len(edges) + 1}",
+                    "source": source_id,
+                    "target": target_id,
+                    "shared_article_count": len(shared_ids),
+                    "shared_article_ids": shared_ids,
+                    "shared_articles": [article_items[value] for value in shared_ids],
+                    "overlap_ratio": overlap_ratio,
+                    "overlap_percent": overlap_ratio * 100,
+                    "overlap_basis": "base" if connects_base else "jaccard",
+                    "connects_base": connects_base,
+                }
+            )
+    return {
+        "base_cluster_id": cluster_id,
+        "profile_id": profile_id,
+        "base_article_count": len(unique_memberships),
+        "min_overlap_percent": min_overlap_percent,
+        "max_neighbors": max_neighbors,
+        "nodes": nodes,
+        "edges": edges,
+        "relations": relations,
+        "neighbor_count": neighbor_count,
+        "neighbors_truncated": neighbor_count > len(relations),
+        "memberships_truncated": bool(truncated_cluster_ids),
+        "membership_truncated_cluster_ids": truncated_cluster_ids,
+    }
 
 
 def _long_term_cluster_tag_options(
@@ -2309,6 +2648,81 @@ def api_long_term_cluster(cluster_id: str):
     )
 
 
+@app.route("/api/v1/long-term/clusters/<cluster_id>/tag-network")
+def api_long_term_cluster_tag_network(cluster_id: str):
+    """Return the reachable one-tag-per-hop hierarchy for one cluster."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        up_levels, down_levels, max_levels, max_nodes, candidate_limit = (
+            _long_term_tag_network_options()
+        )
+    except ValueError as exc:
+        return jsonify({"error": "invalid_query", "detail": str(exc)}), 400
+    try:
+        graph = _long_term_cluster_tag_network(
+            store,
+            str(cluster_id).strip(),
+            up_levels=up_levels,
+            down_levels=down_levels,
+            max_nodes=max_nodes,
+            candidate_limit=candidate_limit,
+            excluded_tags=request.args.getlist("exclude"),
+        )
+    except Exception:
+        logger.exception("Could not build tag network for cluster %s", cluster_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    if graph is None:
+        abort(404)
+    return jsonify(
+        {
+            "schema_version": 1,
+            "max_levels": max_levels,
+            "max_nodes": max_nodes,
+            **graph,
+        }
+    )
+
+
+@app.route("/api/v1/long-term/clusters/<cluster_id>/article-network")
+def api_long_term_cluster_article_network(cluster_id: str):
+    """Return clusters connected by shared retained article memberships."""
+
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        min_overlap_percent, max_neighbors, max_neighbors_limit, membership_limit = (
+            _long_term_article_network_options()
+        )
+    except ValueError as exc:
+        return jsonify({"error": "invalid_query", "detail": str(exc)}), 400
+    try:
+        graph = _long_term_cluster_article_network(
+            store,
+            str(cluster_id).strip(),
+            min_overlap_percent=min_overlap_percent,
+            max_neighbors=max_neighbors,
+            membership_limit=membership_limit,
+        )
+    except Exception:
+        logger.exception("Could not build article network for cluster %s", cluster_id)
+        return jsonify({"error": "long_term_store_unavailable"}), 503
+    if graph is None:
+        abort(404)
+    return jsonify(
+        {
+            "schema_version": 1,
+            "max_neighbors_limit": max_neighbors_limit,
+            **graph,
+        }
+    )
+
+
 @app.route("/api/v1/long-term/reviews/<cluster_id>")
 def api_long_term_cluster_review(cluster_id: str):
     """Return one ambiguous cluster and its two review candidates."""
@@ -3224,6 +3638,76 @@ def view_long_term_cluster(cluster_id: str):
     )
 
 
+@app.route("/long-term/cluster/<cluster_id>/tag-network")
+def view_long_term_cluster_tag_network(cluster_id: str):
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        up_levels, down_levels, max_levels, max_nodes, candidate_limit = (
+            _long_term_tag_network_options()
+        )
+    except ValueError:
+        abort(400)
+    try:
+        graph = _long_term_cluster_tag_network(
+            store,
+            str(cluster_id).strip(),
+            up_levels=up_levels,
+            down_levels=down_levels,
+            max_nodes=max_nodes,
+            candidate_limit=candidate_limit,
+            excluded_tags=request.args.getlist("exclude"),
+        )
+    except Exception:
+        logger.exception("Could not build tag network for cluster %s", cluster_id)
+        abort(503)
+    if graph is None:
+        abort(404)
+    base_node = next(node for node in graph["nodes"] if node["is_base"])
+    return render_template(
+        "long_term_cluster_tag_network.html",
+        graph=graph,
+        base_node=base_node,
+        max_levels=max_levels,
+        max_nodes=max_nodes,
+    )
+
+
+@app.route("/long-term/cluster/<cluster_id>/article-network")
+def view_long_term_cluster_article_network(cluster_id: str):
+    _require_long_term_ui()
+    store = APP_STORE
+    if store is None:
+        abort(500)
+    try:
+        min_overlap_percent, max_neighbors, max_neighbors_limit, membership_limit = (
+            _long_term_article_network_options()
+        )
+    except ValueError:
+        abort(400)
+    try:
+        graph = _long_term_cluster_article_network(
+            store,
+            str(cluster_id).strip(),
+            min_overlap_percent=min_overlap_percent,
+            max_neighbors=max_neighbors,
+            membership_limit=membership_limit,
+        )
+    except Exception:
+        logger.exception("Could not build article network for cluster %s", cluster_id)
+        abort(503)
+    if graph is None:
+        abort(404)
+    return render_template(
+        "long_term_cluster_article_network.html",
+        graph=graph,
+        base_node=graph["nodes"][0],
+        max_neighbors_limit=max_neighbors_limit,
+    )
+
+
 @app.route("/summary/<summary_id>")
 def view_summary(summary_id: str):
     store = APP_STORE
@@ -3798,7 +4282,12 @@ def api_add_tag_to_article(article_id: str):
             return jsonify({"error": "tag already associated with article"}), 409
         
         logger.info(f"[TagAPI] Added tag {tag_id} to article {article_id}")
-        return jsonify({"success": True}), 200
+        retrain_status = _schedule_tagging_ml_retrain(
+            article_id=article_id,
+            tag_id=int(tag_id),
+            action="addition",
+        )
+        return jsonify({"success": True, "ml_retrain": retrain_status}), 200
     except Exception as e:
         logger.error(f"Error adding tag to article {article_id}: {e}")
         return jsonify({"error": str(e)}), 500
@@ -3817,7 +4306,12 @@ def api_remove_tag_from_article(article_id: str, tag_id: int):
             return jsonify({"error": "tag not associated with article"}), 404
         
         logger.info(f"[TagAPI] Removed tag {tag_id} from article {article_id}")
-        return jsonify({"success": True}), 200
+        retrain_status = _schedule_tagging_ml_retrain(
+            article_id=article_id,
+            tag_id=tag_id,
+            action="removal",
+        )
+        return jsonify({"success": True, "ml_retrain": retrain_status}), 200
     except Exception as e:
         logger.error(f"Error removing tag from article {article_id}: {e}")
         return jsonify({"error": str(e)}), 500

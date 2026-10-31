@@ -265,6 +265,7 @@ llm:
   - provider: ollama_cloud
     host: https://ollama.com
     model: gemma3:27b-cloud
+    allow_new_tags: false
     api_key: CHANGE-ME
     context_window_tokens: 24576
     max_output_tokens: 500
@@ -278,6 +279,7 @@ llm:
 
   - provider: ollama_local
     model: gemma3:1b
+    allow_new_tags: true
     base_url: http://localhost:11434
     max_rps: 1
     timeout_s: 6000
@@ -293,6 +295,10 @@ llm:
 ```
 
 Viktiga begrepp:
+- `allow_new_tags`: provider-specifik policy för artikeltaggning. `false` gör
+  att providern enbart får välja exakta, befintliga taggar från databasen. ML-
+  förslag skickas då med som okontrollerade kandidater och sparas bara om LLM:n
+  godkänner dem. Standardvärdet är `true`.
 - `context_window_tokens`: total plats för input+output.
 - `max_output_tokens`: hur långt svaret får bli.
 - `prompt_safety_margin`: buffert för att undvika att slå i context-taket.
@@ -523,8 +529,22 @@ modellen behålls. `--config` kan utelämnas; då används `FEEDSUMMARY_CONFIG` 
 
 `benchmark_tagging_ml.py` är fristående från produktionsflödet. Verktyget läser
 befintliga artiklar och taggkopplingar från den MongoDB som anges i `config.yaml`,
-jämför etablerade scikit-learn-algoritmer på samma kronologiska datasplit och skriver
-både JSON och Markdown. Det aktiverar eller sparar ingen produktionsmodell.
+och använder som standard klassificeraren, embedding-representationen, kategorierna,
+embeddingmodellen och träningsparametrarna under `tagging.ml`. Den konfigurerade
+baslinjen jämförs med Multinomial och Complement Naive Bayes på exakt samma artiklar,
+kategorier och kronologiska datasplit. Resultatet skrivs som både JSON och Markdown;
+ingen produktionsmodell aktiveras eller sparas.
+
+Baslinjen använder samma L2-normalisering som produktionsmodellen. Eftersom
+Multinomial och Complement Naive Bayes kräver icke-negativa värden skalas deras
+embeddingdimensioner till intervallet 0–1 utifrån enbart träningsdelen.
+
+Rapporten identifierar även sparade taggkopplingar vars motivering börjar med
+`Predicted by embedding ...` och markerar kategoriomfånget som icke-oberoende. Det
+är viktigt när samma Logistic Regression-modell har skapat delar av facit. Separata
+resultat för exempelvis `PRODUCT` och `ORGANIZATION` kan ge bättre jämförelsedata om
+de historiska kopplingarna där skapades av LLM eller granskare, men de ersätter inte
+ett fryst och manuellt granskat testurval.
 
 ```bash
 .venv/bin/python benchmark_tagging_ml.py \
@@ -532,23 +552,19 @@ både JSON och Markdown. Det aktiverar eller sparar ingen produktionsmodell.
   --output-dir benchmark_results/tagging_ml
 ```
 
-Som standard jämförs Logistic Regression, SGD, två Naive Bayes-varianter, K-Nearest
-Neighbour, Random Forest och linjär Support Vector Machine. Rapporten innehåller en
-körning med alla `DEFAULT_CATEGORIES` tillsammans, en körning för varje kategori och
-parvisa körningar med `DOMAIN_ENTITY` och var och en av de övriga kategorierna.
-JSON- och Markdownrapporterna rankar den bästa algoritmen och representationen för
-varje sådan kombination efter micro-F1. En annan baskategori kan anges med
-`--combination-base-category`. `--categories LOCATION,THREAT` lägger till manuella
-kategorier efter standardkategorierna; det ersätter dem inte.
+Standardrapporten innehåller både en gemensam körning och en körning per kategori för
+kategorierna i `tagging.ml.categories` plus `PRODUCT` och `ORGANIZATION`. De två extra
+kategorierna påverkar bara benchmarken, inte produktionsmodellens konfiguration.
+Enbart den gemensamma körningen kan väljas med `--category-scopes configured`;
+parvisa kategoriomfång läggs till med `--category-scopes detailed`. En annan
+baskategori kan då anges med `--combination-base-category`. `--categories` ersätter
+hela standardurvalet för en uttrycklig experimentkörning.
 
-Varje kategoriomfång körs med TF-IDF, hashade ord-/teckenfeatures, befintliga
-taggnings-embeddings och en hybrid av TF-IDF och embeddings. Före tidsdelningen begränsas
-varje kategoriomfång till artiklar med samma kompatibla, redan sparade embeddingmodell
-och dimension. Därmed använder samtliga representationer exakt samma artiklar och
-etiketter. Rapporten redovisar modell, dimension, täckning och bortfall. Verktyget
-skapar inga nya embeddings. En viss modell kan krävas med `--embedding-model`, och
-representationer kan begränsas med exempelvis
-`--representations tfidf,embedding,hybrid`.
+Före tidsdelningen begränsas urvalet till artiklar med samma kompatibla, redan sparade
+embeddingmodell och dimension. Rapporten redovisar modell, dimension, täckning och
+bortfall. Verktyget skapar inga nya embeddings. `--algorithms`, `--representations`,
+`--embedding-model`, `--min-label-support` och `--seed` kan användas för att göra en
+experimentkörning som avviker från `tagging.ml`.
 
 Ett mindre prov kan köras med exempelvis
 `--max-articles 200 --algorithms logistic_regression,linear_svm`.
@@ -623,9 +639,21 @@ fall den filen som `--config` vid omkörningen och utelämna `--output-config`.
 
 Långtidsvyerna `/long-term` och `/long-term/clusters` visar alla konfigurerade
 profiler i separata sektioner. Rapportvyn uppdateras var femte minut när den är
-öppen. En samlingsprofil kan skapa en egen fortlöpande långtidsanalys över
-källunionen från de angivna profilerna. Den kör samma klustring, Map och Reduce
-som vanliga profiler och sparar därför egna kluster, snapshots och rapporter.
+öppen. En samlingsprofil fungerar som en orkestrerande rapportprofil. Den
+uppdaterar vid behov profilerna i `aggregate_profiles`, återanvänder deras
+kluster-snapshots och deduplicerar identiska händelsekluster innan en egen
+samlad Reduce-rapport genereras. Samlingsprofilen gör därför inga separata
+Map-LLM-anrop för kopior av barnprofilernas kluster.
+
+Ett samlingsjobb fan-out-kör barnprofilernas idempotenta klustring och Map. Ett
+fristående Map- eller Report-jobb gör först en billig klustringskontroll; Map
+anropar bara LLM för kluster med osammanfattade revisioner. Om en barnprofil
+inte kan uppdateras används dess senast tillgängliga snapshots. Rapporten sparas
+med `quality.completeness: partial`, varningen
+`aggregate_profile_update_failed` och felinformation per profil och fas.
+Direkt CLI-körning av `run_long_term_clustering.py` eller
+`run_long_term_map.py` med en samlingsprofil avvisas för att förhindra att en
+parallell uppsättning kluster och kostsamma Map-anrop skapas av misstag.
 
 Exemplet `all_profiles` finns i `config.yaml.dist`. Ange de aktiva profilernas
 ID i `aggregate_profiles` i den lokala `config.yaml`, och lägg jobben från
@@ -637,6 +665,34 @@ var sjätte timme och dagligen.
 Källunionen stöder profiler med `sources` och `categories`; om en ingående
 profil har `required_tags` stoppas körningen med ett tydligt fel, eftersom ett
 enkelt källurval inte kan återskapa den profilens taggvillkor.
+
+Från en klusterdetalj går det också att öppna ett taggnätverk. Nätverket är
+profilavgränsat. Uppåt kopplas ett kluster till existerande kluster vars
+taggmängder är strikta delmängder. Nästa nivå använder den största tillgängliga
+subset-storleken, så ett hopp kan ta bort flera taggar men alla kluster på samma
+nivå har lika många taggar. Nedåt används den exakta inversen av denna relation,
+så ett kluster som visar en viss förälder också visas som barn när nätverket
+öppnas från föräldern. Djupet kan ställas separat i båda riktningarna. Standarddjup,
+maxdjup, nodgräns och kandidatgräns styrs med `tag_network_*` under
+`long_term_analysis.ui`; både HTML-vyn och det versionerade API:t är tillgängliga
+i den skrivbara och den separata read-only-viewern.
+
+En eller flera taggar från basnoden kan ignoreras i vyn. De tas då bort från
+både basnoden och alla kandidaters taggmängder innan relationer och taggantal
+beräknas. API:t använder en upprepad frågeparameter, exempelvis
+`?exclude=ACTOR:example&exclude=REGION:europe`.
+
+Klusterdetaljen har även ett artikelnätverk som återanvänder klustrens bevarade
+artikelmedlemskap. Basklustret visas i centrum och andra kluster ordnas som ett
+kraftstyrt nätverk: alla visade klusterpar med artikelöverlappning förbinds,
+noderna stöter bort varandra och fler unika gemensamma artiklar ger starkare
+attraktion och kraftigare kant. Överlappningsandelen mot basklustret bestämmer
+radialavståndet monotont; lika andel ger samma avstånd, medan kopplingarna mellan
+grannkluster påverkar deras vinkel runt basen. Vyn kan filtreras på minsta
+procentuella överlappning och begränsas till de starkaste grannarna. Mot basen
+är nämnaren basklustrets artikelantal; mellan två grannkluster används den
+symmetriska Jaccard-andelen. API:t är
+`/api/v1/long-term/clusters/<cluster_id>/article-network`.
 
 ## Angreppstryck för CVE och TEF
 

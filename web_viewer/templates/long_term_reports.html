@@ -31,6 +31,7 @@
                 <h3 class="h5 mb-1">{{ format_ts(report.period_start_ts) }} – {{ format_ts(report.period_end_ts) }}</h3>
                 <p class="mb-2">{{ report.executive_summary or "Ingen sammanfattning tillgänglig." }}</p>
                 {% if loop.first %}<span class="badge text-bg-primary">Senaste</span>{% endif %}
+                {% if report.quality.get('completeness') == 'partial' %}<span class="badge text-bg-danger">Ofullständig</span>{% endif %}
                 <span class="badge text-bg-secondary">{{ report.input_snapshot_count }} snapshots</span>
                 <span class="badge text-bg-info">{{ report.forecast_count }} hypoteser</span>
                 {% for warning in report.quality.get('warning_codes', []) %}

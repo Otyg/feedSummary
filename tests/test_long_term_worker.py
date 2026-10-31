@@ -106,6 +106,74 @@ class LongTermWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, run_map.await_count)
         self.assertEqual(1, run_report.await_count)
 
+    async def test_aggregate_report_updates_children_and_marks_failures_partial(self):
+        store = _Store()
+        config = {
+            "long_term_analysis": {
+                "enabled": True,
+                "profiles": {
+                    "all_profiles": {
+                        "enabled": True,
+                        "aggregate_profiles": ["child_a", "child_b"],
+                    },
+                    "child_a": {"enabled": True},
+                    "child_b": {"enabled": True},
+                },
+            }
+        }
+        entry = {"type": "long_term_report", "profile": "all_profiles"}
+
+        def clustering(args, **_kwargs):
+            if args.profile == "child_a":
+                raise RuntimeError("clustering unavailable")
+            return {"profile_id": args.profile, "blocked_reason": None, "assignments": []}
+
+        async def report(*_args, aggregate_profile_failures, **_kwargs):
+            self.assertEqual(1, len(aggregate_profile_failures))
+            self.assertEqual("child_a", aggregate_profile_failures[0]["profile_id"])
+            self.assertEqual("clustering", aggregate_profile_failures[0]["stage"])
+            return {
+                "profile_id": "all_profiles",
+                "report_id": "aggregate-report",
+                "completeness": "partial",
+                "aggregate_profile_update_failures": aggregate_profile_failures,
+            }
+
+        with (
+            patch.object(
+                feedsum_worker,
+                "execute_long_term_clustering",
+                side_effect=clustering,
+            ) as run_clustering,
+            patch.object(
+                feedsum_worker,
+                "execute_long_term_map",
+                AsyncMock(return_value={"updates": []}),
+            ) as run_map,
+            patch.object(
+                feedsum_worker,
+                "execute_long_term_report",
+                AsyncMock(side_effect=report),
+            ) as run_report,
+        ):
+            outcome = await feedsum_worker._run_long_term_entry(
+                config_path="config.yaml",
+                cfg=config,
+                store=store,
+                job_id=17,
+                job_name="aggregate-report",
+                entry=entry,
+            )
+
+        self.assertEqual("aggregate-report", outcome["report_id"])
+        self.assertEqual(2, run_clustering.call_count)
+        self.assertEqual(2, run_map.await_count)
+        self.assertEqual(1, run_report.await_count)
+        run = store.runs[outcome["run_id"]]
+        self.assertEqual("done", run["status"])
+        self.assertIn("clustering_preflight", run["results"])
+        self.assertIn("map_preflight", run["results"])
+
     async def test_stage_failure_is_recorded_without_running_later_stages(self):
         store = _Store()
         with (

@@ -204,6 +204,11 @@ def execute_long_term_clustering(
     active_store = store
     try:
         long_term, profile = _profile_config(resolved_config, args.profile)
+        if profile.get("aggregate_profiles") is not None:
+            raise ValueError(
+                "Samlingsprofiler orkestreras via worker-jobb och ska inte "
+                "klustras som en separat profil"
+            )
         if profile.get("clustering_enabled") is False:
             raise ValueError(f"Långtidsklustring är avstängd för arkivprofilen: {args.profile}")
         if not args.dry_run and not long_term.get("enabled", False):

@@ -89,6 +89,42 @@ class LongTermMapCliTests(unittest.TestCase):
 
 
 class LongTermMapExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_direct_aggregate_map_is_rejected_before_llm_creation(self):
+        config = {
+            "llm": {"provider": "ollama_local"},
+            "long_term_analysis": {
+                "enabled": True,
+                "profiles": {
+                    "all_profiles": {
+                        "enabled": True,
+                        "aggregate_profiles": ["child"],
+                    },
+                    "child": {"enabled": True},
+                },
+            },
+        }
+        args = argparse.Namespace(
+            config=None,
+            profile="all_profiles",
+            cluster=None,
+            limit=1,
+            force=False,
+            dry_run=True,
+            owner_id="worker",
+        )
+
+        with (
+            patch("run_long_term_map.create_llm_client") as create_client,
+            self.assertRaisesRegex(ValueError, "barnprofilernas Map-snapshots"),
+        ):
+            await execute_long_term_map(
+                args,
+                config_path=Path("/tmp/config.yaml"),
+                config=config,
+                store=object(),
+            )
+        create_client.assert_not_called()
+
     async def test_force_scans_past_current_clusters_before_applying_limit(self):
         class Store:
             def __init__(self):

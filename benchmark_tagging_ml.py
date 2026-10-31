@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Benchmark lightweight multilabel classifiers on article tags in MongoDB.
+"""Benchmark the configured ML tagger against Naive Bayes on MongoDB tags.
 
-This command is deliberately independent from the production tagging pipeline.
-It reads existing articles and tag assignments, compares established
-scikit-learn algorithms on identical chronological splits, and writes a report
-that can be used to choose an implementation later.
+The default benchmark mirrors the estimator settings from ``tagging.ml``, adds
+ORGANIZATION to its category set when missing, and compares the configured
+classifier with two Naive Bayes variants on an identical chronological split.
+CLI overrides can still be used for broader experiments. No production model
+is changed or written by this command.
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 import yaml
 
+from feedsummary_core.llm_client import get_local_embedding_model
 from feedsummary_core.persistence import MongoDBStore, create_store
+from feedsummary_core.tagging_ml.embedding_sgd import EmbeddingClassifierSettings
 
 
 log = logging.getLogger("tagging_ml_benchmark")
@@ -43,6 +46,13 @@ DEFAULT_REPRESENTATIONS: Tuple[str, ...] = (
     "embedding",
     "hybrid",
 )
+DEFAULT_NAIVE_BAYES_ALGORITHMS: Tuple[str, ...] = (
+    "multinomial_nb",
+    "complement_nb",
+)
+ADDITIONAL_BENCHMARK_CATEGORIES: Tuple[str, ...] = (
+    "ORGANIZATION",
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +63,7 @@ class ArticleExample:
     labels: Tuple[str, ...]
     embedding: Optional[Tuple[float, ...]] = None
     embedding_model: str = ""
+    ml_generated_labels: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -60,6 +71,37 @@ class Candidate:
     name: str
     factory: Callable[[int, int], Any]
     requires_nonnegative: bool = False
+
+
+@dataclass(frozen=True)
+class ConfiguredBenchmarkSetup:
+    """Production ML values relevant to a read-only benchmark."""
+
+    settings: EmbeddingClassifierSettings
+    representation: str
+
+
+def _configured_benchmark_setup(config: Dict[str, Any]) -> ConfiguredBenchmarkSetup:
+    """Resolve the production tagger setup, including inherited embedding model."""
+    settings = EmbeddingClassifierSettings.from_config(
+        config,
+        embedding_model=get_local_embedding_model(config),
+    )
+    if not settings.algorithm:
+        raise ValueError("tagging.ml.classifier måste anges för benchmarken")
+    if not settings.categories:
+        raise ValueError("tagging.ml.categories måste innehålla minst en kategori")
+
+    tagging = config.get("tagging") if isinstance(config.get("tagging"), dict) else {}
+    raw_ml = tagging.get("ml") if isinstance(tagging.get("ml"), dict) else {}
+    representation = str(raw_ml.get("representation") or "embedding").strip().lower()
+    if representation == "embeddings":
+        representation = "embedding"
+    if representation not in DEFAULT_REPRESENTATIONS:
+        raise ValueError(
+            "Okänd tagging.ml.representation för benchmarken: " + representation
+        )
+    return ConfiguredBenchmarkSetup(settings=settings, representation=representation)
 
 
 def _resolve_config_path(raw_path: Optional[str]) -> Path:
@@ -91,6 +133,13 @@ def _article_text(article: Dict[str, Any], max_chars: int) -> str:
     return text[:max_chars] if max_chars > 0 else text
 
 
+def _is_ml_generated_relation(reasoning: Any) -> bool:
+    """Recognize provenance written by EmbeddingClassifierTagger."""
+    return str(reasoning or "").strip().casefold().startswith(
+        "predicted by embedding "
+    )
+
+
 def _safe_timestamp(article: Dict[str, Any]) -> int:
     for key in ("published_ts", "_mongo_sort_ts", "fetched_at", "created_at"):
         value = article.get(key)
@@ -118,7 +167,7 @@ def load_mongodb_examples(
         )
     )
     tag_names = {
-        int(tag["_id"]): str(tag.get("name") or "").strip()
+        int(tag["_id"]): str(tag.get("name") or "").strip().casefold()
         for tag in tags
         if str(tag.get("name") or "").strip()
     }
@@ -128,13 +177,17 @@ def load_mongodb_examples(
         )
 
     labels_by_article: Dict[str, set[str]] = {}
+    ml_generated_labels_by_article: Dict[str, set[str]] = {}
     for relation in store.db.article_tags.find(
-        {"tag_id": {"$in": list(tag_names)}}, {"article_id": 1, "tag_id": 1}
+        {"tag_id": {"$in": list(tag_names)}},
+        {"article_id": 1, "tag_id": 1, "motivering": 1},
     ):
         name = tag_names.get(int(relation.get("tag_id") or 0))
         article_id = str(relation.get("article_id") or "").strip()
         if name and article_id:
             labels_by_article.setdefault(article_id, set()).add(name)
+            if _is_ml_generated_relation(relation.get("motivering")):
+                ml_generated_labels_by_article.setdefault(article_id, set()).add(name)
 
     cursor = store.db.articles.find(
         {},
@@ -185,6 +238,9 @@ def load_mongodb_examples(
                 labels=tuple(sorted(labels_by_article.get(article_id, set()))),
                 embedding=embedding,
                 embedding_model=str(article.get("tagging_embedding_model") or ""),
+                ml_generated_labels=tuple(
+                    sorted(ml_generated_labels_by_article.get(article_id, set()))
+                ),
             )
         )
 
@@ -194,6 +250,9 @@ def load_mongodb_examples(
         "articles_with_target_labels": sum(bool(item.labels) for item in examples),
         "target_tags": len(tag_names),
         "target_relations": sum(len(item.labels) for item in examples),
+        "ml_generated_target_relations": sum(
+            len(item.ml_generated_labels) for item in examples
+        ),
         "skipped_empty_articles": skipped_empty,
         "categories": [
             category
@@ -258,6 +317,9 @@ def _select_common_embedding_examples(
         "articles": len(selected),
         "articles_with_target_labels": sum(bool(item.labels) for item in selected),
         "target_relations": sum(len(item.labels) for item in selected),
+        "ml_generated_target_relations": sum(
+            len(item.ml_generated_labels) for item in selected
+        ),
         "articles_with_embeddings": len(selected),
     }
     return selected, selected_metadata, embedding_metadata
@@ -314,14 +376,18 @@ def eligible_labels(
     return included, excluded
 
 
-def _candidate_factories() -> Dict[str, Candidate]:
+def _candidate_factories(
+    configured_settings: Optional[EmbeddingClassifierSettings] = None,
+    *,
+    naive_bayes_alpha: float = 0.5,
+) -> Dict[str, Candidate]:
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.linear_model import LogisticRegression, SGDClassifier
     from sklearn.naive_bayes import ComplementNB, MultinomialNB
     from sklearn.neighbors import KNeighborsClassifier
     from sklearn.svm import LinearSVC
 
-    return {
+    candidates = {
         "logistic_regression": Candidate(
             "logistic_regression",
             lambda seed, jobs: LogisticRegression(
@@ -336,11 +402,13 @@ def _candidate_factories() -> Dict[str, Candidate]:
             ),
         ),
         "multinomial_nb": Candidate(
-            "multinomial_nb", lambda seed, jobs: MultinomialNB(alpha=0.5),
+            "multinomial_nb",
+            lambda seed, jobs: MultinomialNB(alpha=naive_bayes_alpha),
             requires_nonnegative=True,
         ),
         "complement_nb": Candidate(
-            "complement_nb", lambda seed, jobs: ComplementNB(alpha=0.5),
+            "complement_nb",
+            lambda seed, jobs: ComplementNB(alpha=naive_bayes_alpha),
             requires_nonnegative=True,
         ),
         "knn": Candidate(
@@ -362,6 +430,35 @@ def _candidate_factories() -> Dict[str, Candidate]:
             lambda seed, jobs: LinearSVC(class_weight="balanced", random_state=seed),
         ),
     }
+
+    # The baseline must use the same estimator parameters as production rather
+    # than the generic values used by ad-hoc benchmark candidates.
+    if configured_settings is not None:
+        settings = configured_settings
+        if settings.algorithm == "logistic_regression":
+            candidates[settings.algorithm] = Candidate(
+                settings.algorithm,
+                lambda seed, jobs: LogisticRegression(
+                    C=settings.regularization_c,
+                    class_weight="balanced",
+                    max_iter=settings.max_iter,
+                    tol=settings.tolerance,
+                    random_state=seed,
+                ),
+            )
+        elif settings.algorithm == "sgd":
+            candidates[settings.algorithm] = Candidate(
+                settings.algorithm,
+                lambda seed, jobs: SGDClassifier(
+                    loss="log_loss",
+                    alpha=settings.alpha,
+                    class_weight="balanced",
+                    max_iter=settings.max_iter,
+                    tol=settings.tolerance,
+                    random_state=seed,
+                ),
+            )
+    return candidates
 
 
 def _vectorizer(name: str, max_features: int) -> Any:
@@ -778,11 +875,30 @@ def _combination_comparison(
 
 
 def _markdown_report(report: Dict[str, Any]) -> str:
+    configured_ml = (report.get("config") or {}).get("configured_ml") or {}
     lines = [
         "# Benchmark: lättvikts-ML för artikeltaggar",
         "",
         f"Skapad: {report['created_at']}",
     ]
+    if configured_ml:
+        lines.extend(
+            [
+                "",
+                "## Jämförelse från config.yaml",
+                "",
+                "Konfigurerad baslinje: "
+                f"`{configured_ml['classifier']}` med "
+                f"`{configured_ml['representation']}`. Produktionskategorier: "
+                + ", ".join(configured_ml["categories"])
+                + ".",
+                "Benchmarkkategorier: "
+                + ", ".join((report.get("config") or {}).get("categories") or [])
+                + ".",
+                "Alla kandidater använder samma kategoriurval, artiklar och "
+                "kronologiska datasplit.",
+            ]
+        )
     comparison = report.get("combination_comparison") or {}
     comparison_entries = comparison.get("entries") or []
     if comparison_entries:
@@ -830,6 +946,17 @@ def _markdown_report(report: Dict[str, Any]) -> str:
                 f"{dataset['validation_articles']}, test {dataset['test_articles']}); "
                 f"utvärderade taggar: {len(dataset['evaluated_labels'])}."
             )
+            ml_generated_relations = int(
+                dataset.get("ml_generated_target_relations") or 0
+            )
+            target_relations = int(dataset.get("target_relations") or 0)
+            if ml_generated_relations:
+                lines.append(
+                    "⚠ Facit innehåller "
+                    f"{ml_generated_relations} av {target_relations} taggkopplingar "
+                    "som skapats av en tidigare embedding-ML-modell. Resultatet är "
+                    "därför inte en oberoende jämförelse för detta kategoriomfång."
+                )
             if suite.get("embedding"):
                 embedding = suite["embedding"]
                 lines.append(
@@ -906,6 +1033,29 @@ def _merge_categories(
     return merged
 
 
+def _configured_algorithm_names(
+    configured_algorithm: str, requested: Optional[str]
+) -> List[str]:
+    """Use the production classifier and both NB variants unless overridden."""
+    if requested is not None:
+        return list(dict.fromkeys(_parse_names(requested)))
+    return list(
+        dict.fromkeys((configured_algorithm, *DEFAULT_NAIVE_BAYES_ALGORITHMS))
+    )
+
+
+def _benchmark_categories(
+    configured_categories: Sequence[str], requested: Optional[str]
+) -> List[str]:
+    """Add independent comparison categories unless the CLI replaces the set."""
+    selected = (
+        _parse_names(requested)
+        if requested is not None
+        else [*configured_categories, *ADDITIONAL_BENCHMARK_CATEGORIES]
+    )
+    return _merge_categories((), selected)
+
+
 def _category_scopes(
     categories: Sequence[str], base_category: str = "DOMAIN_ENTITY"
 ) -> List[Tuple[str, List[str]]]:
@@ -921,38 +1071,64 @@ def _category_scopes(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Benchmarka scikit-learn-algoritmer mot befintliga MongoDB-taggar."
+        description=(
+            "Benchmarka den konfigurerade ML-taggningen mot Naive Bayes på "
+            "befintliga MongoDB-taggar."
+        )
     )
     parser.add_argument("--config", default=None, help="Sökväg till config.yaml")
     parser.add_argument("--output-dir", default="benchmark_results/tagging_ml")
     parser.add_argument(
         "--categories",
-        default="",
+        default=None,
         help=(
-            "Kommaseparerade kategorier som läggs till efter DEFAULT_CATEGORIES; "
-            "standardkategorierna körs alltid."
+            "Kommaseparerade kategorier som ersätter standardurvalet; standard är "
+            "tagging.ml.categories samt ORGANIZATION."
+        ),
+    )
+    parser.add_argument(
+        "--category-scopes",
+        choices=("configured", "categories", "detailed"),
+        default="categories",
+        help=(
+            "configured kör kategorierna tillsammans; categories lägger även "
+            "till varje kategori separat; detailed lägger dessutom till parvisa "
+            "kategoriomfång."
         ),
     )
     parser.add_argument(
         "--combination-base-category",
-        default="DOMAIN_ENTITY",
+        default=None,
         help=(
             "Kategori som jämförs ensam och parvis med övriga kategorier "
-            "(standard: DOMAIN_ENTITY)."
+            "(standard: DOMAIN_ENTITY om den är konfigurerad, annars första kategorin)."
         ),
     )
-    parser.add_argument("--algorithms", default=_format_default_names(_candidate_factories()))
+    parser.add_argument(
+        "--algorithms",
+        default=None,
+        help=(
+            "Kommaseparerade algoritmer; standard är konfigurerad klassificerare "
+            "samt multinomial_nb och complement_nb."
+        ),
+    )
     parser.add_argument(
         "--representations",
         "--vectorizers",
         dest="representations",
-        default=_format_default_names(DEFAULT_REPRESENTATIONS),
-        help="tfidf, hashing, embedding och/eller hybrid",
+        default=None,
+        help=(
+            "tfidf, hashing, embedding och/eller hybrid; standard är "
+            "tagging.ml.representation."
+        ),
     )
     parser.add_argument(
         "--embedding-model",
         default=None,
-        help="Kräv en viss sparad embeddingmodell; annars väljs den vanligaste.",
+        help=(
+            "Kräv en viss sparad embeddingmodell; standard är modellen från "
+            "tagging.ml eller den lokala embedding-konfigurationen."
+        ),
     )
     parser.add_argument(
         "--embedding-weight",
@@ -960,16 +1136,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Vikt för embeddingdelen i hybridrepresentationen.",
     )
+    parser.add_argument(
+        "--naive-bayes-alpha",
+        type=float,
+        default=0.5,
+        help="Additiv utjämning för båda Naive Bayes-varianterna.",
+    )
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--test-fraction", type=float, default=0.2)
-    parser.add_argument("--min-label-support", type=int, default=3)
+    parser.add_argument(
+        "--min-label-support",
+        type=int,
+        default=None,
+        help="Standard är tagging.ml.min_label_support.",
+    )
     parser.add_argument("--min-precision", type=float, default=0.90)
     parser.add_argument("--max-train-seconds", type=float, default=10.0)
     parser.add_argument("--max-features", type=int, default=32768)
     parser.add_argument("--max-article-chars", type=int, default=10000)
     parser.add_argument("--max-articles", type=int, default=None)
     parser.add_argument("--jobs", type=int, default=1)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Standard är tagging.ml.random_state."
+    )
     parser.add_argument("--verbose", action="store_true")
     return parser
 
@@ -1023,18 +1212,29 @@ def _run_representation(
             }
         results.append(result)
 
+    dataset = {
+        **base_metadata,
+        "articles": len(selected_examples),
+        "train_articles": len(train),
+        "validation_articles": len(validation),
+        "test_articles": len(test),
+        "evaluated_labels": labels,
+        "excluded_labels": excluded_labels,
+    }
+    ml_generated_relations = int(dataset.get("ml_generated_target_relations") or 0)
+    dataset["contains_detected_ml_generated_labels"] = bool(
+        ml_generated_relations
+    )
+    if ml_generated_relations:
+        dataset["ground_truth_warning"] = (
+            "Stored labels include predictions from an embedding ML model; "
+            "this scope is not an independent evaluation set."
+        )
+
     suite = {
         "representation": representation,
         "status": "ok",
-        "dataset": {
-            **base_metadata,
-            "articles": len(selected_examples),
-            "train_articles": len(train),
-            "validation_articles": len(validation),
-            "test_articles": len(test),
-            "evaluated_labels": labels,
-            "excluded_labels": excluded_labels,
-        },
+        "dataset": dataset,
         "results": results,
         "recommendation": select_recommendation(
             results,
@@ -1054,6 +1254,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     config_path = _resolve_config_path(args.config)
     config = _load_config(config_path)
+    configured_setup = _configured_benchmark_setup(config)
+    configured_settings = configured_setup.settings
     store_config = config.get("store") or {}
     if str(store_config.get("provider") or "").lower() not in ("mongo", "mongodb"):
         raise ValueError("Benchmarken kräver att store.provider är mongodb")
@@ -1062,12 +1264,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not isinstance(store, MongoDBStore):
         raise TypeError("Den konfigurerade storen är inte MongoDBStore")
 
-    candidates = _candidate_factories()
-    algorithm_names = _parse_names(args.algorithms)
+    if args.naive_bayes_alpha <= 0:
+        raise ValueError("--naive-bayes-alpha måste vara större än noll")
+    candidates = _candidate_factories(
+        configured_settings,
+        naive_bayes_alpha=args.naive_bayes_alpha,
+    )
+    algorithm_names = _configured_algorithm_names(
+        configured_settings.algorithm, args.algorithms
+    )
+    if not algorithm_names:
+        raise ValueError("Minst en algoritm måste anges")
     unknown_algorithms = sorted(set(algorithm_names) - set(candidates))
     if unknown_algorithms:
         raise ValueError("Okända algoritmer: " + ", ".join(unknown_algorithms))
-    representations = _parse_names(args.representations)
+    representations = (
+        _parse_names(args.representations)
+        if args.representations is not None
+        else [configured_setup.representation]
+    )
+    if not representations:
+        raise ValueError("Minst en feature-representation måste anges")
     unknown_representations = sorted(
         set(representations) - set(DEFAULT_REPRESENTATIONS)
     )
@@ -1078,9 +1295,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.embedding_weight <= 0:
         raise ValueError("--embedding-weight måste vara större än noll")
 
-    manual_categories = _parse_names(args.categories)
-    categories = _merge_categories(DEFAULT_CATEGORIES, manual_categories)
-    combination_base_category = str(args.combination_base_category).strip().upper()
+    configured_categories = list(configured_settings.categories)
+    requested_categories = _parse_names(args.categories) if args.categories else []
+    categories = _benchmark_categories(configured_categories, args.categories)
+    if not categories:
+        raise ValueError("Minst en benchmarkkategori måste anges")
+    args.embedding_model = (
+        args.embedding_model
+        if args.embedding_model is not None
+        else (configured_settings.embedding_model or None)
+    )
+    args.min_label_support = (
+        args.min_label_support
+        if args.min_label_support is not None
+        else configured_settings.min_label_support
+    )
+    args.seed = args.seed if args.seed is not None else configured_settings.random_state
+    combination_base_category = str(
+        args.combination_base_category
+        or ("DOMAIN_ENTITY" if "DOMAIN_ENTITY" in categories else categories[0])
+    ).strip().upper()
     if not combination_base_category:
         raise ValueError("--combination-base-category får inte vara tom")
     if combination_base_category not in categories:
@@ -1090,9 +1324,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     benchmarks: List[Dict[str, Any]] = []
     any_success = False
-    for scope_name, scope_categories in _category_scopes(
-        categories, combination_base_category
-    ):
+    if args.category_scopes == "detailed":
+        category_scopes = _category_scopes(categories, combination_base_category)
+    elif args.category_scopes == "categories":
+        category_scopes = [("Alla kategorier", categories)] + [
+            (f"Kategori {category}", [category]) for category in categories
+        ]
+    else:
+        category_scopes = [("Konfigurerade kategorier", categories)]
+    for scope_name, scope_categories in category_scopes:
         log.info("Benchmarkomfång: %s", ", ".join(scope_categories))
         try:
             examples, dataset_metadata = load_mongodb_examples(
@@ -1159,7 +1399,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     import sklearn
 
     report = {
-        "schema_version": 3,
+        "schema_version": 5,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "runtime": {
             "python": sys.version.split()[0],
@@ -1168,14 +1408,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "numpy": numpy.__version__,
         },
         "config": {
-            "default_categories": list(DEFAULT_CATEGORIES),
-            "manually_added_categories": manual_categories,
+            "source_path": str(config_path),
+            "configured_ml": {
+                "enabled": configured_settings.enabled,
+                "classifier": configured_settings.algorithm,
+                "representation": configured_setup.representation,
+                "categories": configured_categories,
+                "embedding_model": configured_settings.embedding_model,
+                "min_label_support": configured_settings.min_label_support,
+                "min_training_articles": configured_settings.min_training_articles,
+                "max_tags_per_article": configured_settings.max_tags_per_article,
+                "threshold": configured_settings.threshold,
+                "regularization_c": configured_settings.regularization_c,
+                "alpha": configured_settings.alpha,
+                "max_iter": configured_settings.max_iter,
+                "tolerance": configured_settings.tolerance,
+                "random_state": configured_settings.random_state,
+            },
+            "category_source": (
+                "cli"
+                if args.categories is not None
+                else "tagging.ml.categories + benchmark additions"
+            ),
+            "additional_default_categories": list(ADDITIONAL_BENCHMARK_CATEGORIES),
+            "requested_categories": requested_categories,
             "categories": categories,
+            "category_scopes": args.category_scopes,
             "combination_base_category": combination_base_category,
             "algorithms": algorithm_names,
             "representations": representations,
             "embedding_model": args.embedding_model,
             "embedding_weight": args.embedding_weight,
+            "naive_bayes_alpha": args.naive_bayes_alpha,
             "validation_fraction": args.validation_fraction,
             "test_fraction": args.test_fraction,
             "min_label_support": args.min_label_support,

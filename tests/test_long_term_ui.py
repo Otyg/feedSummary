@@ -431,10 +431,14 @@ class LongTermUiTests(unittest.TestCase):
             "/api/v1/long-term/snapshots/snapshot-1",
             "/api/v1/long-term/clusters",
             "/api/v1/long-term/clusters/cluster-1",
+            "/api/v1/long-term/clusters/cluster-1/tag-network",
+            "/api/v1/long-term/clusters/cluster-1/article-network",
             "/api/v1/long-term/reviews/cluster-review",
             "/long-term/snapshot/snapshot-1",
             "/long-term/review/cluster-review",
             "/long-term/cluster/cluster-1",
+            "/long-term/cluster/cluster-1/tag-network",
+            "/long-term/cluster/cluster-1/article-network",
         ):
             with self.subTest(path=path):
                 self.assertEqual(404, self.client.get(path).status_code)
@@ -495,6 +499,40 @@ class LongTermUiTests(unittest.TestCase):
         self.assertIn("Senaste pipelinekörningar", html)
         self.assertIn("long_term_pipeline", html)
         self.assertIn("model unavailable", html)
+
+    def test_partial_aggregate_report_shows_failed_profile_updates(self):
+        report = self.store.reports[0]
+        report["profile_id"] = "all_profiles"
+        report["quality"] = {
+            "validation": "passed",
+            "completeness": "partial",
+            "warning_codes": ["aggregate_profile_update_failed"],
+            "aggregate_profile_update_failures": [
+                {
+                    "profile_id": "healthcare_europe",
+                    "stage": "map",
+                    "error_type": "RuntimeError",
+                    "error": "provider unavailable",
+                    "last_successful_update_at": 1_900_000,
+                }
+            ],
+        }
+        webapp_viewer.APP_CFG["long_term_analysis"]["profiles"]["all_profiles"] = {
+            "enabled": True,
+            "display_name": "Samlad analys",
+            "aggregate_profiles": ["healthcare_europe"],
+        }
+
+        list_response = self.client.get("/long-term?profile=all_profiles")
+        detail_response = self.client.get("/long-term/report/report-2")
+
+        self.assertEqual(200, list_response.status_code)
+        self.assertIn("Ofullständig", list_response.get_data(as_text=True))
+        self.assertEqual(200, detail_response.status_code)
+        detail_html = detail_response.get_data(as_text=True)
+        self.assertIn("OFULLSTÄNDIG", detail_html)
+        self.assertIn("Profiluppdateringar misslyckades", detail_html)
+        self.assertIn("provider unavailable", detail_html)
 
     def test_default_pages_show_each_profile_without_dropdown(self):
         profiles = webapp_viewer.APP_CFG["long_term_analysis"]["profiles"]
@@ -737,6 +775,88 @@ class LongTermUiTests(unittest.TestCase):
         self.assertIn("MALWARE", html)
         self.assertIn("/long-term/cluster/cluster-2", html)
 
+    def test_cluster_article_network_weights_neighbors_by_shared_articles(self):
+        self.store.other_membership["article_id"] = "article-1"
+        shared_cluster = {
+            **self.store.other_cluster,
+            "id": "cluster-shared-two",
+            "status": "closed",
+            "strong_indicators": ["organization:shared-two"],
+        }
+        self.store.extra_clusters.append(shared_cluster)
+        self.store.extra_memberships.extend(
+            [
+                {
+                    **self.store.memberships[0],
+                    "cluster_id": "cluster-shared-two",
+                },
+                {
+                    **self.store.memberships[1],
+                    "cluster_id": "cluster-shared-two",
+                },
+            ]
+        )
+
+        response = self.client.get(
+            "/api/v1/long-term/clusters/cluster-1/article-network"
+        )
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual(1, payload["schema_version"])
+        self.assertEqual("cluster-1", payload["base_cluster_id"])
+        self.assertEqual(2, payload["base_article_count"])
+        self.assertEqual(
+            ["cluster-shared-two", "cluster-2"],
+            [relation["id"] for relation in payload["relations"]],
+        )
+        self.assertEqual(
+            [2, 1],
+            [relation["shared_article_count"] for relation in payload["relations"]],
+        )
+        self.assertEqual(
+            {"article-1", "article-expired"},
+            set(payload["edges"][0]["shared_article_ids"]),
+        )
+        self.assertIn(
+            ("cluster-shared-two", "cluster-2", 1),
+            {
+                (edge["source"], edge["target"], edge["shared_article_count"])
+                for edge in payload["edges"]
+            },
+        )
+        lateral_edge = next(
+            edge for edge in payload["edges"] if not edge["connects_base"]
+        )
+        self.assertEqual(50.0, lateral_edge["overlap_percent"])
+        self.assertEqual("jaccard", lateral_edge["overlap_basis"])
+
+        filtered = self.client.get(
+            "/api/v1/long-term/clusters/cluster-1/article-network?min_overlap=75"
+        )
+        self.assertEqual(
+            ["cluster-shared-two"],
+            [relation["id"] for relation in filtered.get_json()["relations"]],
+        )
+
+        page = self.client.get(
+            "/long-term/cluster/cluster-1/article-network?min_overlap=1"
+        )
+        self.assertEqual(200, page.status_code)
+        html = page.get_data(as_text=True)
+        self.assertIn("Kraftstyrt artikelnätverk", html)
+        self.assertIn("Minst överlappning (%)", html)
+        self.assertIn("3 kopplingar", html)
+        self.assertIn("stöter bort varandra", html)
+        self.assertIn("resolveAngularOverlaps", html)
+        self.assertIn("const radius = minimumRadius + (1 - overlap) * radialSpan", html)
+        self.assertIn("2 gemensamma", html)
+        self.assertIn("Bortgallrad artikel", html)
+        self.assertIn("Stängt", html)
+
+        detail = self.client.get("/long-term/cluster/cluster-1")
+        self.assertIn("Visa artikelnätverk", detail.get_data(as_text=True))
+
     def test_article_page_lists_all_cluster_memberships(self):
         self.store.other_membership["article_id"] = "article-1"
         self.store.get_article = lambda article_id: {
@@ -939,6 +1059,108 @@ class LongTermUiTests(unittest.TestCase):
         )
         self.assertEqual("cluster-2", payload["comparison_candidates"][0]["id"])
         self.assertIn("similarity", payload["comparison_candidates"][0])
+
+    def test_cluster_tag_network_api_and_page_follow_exact_tag_steps(self):
+        self.store.cluster["tag_scope"] = (
+            "SECTOR:healthcare|REGION:europe|ACTOR:example"
+        )
+        related = [
+            ("cluster-up-1", "SECTOR:healthcare|REGION:europe"),
+            ("cluster-up-2", "SECTOR:healthcare"),
+            (
+                "cluster-down-1",
+                "SECTOR:healthcare|REGION:europe|ACTOR:example|MALWARE:test",
+            ),
+            (
+                "cluster-down-2",
+                "SECTOR:healthcare|REGION:europe|ACTOR:example|MALWARE:test|CAMPAIGN:q1",
+            ),
+            ("cluster-unrelated", "SECTOR:healthcare|MALWARE:test"),
+        ]
+        for index, (cluster_id, tag_scope) in enumerate(related):
+            self.store.extra_clusters.append(
+                {
+                    **self.store.other_cluster,
+                    "id": cluster_id,
+                    "status": "closed" if cluster_id == "cluster-up-2" else "active",
+                    "tag_scope": tag_scope,
+                    "last_seen_ts": 1_700_000 - index,
+                    "strong_indicators": [f"organization:{cluster_id}"],
+                }
+            )
+
+        response = self.client.get(
+            "/api/v1/long-term/clusters/cluster-1/tag-network?up=2&down=1"
+        )
+
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual(1, payload["schema_version"])
+        self.assertEqual("cluster-1", payload["base_cluster_id"])
+        self.assertEqual(
+            {
+                "cluster-1": 0,
+                "cluster-up-1": -1,
+                "cluster-up-2": -2,
+                "cluster-down-1": 1,
+            },
+            {
+                node["id"]: node["level"]
+                for node in payload["nodes"]
+            },
+        )
+        self.assertEqual(3, len(payload["edges"]))
+        self.assertNotIn(
+            "cluster-unrelated", {node["id"] for node in payload["nodes"]}
+        )
+        self.assertFalse(self.store.cluster_list_calls[-1]["include_vectors"])
+
+        excluded_response = self.client.get(
+            "/api/v1/long-term/clusters/cluster-1/tag-network",
+            query_string={"up": 2, "down": 2, "exclude": "ACTOR:example"},
+        )
+        self.assertEqual(200, excluded_response.status_code)
+        excluded_payload = excluded_response.get_json()
+        self.assertEqual(["ACTOR:example"], excluded_payload["excluded_tags"])
+        self.assertEqual(2, next(
+            node["tag_count"]
+            for node in excluded_payload["nodes"]
+            if node["is_base"]
+        ))
+        self.assertEqual(
+            {
+                "cluster-1": 0,
+                "cluster-up-2": -1,
+                "cluster-down-1": 1,
+                "cluster-down-2": 2,
+            },
+            {node["id"]: node["level"] for node in excluded_payload["nodes"]},
+        )
+
+        page = self.client.get(
+            "/long-term/cluster/cluster-1/tag-network?up=1&down=2&exclude=ACTOR:example"
+        )
+        self.assertEqual(200, page.status_code)
+        html = page.get_data(as_text=True)
+        self.assertIn("Tagghierarki", html)
+        self.assertIn("Nivåer uppåt", html)
+        self.assertIn("cluster-down-2", html)
+        self.assertIn("strikta delmängder", html)
+        self.assertIn("Stängt", html)
+        self.assertIn("tag-network-node--closed", html)
+        self.assertIn("Ignorera taggar från basnoden", html)
+        self.assertIn("Basklustret räknas som 2 taggar", html)
+
+        cluster_page = self.client.get("/long-term/cluster/cluster-1")
+        self.assertIn("Visa taggnätverk", cluster_page.get_data(as_text=True))
+
+    def test_cluster_tag_network_rejects_out_of_range_depth(self):
+        response = self.client.get(
+            "/api/v1/long-term/clusters/cluster-1/tag-network?up=99"
+        )
+
+        self.assertEqual(400, response.status_code)
+        self.assertEqual("invalid_query", response.get_json()["error"])
 
     def test_cluster_page_shows_comparison_and_merge_controls(self):
         webapp_viewer.APP_CFG["long_term_analysis"]["enabled"] = True

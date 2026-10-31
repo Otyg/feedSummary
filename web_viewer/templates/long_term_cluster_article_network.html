@@ -1,0 +1,384 @@
+{% extends "base.html" %}
+{% block body %}
+<style>
+  .article-network-canvas { min-height: 38rem; overflow: auto; background: radial-gradient(circle at center, #fff 0, #f8f9fa 72%); }
+  .article-network-svg { display: block; margin: 0 auto; max-width: none; }
+  .article-network-edge { stroke: #86a7c8; }
+  .article-network-edge-label { fill: #495057; font-size: 12px; font-weight: 600; paint-order: stroke; stroke: #fff; stroke-width: 4px; }
+  .article-network-node rect { fill: #fff; stroke: #5c7c9d; stroke-width: 1.5; rx: 12; }
+  .article-network-node:hover rect, .article-network-node:focus rect { fill: #eef5ff; stroke: #0d6efd; stroke-width: 2.5; }
+  .article-network-node text { fill: #212529; pointer-events: none; }
+  .article-network-node--base rect { fill: #fff3cd; stroke: #b58105; stroke-width: 3; }
+  .article-network-node--closed rect { fill: #e9ecef; stroke: #adb5bd; }
+  .article-network-node--closed text { fill: #6c757d; }
+  .article-network-node--closed:hover rect, .article-network-node--closed:focus rect { fill: #dee2e6; stroke: #495057; }
+</style>
+<div class="container-fluid pb-5">
+  <a href="{{ url_for('view_long_term_cluster', cluster_id=graph.base_cluster_id) }}" class="small">← Till klustret</a>
+  <div class="mt-2 mb-3">
+    <div class="small text-muted">Artikelnätverk · <code>{{ graph.profile_id }}</code></div>
+    <h1 class="h2 mb-1">{{ base_node.label }}</h1>
+    <p class="text-muted mb-0">Basklustret ligger i centrum. Överlappningsandelen låser avståndet till basen: samma andel ger samma radie och högre andel ligger närmare. Noderna stöter bort varandra, medan gemensamma artiklar mellan grannkluster påverkar deras vinkel runt basen.</p>
+  </div>
+
+  <form class="card card-body mb-3" method="get">
+    <div class="row g-3 align-items-end">
+      <div class="col-6 col-md-3">
+        <label class="form-label" for="min_overlap">Minst överlappning (%)</label>
+        <input class="form-control" id="min_overlap" name="min_overlap" type="number" min="0" max="100" step="1" value="{{ '%g'|format(graph.min_overlap_percent) }}">
+      </div>
+      <div class="col-6 col-md-3">
+        <label class="form-label" for="max_neighbors">Maximalt antal grannar</label>
+        <input class="form-control" id="max_neighbors" name="max_neighbors" type="number" min="1" max="{{ max_neighbors_limit }}" value="{{ graph.max_neighbors }}">
+      </div>
+      <div class="col-12 col-md-auto"><button class="btn btn-primary" type="submit">Uppdatera nätverket</button></div>
+      <div class="col-12 col-md-auto ms-md-auto d-flex gap-2">
+        <button class="btn btn-sm btn-outline-secondary" id="zoom-out" type="button" aria-label="Zooma ut">−</button>
+        <button class="btn btn-sm btn-outline-secondary" id="zoom-reset" type="button">100 %</button>
+        <button class="btn btn-sm btn-outline-secondary" id="zoom-in" type="button" aria-label="Zooma in">+</button>
+      </div>
+    </div>
+  </form>
+
+  {% if graph.memberships_truncated %}
+    <div class="alert alert-warning">Medlemskapen begränsades för {{ graph.membership_truncated_cluster_ids|length }} kluster. Vissa överlappningar kan därför vara underskattade.</div>
+  {% endif %}
+  {% if graph.neighbors_truncated %}
+    <div class="alert alert-warning">{{ graph.neighbor_count }} grannkluster matchade filtret; endast de {{ graph.relations|length }} starkaste visas.</div>
+  {% endif %}
+
+  <section class="card mb-4" aria-labelledby="article-network-heading">
+    <div class="card-header d-flex flex-wrap justify-content-between gap-2">
+      <strong id="article-network-heading">Kraftstyrt artikelnätverk</strong>
+      <span class="small text-muted">{{ graph.base_article_count }} artiklar i basklustret · {{ graph.relations|length }} grannkluster · {{ graph.edges|length }} kopplingar · <span class="badge text-bg-secondary">Stängt</span> visas grått</span>
+    </div>
+    {% if graph.relations %}
+      <div id="article-network" class="article-network-canvas" role="region" aria-label="Kluster kopplade genom gemensamma artiklar"></div>
+    {% else %}
+      <div class="card-body text-muted">Inga andra kluster delar tillräckligt många artiklar med basklustret.</div>
+    {% endif %}
+  </section>
+
+  {% if graph.relations %}
+    <section aria-labelledby="shared-clusters-heading">
+      <h2 id="shared-clusters-heading" class="h4">Kluster efter artikelöverlappning</h2>
+      <div class="row g-3">
+        {% for relation in graph.relations %}
+          <div class="col-12 col-lg-6">
+            <article class="card h-100{% if relation.status == 'closed' %} bg-light text-muted{% endif %}">
+              <div class="card-header d-flex justify-content-between gap-2">
+                <strong>{{ relation.label }}{% if relation.status == 'closed' %} <span class="badge text-bg-secondary">Stängt</span>{% endif %}</strong>
+                <span class="badge text-bg-primary">{{ relation.shared_article_count }} gemensamma</span>
+              </div>
+              <div class="card-body">
+                <div class="small text-muted mb-2">{{ '%.0f'|format(relation.overlap_ratio * 100) }} % av basklustrets artiklar · {{ relation.member_count }} artiklar totalt</div>
+                <ul class="small mb-3">
+                  {% for article in relation.shared_articles %}
+                    <li>{% if article.url %}<a href="{{ article.url }}" target="_blank" rel="noopener noreferrer">{{ article.title }}</a>{% else %}{{ article.title }}{% endif %}{% if article.source %} <span class="text-muted">· {{ article.source }}</span>{% endif %}</li>
+                  {% endfor %}
+                </ul>
+                <a class="btn btn-sm btn-outline-primary" href="{{ relation.url }}">Öppna kluster</a>
+              </div>
+            </article>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+</div>
+
+{% if graph.relations %}
+<script>
+(() => {
+  const graph = {{ graph|tojson }};
+  const host = document.getElementById("article-network");
+  const ns = "http://www.w3.org/2000/svg";
+  const nodeWidth = 190;
+  const nodeHeight = 88;
+  const baseWidth = 230;
+  const baseHeight = 104;
+  const neighbors = graph.nodes.filter(node => !node.is_base);
+  const maxShared = Math.max(1, ...graph.edges.map(edge => edge.shared_article_count));
+  const overlapGroupSizes = new Map();
+  neighbors.forEach(node => overlapGroupSizes.set(
+    node.shared_article_count,
+    (overlapGroupSizes.get(node.shared_article_count) || 0) + 1,
+  ));
+  const largestOverlapGroup = Math.max(1, ...overlapGroupSizes.values());
+  const minimumRadius = Math.max(
+    280,
+    largestOverlapGroup * (nodeWidth + 24) / (2 * Math.PI) + 45,
+  );
+  const radialSpan = Math.max(330, Math.sqrt(neighbors.length) * 68);
+  const maximumRadius = minimumRadius + radialSpan;
+  const layoutAllowance = maximumRadius + 170;
+  const width = Math.max(1100, layoutAllowance * 2);
+  const height = width;
+  let renderWidth = width;
+  let renderHeight = height;
+  const center = {x: width / 2, y: height / 2};
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  svg.classList.add("article-network-svg");
+  const positions = new Map();
+  const polar = new Map();
+  const nodeById = new Map(graph.nodes.map(node => [node.id, node]));
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  positions.set(graph.base_cluster_id, {...center});
+  const groups = new Map();
+  neighbors.forEach(node => {
+    if (!groups.has(node.shared_article_count)) groups.set(node.shared_article_count, []);
+    groups.get(node.shared_article_count).push(node);
+  });
+  [...groups.entries()]
+    .sort((left, right) => right[0] - left[0])
+    .forEach(([sharedCount, nodes], groupIndex) => {
+      nodes.forEach((node, index) => {
+        const overlap = Math.max(0, Math.min(1, Number(node.overlap_ratio) || 0));
+        const radius = minimumRadius + (1 - overlap) * radialSpan;
+        const angle = groupIndex * goldenAngle + index * 2 * Math.PI / nodes.length;
+        polar.set(node.id, {baseRadius: radius, radius, angle, angularVelocity: 0});
+      });
+    });
+
+  const updateCartesianPositions = () => {
+    neighbors.forEach(node => {
+      const state = polar.get(node.id);
+      positions.set(node.id, {
+        x: center.x + Math.cos(state.angle) * state.radius,
+        y: center.y + Math.sin(state.angle) * state.radius,
+      });
+    });
+  };
+  const updateCanvasExtent = () => {
+    const outerRadius = Math.max(
+      maximumRadius,
+      ...neighbors.map(node => polar.get(node.id).radius),
+    );
+    const extent = outerRadius + 170;
+    renderWidth = extent * 2;
+    renderHeight = renderWidth;
+    svg.setAttribute("viewBox", `${center.x - extent} ${center.y - extent} ${renderWidth} ${renderHeight}`);
+    svg.setAttribute("width", renderWidth);
+    svg.setAttribute("height", renderHeight);
+  };
+  updateCartesianPositions();
+
+  const nodeDimensions = node => node.is_base
+    ? {width: baseWidth, height: baseHeight}
+    : {width: nodeWidth, height: nodeHeight};
+  const collisionPadding = 18;
+  const rectanglesOverlap = (left, right) => {
+    const leftPosition = positions.get(left.id);
+    const rightPosition = positions.get(right.id);
+    const leftSize = nodeDimensions(left);
+    const rightSize = nodeDimensions(right);
+    return Math.abs(rightPosition.x - leftPosition.x) < (leftSize.width + rightSize.width) / 2 + collisionPadding
+      && Math.abs(rightPosition.y - leftPosition.y) < (leftSize.height + rightSize.height) / 2 + collisionPadding;
+  };
+
+  const simulationIterations = Math.max(220, Math.min(750, Math.floor(30000 / Math.max(1, graph.nodes.length))));
+  for (let iteration = 0; iteration < simulationIterations; iteration += 1) {
+    const angularForces = new Map(neighbors.map(node => [node.id, 0]));
+    for (let leftIndex = 0; leftIndex < neighbors.length; leftIndex += 1) {
+      const left = neighbors[leftIndex];
+      const leftPosition = positions.get(left.id);
+      const leftState = polar.get(left.id);
+      const leftTangent = {x: -Math.sin(leftState.angle), y: Math.cos(leftState.angle)};
+      for (let rightIndex = leftIndex + 1; rightIndex < neighbors.length; rightIndex += 1) {
+        const right = neighbors[rightIndex];
+        const rightPosition = positions.get(right.id);
+        const rightState = polar.get(right.id);
+        const rightTangent = {x: -Math.sin(rightState.angle), y: Math.cos(rightState.angle)};
+        let dx = rightPosition.x - leftPosition.x;
+        let dy = rightPosition.y - leftPosition.y;
+        if (dx === 0 && dy === 0) { dx = .01 * (rightIndex + 1); dy = .01; }
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const ux = dx / distance;
+        const uy = dy / distance;
+        const repulsion = 52000 / (distance * distance);
+        angularForces.set(
+          left.id,
+          angularForces.get(left.id) + ((-ux * leftTangent.x - uy * leftTangent.y) * repulsion / leftState.radius),
+        );
+        angularForces.set(
+          right.id,
+          angularForces.get(right.id) + ((ux * rightTangent.x + uy * rightTangent.y) * repulsion / rightState.radius),
+        );
+        if (rectanglesOverlap(left, right)) {
+          const angularDirection = Math.sin(rightState.angle - leftState.angle) >= 0 ? 1 : -1;
+          const collisionForce = .018;
+          angularForces.set(left.id, angularForces.get(left.id) - angularDirection * collisionForce);
+          angularForces.set(right.id, angularForces.get(right.id) + angularDirection * collisionForce);
+        }
+      }
+    }
+    graph.edges.forEach(edge => {
+      if (edge.connects_base) return;
+      const sourceNode = nodeById.get(edge.source);
+      const targetNode = nodeById.get(edge.target);
+      const source = positions.get(edge.source);
+      const target = positions.get(edge.target);
+      const sourceState = polar.get(edge.source);
+      const targetState = polar.get(edge.target);
+      const dx = target.x - source.x;
+      const dy = target.y - source.y;
+      const distance = Math.max(1, Math.hypot(dx, dy));
+      const ux = dx / distance;
+      const uy = dy / distance;
+      const gravity = edge.shared_article_count / maxShared;
+      const desiredDistance = 315 - gravity * 145;
+      const spring = (distance - desiredDistance) * (.006 + gravity * .018);
+      const sourceTangent = {x: -Math.sin(sourceState.angle), y: Math.cos(sourceState.angle)};
+      const targetTangent = {x: -Math.sin(targetState.angle), y: Math.cos(targetState.angle)};
+      angularForces.set(
+        sourceNode.id,
+        angularForces.get(sourceNode.id) + (ux * sourceTangent.x + uy * sourceTangent.y) * spring / sourceState.radius,
+      );
+      angularForces.set(
+        targetNode.id,
+        angularForces.get(targetNode.id) - (ux * targetTangent.x + uy * targetTangent.y) * spring / targetState.radius,
+      );
+    });
+    neighbors.forEach(node => {
+      const state = polar.get(node.id);
+      state.angularVelocity = Math.max(
+        -.045,
+        Math.min(.045, (state.angularVelocity + angularForces.get(node.id)) * .84),
+      );
+      state.angle += state.angularVelocity;
+    });
+    updateCartesianPositions();
+  }
+
+  const resolveAngularOverlaps = () => {
+    for (let expansion = 0; expansion < 8; expansion += 1) {
+      for (let pass = 0; pass < Math.max(240, neighbors.length * 8); pass += 1) {
+        let collisionCount = 0;
+        for (let leftIndex = 0; leftIndex < neighbors.length; leftIndex += 1) {
+          const left = neighbors[leftIndex];
+          const leftState = polar.get(left.id);
+          for (let rightIndex = leftIndex + 1; rightIndex < neighbors.length; rightIndex += 1) {
+            const right = neighbors[rightIndex];
+            if (!rectanglesOverlap(left, right)) continue;
+            collisionCount += 1;
+            const rightState = polar.get(right.id);
+            const sine = Math.sin(rightState.angle - leftState.angle);
+            const direction = Math.abs(sine) > .0001 ? Math.sign(sine) : (rightIndex % 2 ? 1 : -1);
+            const radius = Math.max(1, (leftState.radius + rightState.radius) / 2);
+            const angularShift = Math.min(.09, (nodeWidth + collisionPadding) / radius * .12 + .004);
+            leftState.angle -= direction * angularShift;
+            rightState.angle += direction * angularShift;
+          }
+        }
+        updateCartesianPositions();
+        if (collisionCount === 0) return true;
+      }
+      neighbors.forEach(node => {
+        const state = polar.get(node.id);
+        state.radius *= 1.11;
+      });
+      updateCartesianPositions();
+    }
+    return false;
+  };
+  if (!resolveAngularOverlaps()) {
+    let previousRadius = 0;
+    [...groups.entries()]
+      .sort((left, right) => right[0] - left[0])
+      .forEach(([sharedCount, nodes], groupIndex) => {
+        const capacityRadius = nodes.length > 1
+          ? 270 / (2 * Math.sin(Math.PI / nodes.length))
+          : 0;
+        const radius = Math.max(
+          minimumRadius,
+          previousRadius ? previousRadius + 270 : 0,
+          capacityRadius + 20,
+        );
+        nodes.forEach((node, index) => {
+          const state = polar.get(node.id);
+          state.radius = radius;
+          state.angle = groupIndex * goldenAngle + index * 2 * Math.PI / nodes.length;
+        });
+        previousRadius = radius;
+      });
+    updateCartesianPositions();
+  }
+  updateCanvasExtent();
+
+  graph.edges.forEach(edge => {
+    const source = positions.get(edge.source);
+    const target = positions.get(edge.target);
+    const line = document.createElementNS(ns, "line");
+    line.setAttribute("x1", source.x);
+    line.setAttribute("y1", source.y);
+    line.setAttribute("x2", target.x);
+    line.setAttribute("y2", target.y);
+    line.setAttribute("stroke-width", String(1.5 + 6 * edge.shared_article_count / maxShared));
+    line.classList.add("article-network-edge");
+    const title = document.createElementNS(ns, "title");
+    const articleTitles = edge.shared_articles.slice(0, 5).map(article => article.title);
+    title.textContent = `${Math.round(edge.overlap_percent)} % överlappning · ${edge.shared_article_count} gemensamma artiklar${articleTitles.length ? `\n${articleTitles.join("\n")}` : ""}`;
+    line.appendChild(title);
+    svg.appendChild(line);
+    const label = document.createElementNS(ns, "text");
+    label.setAttribute("x", source.x + (target.x - source.x) * .5);
+    label.setAttribute("y", source.y + (target.y - source.y) * .5 - 6);
+    label.setAttribute("text-anchor", "middle");
+    label.classList.add("article-network-edge-label");
+    label.textContent = `${Math.round(edge.overlap_percent)} %`;
+    svg.appendChild(label);
+  });
+
+  graph.nodes.forEach(node => {
+    const position = positions.get(node.id);
+    const currentWidth = node.is_base ? baseWidth : nodeWidth;
+    const currentHeight = node.is_base ? baseHeight : nodeHeight;
+    const link = document.createElementNS(ns, "a");
+    link.setAttribute("href", node.url);
+    link.classList.add("article-network-node");
+    if (node.is_base) link.classList.add("article-network-node--base");
+    if (node.status === "closed") link.classList.add("article-network-node--closed");
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", position.x - currentWidth / 2);
+    rect.setAttribute("y", position.y - currentHeight / 2);
+    rect.setAttribute("width", currentWidth);
+    rect.setAttribute("height", currentHeight);
+    link.appendChild(rect);
+    const title = document.createElementNS(ns, "title");
+    title.textContent = node.is_base ? `${node.label}\nBaskluster` : `${node.label}\n${node.shared_article_count} gemensamma artiklar`;
+    link.appendChild(title);
+    const lines = node.is_base
+      ? [node.label, `Baskluster · ${node.article_count} artiklar`]
+      : [node.label, `${node.status === "closed" ? "Stängt · " : ""}${node.shared_article_count} gemensamma`, `${Math.round(node.overlap_ratio * 100)} % överlappning`];
+    lines.forEach((lineText, lineIndex) => {
+      const text = document.createElementNS(ns, "text");
+      text.setAttribute("x", position.x);
+      text.setAttribute("y", position.y - (lines.length - 1) * 10 + lineIndex * 21);
+      text.setAttribute("text-anchor", "middle");
+      text.setAttribute("font-size", lineIndex === 0 ? "13" : "11");
+      if (lineIndex === 0) text.setAttribute("font-weight", "600");
+      const limit = node.is_base ? 31 : 25;
+      text.textContent = lineText.length > limit ? `${lineText.slice(0, limit - 1)}…` : lineText;
+      link.appendChild(text);
+    });
+    svg.appendChild(link);
+  });
+  host.appendChild(svg);
+
+  let scale = Math.min(1, Math.max(.45, host.clientWidth / renderWidth));
+  const updateZoom = () => {
+    svg.style.width = `${renderWidth * scale}px`;
+    svg.style.height = `${renderHeight * scale}px`;
+    document.getElementById("zoom-reset").textContent = `${Math.round(scale * 100)} %`;
+  };
+  document.getElementById("zoom-out").addEventListener("click", () => { scale = Math.max(.3, scale - .1); updateZoom(); });
+  document.getElementById("zoom-in").addEventListener("click", () => { scale = Math.min(1.8, scale + .1); updateZoom(); });
+  document.getElementById("zoom-reset").addEventListener("click", () => { scale = 1; updateZoom(); });
+  updateZoom();
+})();
+</script>
+{% endif %}
+{% endblock %}

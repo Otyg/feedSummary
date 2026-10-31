@@ -19,9 +19,11 @@ ingest:
   extraction:
     path: "config/extraction.yaml"
 batching:
-  max_articles_per_batch: 15
-  max_chars_per_batch: 9000
-  article_clip_chars: 3500
+  # Använd en större del av kontextfönstret per anrop. Dessa värden passar
+  # konfigurationer med minst 24k context_window_tokens.
+  max_articles_per_batch: 10
+  max_chars_per_batch: 18000
+  article_clip_chars: 3000
   similarity_enabled: true
   similarity_threshold: 0.78
   embedding_text_chars: 2000
@@ -30,11 +32,13 @@ batching:
   meta_batch_clip_chars: 1500
   meta_sources_clip_chars: 100
   retry_user_clip_chars: 9000
-  proofread_max_rounds: 4
+  # En revisionsrunda plus avslutande audit ger bra skydd utan upp till nio
+  # extra LLM-anrop per sammanfattning.
+  proofread_max_rounds: 1
   topic_max_workers: 4
 tagging:
-  summary_max_tags: 20
-  article_max_tags: 20
+  summary_max_tags: 12
+  article_max_tags: 12
   # Minsta cosinuslikhet för att ersätta en föreslagen tagg med en befintlig.
   embedding_replacement_threshold: 0.8
   # Sätt till false för att inte skapa en separat tagg för varje CVE-ID i sammanfattningar.
@@ -64,6 +68,8 @@ tagging:
     # Vid nästa taggningskörning jämförs ett corpus-fingeravtryck. Ändrade
     # artikel-taggar leder till full omträning så att även borttagningar lärs om.
     auto_retrain: true
+    # Manuella tillägg/borttagningar av artikeltaggar köar en full omträning.
+    retrain_on_manual_tag_change: true
   similarity_consistency:
     enabled: true
     similarity_threshold: 0.78
@@ -82,6 +88,17 @@ long_term_analysis:
     # Tillåter explicita, loggade beslut i den skrivbara viewern. Read-only-
     # viewern blockerar alltid dessa POST-anrop även när flaggan är true.
     review_actions_enabled: false
+    # Uppåt används strikta delmängder med ett gemensamt taggantal per nivå;
+    # nedåt används samma relations invers. Gränserna skyddar stora profilarkiv.
+    tag_network_default_levels: 2
+    tag_network_max_levels: 6
+    tag_network_max_nodes: 250
+    tag_network_candidate_limit: 10000
+    # Artikelnätverket begränsar antalet grannkluster och hur många av
+    # basklustrets medlemskap som får läsas när överlappningen beräknas.
+    article_network_default_max_neighbors: 40
+    article_network_max_neighbors: 200
+    article_network_membership_limit: 5000
   schema_version: 1
   batch_size: 200
   quarantine_retry_limit: 50
@@ -141,7 +158,8 @@ long_term_analysis:
       display_name: Samlad analys
       region: Global
       sector: all
-      # Källorna hämtas som union av profilerna nedan när klustringen körs.
+      # Jobbet uppdaterar profilerna nedan och återanvänder deras deduplicerade
+      # Map-snapshots i den samlade rapporten.
       aggregate_profiles: [healthcare_europe, critical_infrastructure, global_events]
     healthcare_europe:
       enabled: true
@@ -187,6 +205,8 @@ llm:
   - provider: ollama_cloud
     host: https://ollama.com
     model: gemma3:27b-cloud
+    # false: välj enbart befintliga DB-taggar och granska ML-förslag före lagring
+    allow_new_tags: true
     api_key: CHANGE-ME-CHANGE-ME
     context_window_tokens: 24576
     max_output_tokens: 500
@@ -199,6 +219,7 @@ llm:
       min_interval_seconds: 2
   - provider: ollama_local
     model: qwen2.5:7b
+    allow_new_tags: true
     embedding_model: qwen3-embedding:0.6b
     embedding_dimensions: 1024
     base_url: http://localhost:11434

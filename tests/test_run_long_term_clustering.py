@@ -173,6 +173,37 @@ class LongTermClusteringCliTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "required_tags"):
             cli._resolve_sources(config, Path("config.yaml"), profile)
 
+    def test_direct_aggregate_clustering_is_rejected(self):
+        config = {
+            "long_term_analysis": {
+                "enabled": True,
+                "profiles": {
+                    "all_profiles": {
+                        "enabled": True,
+                        "aggregate_profiles": ["child"],
+                    },
+                    "child": {"enabled": True, "include_all_sources": True},
+                },
+            }
+        }
+        args = argparse.Namespace(
+            config=None,
+            profile="all_profiles",
+            limit=1,
+            since=None,
+            until=None,
+            all_sources=False,
+            dry_run=True,
+        )
+
+        with self.assertRaisesRegex(ValueError, "orkestreras via worker-jobb"):
+            cli.execute_long_term_clustering(
+                args,
+                config_path=Path("/tmp/config.yaml"),
+                config=config,
+                store=object(),
+            )
+
     def test_timestamp_supports_unix_and_iso_8601(self):
         self.assertEqual(100, cli._timestamp("100"))
         self.assertEqual(0, cli._timestamp("1970-01-01T00:00:00Z"))
