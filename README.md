@@ -9,7 +9,7 @@ FeedSummary är en liten pipeline + webbapp för att:
 
 Färdiga moduler för att använda **Ollama Cloud** eller **Ollama Local**, med fallback-policy, som LLM finns men det är möjligt att lägga till moduler för andra LLMer.
 
-Moduler för att lagra data i en flatfile JSON-databas (TinyDB) eller SQLite finns färdigt, men moduler för andra lagringsformat kan läggas till och användas.
+Färdiga lagringsmoduler finns för TinyDB, SQLite, MongoDB och CouchDB.
 
 ---
 
@@ -182,6 +182,26 @@ Om du har SQLite-stöd:
 store:
   provider: sqlite
   path: ~/.local/share/FeedSummary/news_docs.sqlite
+```
+
+CouchDB använder en databas per logisk samling med det angivna namnet som prefix:
+
+```yaml
+store:
+  provider: couchdb
+  url: http://localhost:5984
+  database: feedsummary
+  username: admin
+  password: secret
+```
+
+Använd hellre miljövariablerna `FEEDSUMMARY_COUCHDB_USER` och
+`FEEDSUMMARY_COUCHDB_PASSWORD` än att spara inloggningsuppgifter i filen.
+Artiklar som helt saknar taggar kan förhandsgranskas och taggas även i CouchDB:
+
+```bash
+.venv/bin/python backfill_missing_tags.py --config config.yaml
+.venv/bin/python backfill_missing_tags.py --config config.yaml --apply
 ```
 
 #### `checkpointing`

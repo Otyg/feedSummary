@@ -48,13 +48,36 @@ def _load_config(path: Path) -> Dict[str, Any]:
 
 
 def _find_untagged_article_ids(store: NewsStore, limit: Optional[int]) -> List[str]:
-    """Return ids of articles that have zero tags, oldest first."""
+    """Return ids of articles that have zero tags, oldest first.
+
+    Loading the tagged ids in bulk is important for remote stores such as
+    CouchDB.  Calling ``get_article_tags`` once per article otherwise causes two
+    HTTP queries per article (one for relations and one for tag documents).
+    """
+    iter_with_tags = getattr(store, "iter_articles_with_tags", None)
+    tagged_article_ids: Optional[set[str]] = None
+    if callable(iter_with_tags):
+        tagged_article_ids = set()
+        for item in iter_with_tags():
+            article = item.get("article") if isinstance(item, dict) else None
+            tags = item.get("tags") if isinstance(item, dict) else None
+            if not isinstance(article, dict) or not tags:
+                continue
+            article_id = str(article.get("id") or article.get("_id") or "").strip()
+            if article_id:
+                tagged_article_ids.add(article_id)
+
     untagged: List[str] = []
     for article in store.iter_articles():
         article_id = str(article.get("id") or article.get("_id") or "").strip()
         if not article_id:
             continue
-        if not store.get_article_tags(article_id):
+        has_tags = (
+            article_id in tagged_article_ids
+            if tagged_article_ids is not None
+            else bool(store.get_article_tags(article_id))
+        )
+        if not has_tags:
             untagged.append(article_id)
             if limit is not None and len(untagged) >= limit:
                 break
@@ -130,23 +153,27 @@ async def _run(args: argparse.Namespace) -> int:
     config_path = _resolve_config_path(args.config)
     config = _load_config(config_path)
     store = create_store(config.get("store", {}))
+    try:
+        result = await backfill_missing_tags(
+            store,
+            config,
+            apply=args.apply,
+            batch_size=args.batch_size,
+            limit=args.limit,
+        )
 
-    result = await backfill_missing_tags(
-        store,
-        config,
-        apply=args.apply,
-        batch_size=args.batch_size,
-        limit=args.limit,
-    )
-
-    mode = "ÄNDRING" if args.apply else "FÖRHANDSGRANSKNING"
-    print(
-        f"{mode}: {result['untagged_articles']} artiklar saknade taggar, "
-        f"{result['tagged']} taggades."
-    )
-    if not args.apply and result["untagged_articles"]:
-        print("Kör med --apply för att faktiskt taggera artiklarna.")
-    return 0
+        mode = "ÄNDRING" if args.apply else "FÖRHANDSGRANSKNING"
+        print(
+            f"{mode}: {result['untagged_articles']} artiklar saknade taggar, "
+            f"{result['tagged']} taggades."
+        )
+        if not args.apply and result["untagged_articles"]:
+            print("Kör med --apply för att faktiskt taggera artiklarna.")
+        return 0
+    finally:
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
