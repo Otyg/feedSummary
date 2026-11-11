@@ -70,8 +70,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not isinstance(store_config, dict):
             raise ValueError("Konfigurationen saknar 'store'")
         provider = str(store_config.get("provider") or store_config.get("type") or "tinydb")
-        if provider.strip().lower() not in {"mongo", "mongodb"}:
-            raise ValueError("ML-omträning stöds för närvarande endast med MongoDB")
+        if provider.strip().lower() not in {"mongo", "mongodb", "couch", "couchdb"}:
+            raise ValueError("ML-omträning stöds endast med MongoDB eller CouchDB")
 
         settings = EmbeddingSGDSettings.from_config(
             config,
@@ -88,7 +88,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         read_only_store_config = dict(store_config)
         read_only_store_config["initialize_schema"] = False
-        raw_uri = str(read_only_store_config.get("uri") or "")
+        raw_uri = str(
+            read_only_store_config.get("uri")
+            or read_only_store_config.get("url")
+            or ""
+        )
         store = create_store(read_only_store_config)
 
         tagger = EmbeddingSGDTagger(settings)
@@ -103,7 +107,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except Exception as error:  # noqa: BLE001 - CLI boundary converts failures to exit codes
         message = str(error)
         if raw_uri:
-            message = message.replace(raw_uri, "<mongodb-uri>")
+            message = message.replace(raw_uri, "<storage-uri>")
         print(
             f"Omträningen misslyckades ({type(error).__name__}): {message}",
             file=sys.stderr,

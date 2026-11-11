@@ -35,15 +35,25 @@ class RetrainTaggingMLTests(unittest.TestCase):
         FakeTagger.force = None
         FakeTagger.result = True
 
-    def _write_config(self, directory: str, *, enabled: bool = True) -> Path:
+    def _write_config(
+        self,
+        directory: str,
+        *,
+        enabled: bool = True,
+        provider: str = "mongodb",
+    ) -> Path:
         path = Path(directory) / "config.yaml"
+        connection = (
+            ["  url: http://localhost:5984", "  database: feedsummary"]
+            if provider == "couchdb"
+            else ["  uri: mongodb://localhost:27017", "  database: feedsummary"]
+        )
         path.write_text(
             "\n".join(
                 [
                     "store:",
-                    "  provider: mongodb",
-                    "  uri: mongodb://localhost:27017",
-                    "  database: feedsummary",
+                    f"  provider: {provider}",
+                    *connection,
                     "tagging:",
                     "  ml:",
                     f"    enabled: {'true' if enabled else 'false'}",
@@ -84,6 +94,29 @@ class RetrainTaggingMLTests(unittest.TestCase):
             self.assertEqual("test-embedding", FakeTagger.settings.embedding_model)
             self.assertTrue(store.closed)
             self.assertIn("Full omträning klar", stdout.getvalue())
+
+    def test_couchdb_store_is_supported_for_full_retraining(self):
+        with TemporaryDirectory() as directory:
+            config_path = self._write_config(directory, provider="couchdb")
+            store = FakeStore()
+            store_configs = []
+
+            def create_store(config):
+                store_configs.append(config)
+                return store
+
+            with (
+                patch("retrain_tagging_ml.create_store", side_effect=create_store),
+                patch("retrain_tagging_ml.EmbeddingSGDTagger", FakeTagger),
+            ):
+                exit_code = main(["--config", str(config_path)])
+
+            self.assertEqual(0, exit_code)
+            self.assertTrue(FakeTagger.force)
+            self.assertTrue(store.closed)
+            self.assertEqual("couchdb", store_configs[0]["provider"])
+            self.assertEqual("http://localhost:5984", store_configs[0]["url"])
+            self.assertFalse(store_configs[0]["initialize_schema"])
 
     def test_disabled_ml_fails_before_opening_store(self):
         with TemporaryDirectory() as directory:
