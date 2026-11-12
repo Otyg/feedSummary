@@ -76,22 +76,6 @@ READ_ROUTES = (
     ("/api/v1/summaries", "api_summaries"),
     ("/api/v1/summaries/latest", "api_summaries_latest"),
     ("/api/v1/summary/<summary_id>", "api_summary"),
-    ("/api/v1/long-term/reports", "api_long_term_reports"),
-    ("/api/v1/long-term/attack-pressure", "api_long_term_attack_pressure"),
-    ("/api/v1/long-term/reports/<report_id>", "api_long_term_report"),
-    ("/api/v1/long-term/runs", "api_long_term_runs"),
-    ("/api/v1/long-term/snapshots/<snapshot_id>", "api_long_term_snapshot"),
-    ("/api/v1/long-term/clusters", "api_long_term_clusters"),
-    ("/api/v1/long-term/clusters/<cluster_id>", "api_long_term_cluster"),
-    (
-        "/api/v1/long-term/clusters/<cluster_id>/tag-network",
-        "api_long_term_cluster_tag_network",
-    ),
-    (
-        "/api/v1/long-term/clusters/<cluster_id>/article-network",
-        "api_long_term_cluster_article_network",
-    ),
-    ("/api/v1/long-term/reviews/<cluster_id>", "api_long_term_cluster_review"),
     ("/api/v1/articles", "api_articles"),
     ("/api/v1/article/<article_id>", "api_article"),
     ("/api/v1/pages/source", "api_page_source"),
@@ -111,20 +95,6 @@ READ_ROUTES = (
     ("/summaries", "list_summaries"),
     ("/summary/<summary_id>", "view_summary"),
     ("/summary/<summary_id>/proofread-audit", "view_summary_proofread_audit"),
-    ("/long-term", "list_long_term_reports"),
-    ("/long-term/report/<report_id>", "view_long_term_report"),
-    ("/long-term/snapshot/<snapshot_id>", "view_long_term_snapshot"),
-    ("/long-term/clusters", "list_long_term_clusters"),
-    ("/long-term/review/<cluster_id>", "review_long_term_cluster"),
-    ("/long-term/cluster/<cluster_id>", "view_long_term_cluster"),
-    (
-        "/long-term/cluster/<cluster_id>/tag-network",
-        "view_long_term_cluster_tag_network",
-    ),
-    (
-        "/long-term/cluster/<cluster_id>/article-network",
-        "view_long_term_cluster_article_network",
-    ),
     ("/articles", "list_articles"),
     ("/api/v1/article-filter-tags", "api_article_filter_tags"),
     ("/article/<article_id>", "view_article"),
@@ -137,8 +107,6 @@ READ_ROUTES = (
 )
 
 WRITE_ROUTES = (
-    ("/api/v1/long-term/clusters/<cluster_id>/review", "POST"),
-    ("/api/v1/long-term/clusters/<cluster_id>/members", "POST"),
     ("/api/v1/tags/categories", "PUT"),
     ("/api/v1/tags", "POST"),
     ("/api/v1/article/<article_id>/tags", "POST"),
@@ -202,17 +170,7 @@ def create_app(config_path: Optional[str] = None) -> Flask:
 
     @read_only_app.context_processor
     def read_only_template_context():
-        long_term = viewer.APP_CFG.get("long_term_analysis") or {}
-        return {
-            "read_only": True,
-            "long_term_ui_enabled": viewer._long_term_ui_enabled(),
-            "long_term_review_actions_enabled": False,
-            "long_term_mode": (
-                str(long_term.get("mode") or "")
-                if isinstance(long_term, dict)
-                else ""
-            ),
-        }
+        return {"read_only": True}
 
     for rule, endpoint in READ_ROUTES:
         read_only_app.add_url_rule(

@@ -81,45 +81,6 @@ summary_vulnerabilities:
   lookback: "1w"
   promptpackage: "weekly_hybrid_news_cyber_tech_se"
 
-# Enrich can be enabled on summary jobs. Vulnerability-feed articles are then
-# included only when they share a specific VULNERABILITY tag with an in-window
-# primary article. Matching vulnerability material may be older than lookback.
-summary_enriched_threats:
-  frequency: "daily"
-  time: "08:30"
-  type: "tag_based_summary"
-  tags:
-    - "incident"
-    - "cyberattack"
-  lookback: "1d"
-  enrich: true
-  promptpackage: "daily_threat_landscape_healthcare_europe_se"
-
-# Manuella långtidsjobb. De kan triggas via worker-API:t när
-# long_term_analysis.enabled är true. Byt frequency/time för schemalagd drift.
-long_term_cluster_healthcare:
-  frequency: "triggered"
-  type: "long_term_clustering"
-  profile: "healthcare_europe"
-  limit: 200
-
-long_term_map_healthcare:
-  frequency: "triggered"
-  type: "long_term_map"
-  profile: "healthcare_europe"
-  map_limit: 20
-
-long_term_report_healthcare:
-  frequency: "triggered"
-  type: "long_term_report"
-  profile: "healthcare_europe"
-
-long_term_pipeline_healthcare:
-  frequency: "triggered"
-  type: "long_term_pipeline"
-  profile: "healthcare_europe"
-  limit: 200
-  map_limit: 20
 Inrikes:
   frequency: "triggered"
   lookback: "1d"

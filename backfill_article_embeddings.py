@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +28,6 @@ from feedsummary_core.summarizer.batching import (
     cached_embedding,
     ensure_article_embedding,
 )
-
-from run_long_term_clustering import _profile_config, _resolve_sources, _timestamp
-
 
 def _config_path(raw: str | None) -> Path:
     value = raw or os.environ.get("FEEDSUMMARY_CONFIG") or "config.yaml"
@@ -56,6 +54,18 @@ def _store_config(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
     return result
 
 
+def _timestamp(value: str | None) -> int | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
 def _article_selected(
     article: dict[str, Any],
     *,
@@ -76,7 +86,6 @@ async def _run(
     limit: int | None,
     *,
     purpose: str = "both",
-    profile_id: str | None = None,
     since_ts: int | None = None,
     until_ts: int | None = None,
     dry_run: bool = False,
@@ -85,10 +94,6 @@ async def _run(
     if not has_local_embedding_provider(config):
         raise ValueError("Konfigurationen saknar en ollama_local-provider")
 
-    sources: set[str] | None = None
-    if profile_id:
-        _, profile = _profile_config(config, profile_id)
-        sources = set(_resolve_sources(config, config_path, profile))
     store_config = _store_config(config, config_path)
     if dry_run:
         store_config["initialize_schema"] = False
@@ -120,7 +125,7 @@ async def _run(
         for article in iterator():
             if not _article_selected(
                 article,
-                sources=sources,
+                sources=None,
                 since_ts=since_ts,
                 until_ts=until_ts,
             ):
@@ -190,7 +195,6 @@ def main() -> int:
         default="both",
         help="Vilken embeddingtyp som ska fyllas i (standard: both)",
     )
-    parser.add_argument("--profile", help="Begränsa till en long_term_analysis-profil")
     parser.add_argument("--since", help="Starttid som Unix-tid eller ISO-8601")
     parser.add_argument("--until", help="Sluttid som Unix-tid eller ISO-8601")
     parser.add_argument("--dry-run", action="store_true", help="Räkna utan LLM-anrop eller skrivningar")
@@ -201,7 +205,6 @@ def main() -> int:
                 _config_path(args.config),
                 max(1, args.limit) if args.limit else None,
                 purpose=args.purpose,
-                profile_id=args.profile,
                 since_ts=_timestamp(args.since),
                 until_ts=_timestamp(args.until),
                 dry_run=args.dry_run,

@@ -97,83 +97,12 @@ class _ReadStore:
         rows = self.list_summary_docs()
         return dict(rows[0]) if summary_id == "summary-1" else None
 
-    def list_threat_landscape_reports(self, profile_id, *, limit=100):
-        if profile_id != "healthcare_europe":
-            return []
-        return [
-            {
-                "id": "report-1",
-                "profile_id": profile_id,
-                "period_start_ts": 1_700_000_000,
-                "period_end_ts": 1_700_086_400,
-                "created_at": 1_700_086_500,
-                "status": "published",
-                "input_snapshot_ids": [],
-                "analysis": {"executive_summary": "Shadow report"},
-                "forecast": [],
-                "quality": {"warning_codes": []},
-            }
-        ][:limit]
 
-    def get_threat_landscape_report(self, report_id):
-        rows = self.list_threat_landscape_reports("healthcare_europe")
-        return dict(rows[0]) if report_id == "report-1" else None
 
-    def list_long_term_runs(self, profile_id, *, limit=100):
-        return []
 
-    def list_threat_clusters(
-        self,
-        profile_id,
-        *,
-        statuses=None,
-        limit=10000,
-        offset=0,
-        include_vectors=True,
-        min_member_count=None,
-    ):
-        cluster = {
-            "id": "cluster-1",
-            "profile_id": "healthcare_europe",
-            "status": "active",
-            "first_seen_ts": 1_700_000_000,
-            "last_seen_ts": 1_700_086_400,
-            "member_count": 1,
-            "membership_revision": 1,
-            "summarized_revision": 0,
-            "strong_indicators": ["organization:example"],
-            "tag_scope": "SECTOR:healthcare|REGION:europe",
-            "centroid": [1.0, 0.0],
-        }
-        rows = [cluster] if profile_id == cluster["profile_id"] else []
-        if statuses:
-            rows = [row for row in rows if row["status"] in statuses]
-        if min_member_count is not None:
-            rows = [row for row in rows if row["member_count"] >= min_member_count]
-        rows = [dict(row) for row in rows[offset : offset + limit]]
-        if not include_vectors:
-            for row in rows:
-                row.pop("centroid", None)
-        return rows
 
-    def get_threat_cluster(self, cluster_id):
-        rows = self.list_threat_clusters("healthcare_europe")
-        return next((row for row in rows if row["id"] == cluster_id), None)
 
-    def list_cluster_memberships(self, cluster_id, *, limit=10000):
-        if cluster_id != "cluster-1":
-            return []
-        return [
-            {
-                "article_id": "article-1",
-                "evidence": {"title": "Readable clustered incident"},
-            }
-        ][:limit]
 
-    def list_article_cluster_memberships(self, profile_id, article_id):
-        if profile_id != "healthcare_europe" or article_id != "article-1":
-            return []
-        return [{"profile_id": profile_id, "article_id": article_id, "cluster_id": "cluster-1"}]
 
 
 class ReadOnlyViewerTests(unittest.TestCase):
@@ -181,13 +110,7 @@ class ReadOnlyViewerTests(unittest.TestCase):
         self.original_store = viewer.APP_STORE
         self.original_cfg = viewer.APP_CFG
         viewer.APP_STORE = _ReadStore()
-        viewer.APP_CFG = {
-            "long_term_analysis": {
-                "mode": "shadow",
-                "ui": {"enabled": True},
-                "profiles": {"healthcare_europe": {"enabled": True}},
-            }
-        }
+        viewer.APP_CFG = {}
         readonly.app.config.update(TESTING=True)
         self.client = readonly.app.test_client()
 
@@ -197,8 +120,6 @@ class ReadOnlyViewerTests(unittest.TestCase):
 
     def test_all_registered_write_routes_return_401(self):
         paths = {
-            "/api/v1/long-term/clusters/cluster-1/review": "POST",
-            "/api/v1/long-term/clusters/cluster-1/members": "POST",
             "/api/v1/tags/categories": "PUT",
             "/api/v1/tags": "POST",
             "/api/v1/article/article-1/tags": "POST",
@@ -310,54 +231,9 @@ class ReadOnlyViewerTests(unittest.TestCase):
                 self.assertIn(endpoint, viewer.app.view_functions)
                 self.assertIn(endpoint, readonly.app.view_functions)
 
-    def test_long_term_report_list_is_available_read_only(self):
-        response = self.client.get("/long-term")
 
-        self.assertEqual(200, response.status_code)
-        html = response.get_data(as_text=True)
-        self.assertIn("Shadow report", html)
-        self.assertIn("Läsbehörighet", html)
-        self.assertIn("Långtidsanalys", html)
-        self.assertIn(">SHADOW</span>", html)
 
-    def test_long_term_cluster_list_is_available_read_only(self):
-        response = self.client.get("/long-term/clusters")
-        api_response = self.client.get("/api/v1/long-term/clusters")
 
-        self.assertEqual(200, response.status_code)
-        html = response.get_data(as_text=True)
-        self.assertIn("Readable clustered incident", html)
-        self.assertIn("/long-term/cluster/cluster-1", html)
-        self.assertEqual(200, api_response.status_code)
-        self.assertEqual("cluster-1", api_response.get_json()["items"][0]["id"])
-
-    def test_long_term_cluster_tag_network_is_available_read_only(self):
-        page_response = self.client.get(
-            "/long-term/cluster/cluster-1/tag-network?up=1&down=1"
-        )
-        api_response = self.client.get(
-            "/api/v1/long-term/clusters/cluster-1/tag-network?up=1&down=1"
-        )
-
-        self.assertEqual(200, page_response.status_code)
-        self.assertIn("Tagghierarki", page_response.get_data(as_text=True))
-        self.assertEqual(200, api_response.status_code)
-        self.assertEqual("cluster-1", api_response.get_json()["base_cluster_id"])
-
-    def test_long_term_cluster_article_network_is_available_read_only(self):
-        page_response = self.client.get(
-            "/long-term/cluster/cluster-1/article-network"
-        )
-        api_response = self.client.get(
-            "/api/v1/long-term/clusters/cluster-1/article-network"
-        )
-
-        self.assertEqual(200, page_response.status_code)
-        self.assertIn(
-            "Kraftstyrt artikelnätverk", page_response.get_data(as_text=True)
-        )
-        self.assertEqual(200, api_response.status_code)
-        self.assertEqual("cluster-1", api_response.get_json()["base_cluster_id"])
 
 
 if __name__ == "__main__":

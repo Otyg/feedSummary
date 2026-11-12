@@ -622,131 +622,19 @@ som positionella argument om bara ett urval ska granskas, exempelvis `ray comfas
 
 ---
 
-## Bygg om långtidskluster efter byte till taggstyrd modell
+## Rensa bort tidigare långtidsanalysdata
 
-`rebuild_long_term_clusters.py` visar först en skrivskyddad plan. Vid `--apply`
-stängs alla öppna kluster i vald källprofil och artiklarna klustras om i en ny
-profil med egen cursor. Gamla medlemskap, snapshots och rapporter bevaras.
-Som standard skrivs den nya profilkonfigurationen atomiskt tillbaka till samma
-config-fil, så den nya profilen blir aktiv direkt. Kör med långtidsjobben
-pausade och granska planen innan du tillämpar ändringen:
+Den borttagna funktionens gamla data och schema kan rensas från den lagringsbackend
+som anges i konfigurationen. Kommandot är en dry-run om `--yes` utelämnas:
 
 ```bash
-python rebuild_long_term_clusters.py --config config.yaml --profile healthcare_europe
-python rebuild_long_term_clusters.py --config config.yaml --profile healthcare_europe \
-  --apply
+python purge_legacy_long_term_data.py --config config.yaml
+python purge_legacy_long_term_data.py --config config.yaml --yes
 ```
 
-Den uppdaterade konfigurationen behåller arkivprofilen för historik men stänger
-av ny klustring där. Den nya profilen heter normalt
-`healthcare_europe_tagged_v2` och är aktiv direkt efter `--apply`. Vid avbrott
-kan samma kommando köras igen med `--config config.yaml --profile
-healthcare_europe --apply`; den nya
-profilens cursor gör att färdiga batcher inte upprepas. Endast artiklar som
-fortfarande finns i artikellagret kan byggas om; saknade embeddings hamnar i
-karantän och redovisas i resultatet.
-
-Det separata config-flödet finns kvar som ett alternativ:
-`--output-config config.tagged.yaml --apply`. Då skrivs ingen ändring till
-`config.yaml`.
-
-Om profilen är låst av ett pågående långtidsjobb (till exempel `long_term_map`),
-vänta tills jobbet är klart innan återbyggnaden körs igen. Ett tidigare försök
-kan redan ha skapat en separat config utan att ändra något kluster. Använd i så
-fall den filen som `--config` vid omkörningen och utelämna `--output-config`.
-
-## Samlad långtidsanalys
-
-Långtidsvyerna `/long-term` och `/long-term/clusters` visar alla konfigurerade
-profiler i separata sektioner. Rapportvyn uppdateras var femte minut när den är
-öppen. En samlingsprofil fungerar som en orkestrerande rapportprofil. Den
-uppdaterar vid behov profilerna i `aggregate_profiles`, återanvänder deras
-kluster-snapshots och deduplicerar identiska händelsekluster innan en egen
-samlad Reduce-rapport genereras. Samlingsprofilen gör därför inga separata
-Map-LLM-anrop för kopior av barnprofilernas kluster.
-
-Ett samlingsjobb fan-out-kör barnprofilernas idempotenta klustring och Map. Ett
-fristående Map- eller Report-jobb gör först en billig klustringskontroll; Map
-anropar bara LLM för kluster med osammanfattade revisioner. Om en barnprofil
-inte kan uppdateras används dess senast tillgängliga snapshots. Rapporten sparas
-med `quality.completeness: partial`, varningen
-`aggregate_profile_update_failed` och felinformation per profil och fas.
-Direkt CLI-körning av `run_long_term_clustering.py` eller
-`run_long_term_map.py` med en samlingsprofil avvisas för att förhindra att en
-parallell uppsättning kluster och kostsamma Map-anrop skapas av misstag.
-
-Exemplet `all_profiles` finns i `config.yaml.dist`. Ange de aktiva profilernas
-ID i `aggregate_profiles` i den lokala `config.yaml`, och lägg jobben från
-`config/long_term_all_profiles_schedule.example.yml` i den aktiva
-`config/schedule.yaml`. Samlingsprofilens rapport visas överst i rapportvyn.
-Det utlösta jobbet `long_term_pipeline_all_profiles_pilot` kan användas för en
-första manuell körning; de övriga jobben fortsätter automatiskt varje timme,
-var sjätte timme och dagligen.
-Källunionen stöder profiler med `sources` och `categories`; om en ingående
-profil har `required_tags` stoppas körningen med ett tydligt fel, eftersom ett
-enkelt källurval inte kan återskapa den profilens taggvillkor.
-
-Från en klusterdetalj går det också att öppna ett taggnätverk. Nätverket är
-profilavgränsat. Uppåt kopplas ett kluster till existerande kluster vars
-taggmängder är strikta delmängder. Nästa nivå använder den största tillgängliga
-subset-storleken, så ett hopp kan ta bort flera taggar men alla kluster på samma
-nivå har lika många taggar. Nedåt används den exakta inversen av denna relation,
-så ett kluster som visar en viss förälder också visas som barn när nätverket
-öppnas från föräldern. Djupet kan ställas separat i båda riktningarna. Standarddjup,
-maxdjup, nodgräns och kandidatgräns styrs med `tag_network_*` under
-`long_term_analysis.ui`; både HTML-vyn och det versionerade API:t är tillgängliga
-i den skrivbara och den separata read-only-viewern.
-
-En eller flera taggar från basnoden kan ignoreras i vyn. De tas då bort från
-både basnoden och alla kandidaters taggmängder innan relationer och taggantal
-beräknas. API:t använder en upprepad frågeparameter, exempelvis
-`?exclude=ACTOR:example&exclude=REGION:europe`.
-
-Klusterdetaljen har även ett artikelnätverk som återanvänder klustrens bevarade
-artikelmedlemskap. Basklustret visas i centrum och andra kluster ordnas som ett
-kraftstyrt nätverk: alla visade klusterpar med artikelöverlappning förbinds,
-noderna stöter bort varandra och fler unika gemensamma artiklar ger starkare
-attraktion och kraftigare kant. Överlappningsandelen mot basklustret bestämmer
-radialavståndet monotont; lika andel ger samma avstånd, medan kopplingarna mellan
-grannkluster påverkar deras vinkel runt basen. Vyn kan filtreras på minsta
-procentuella överlappning och begränsas till de starkaste grannarna. Mot basen
-är nämnaren basklustrets artikelantal; mellan två grannkluster används den
-symmetriska Jaccard-andelen. API:t är
-`/api/v1/long-term/clusters/<cluster_id>/article-network`.
-
-## Angreppstryck för CVE och TEF
-
-`GET /api/v1/long-term/attack-pressure?profile=healthcare_europe&cve=CVE-2026-12345`
-finns i både vanliga och skrivskyddade viewern när
-`long_term_analysis.ui.enabled` är `true`. CVE måste vara ett helt CVE-ID;
-profilen måste finnas i konfigurationen. Profilens `region` och `sector` är
-etiketter för profilens omfattning.
-
-Svaret ger separata `factor` för `region`, `sector` och `vulnerability`.
-`tef_adjustment` visar komponenterna, vikterna och den slutliga skalären:
-`1 + 0,25×(region−1) + 0,25×(sector−1) + 0,50×(cve−1)`.
-Multiplicera `min`, `mode` och `max` från cveRisk med slutlig `factor` och
-klipp till 1,0. cveRisk kan göra detta med
-`TEFCalculator.calculate_tef(cve_id, pressure)`.
-
-Region och sektor är uttryckligen märkta som **delad profiltrendproxy** eftersom
-long-term-rapporterna ännu inte har separata geografiska eller sektoriella
-händelseserier. Varje komponent får faktor 1,1 bara om rapportens 30-dagarstrend
-är godkänd och fortfarande stiger när CVE-klustren räknas bort. Annars är
-komponenten neutral (1,0), även om profilen heter `healthcare_europe`.
-
-CVE-komponenten söker exakta `cve:`-indikatorer i aktuella kluster från de
-senaste 30 dagarna, oberoende av när den senaste rapporten skapades. Ett eller
-två matchande kluster ger faktor 1,1; minst tre ger 1,2. Om en nyare
-klustersnapshot uttryckligen säger att just CVE:n utnyttjas aktivt blir
-CVE-faktorn 1,4. `evidence_cluster_ids`, `evidence_snapshot_ids` och
-`evidence_article_ids` visar underlaget. Snapshotens utsaga är ett rapporterat
-exploateringsbelägg, inte en oberoende verifiering. En gammal eller ofullständig
-rapport gör bara region och sektor neutrala; den döljer inte ny CVE-evidens.
-Exploateringsbelägget kan ligga i ett explicit tidslinjepåstående eller i en
-sammanfattning som direkt knyter en exploaterad sårbarhetskedja till dess CVE:er.
-Om även CVE-evidens saknas blir hela justeringen 1,0. Heuristiken är ännu
-okalibrerad och ersätter inte EPSS eller CISA KEV.
+Rensningen tar bort gamla MongoDB-collections, CouchDB-databaser eller
+SQLite/TinyDB-tabeller samt speglade långtidsrapporter. Artiklar, taggar,
+artikel-taggrelationer, embeddings och vanliga sammanfattningar bevaras.
 
 ## Tips & felsökning
 
