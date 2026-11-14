@@ -204,6 +204,43 @@ Artiklar som helt saknar taggar kan förhandsgranskas och taggas även i CouchDB
 .venv/bin/python backfill_missing_tags.py --config config.yaml --apply
 ```
 
+#### Migrera CouchDB till MongoDB och jämför prestanda
+
+`migrate_couchdb_to_mongodb.py` kopierar samtliga FeedSummary-samlingar, inklusive
+artiklar, embeddings, taggar och relationer, kategorier, jobb, temporära
+sammanfattningar och färdiga sammanfattningar. Standardkörningen är en
+förhandsgranskning och skriver ingenting:
+
+```bash
+export FEEDSUMMARY_COUCHDB_URL=http://localhost:5984
+export FEEDSUMMARY_COUCHDB_USER=admin
+export FEEDSUMMARY_COUCHDB_PASSWORD='...'
+export FEEDSUMMARY_MONGODB_URI=mongodb://localhost:27017
+
+.venv/bin/python migrate_couchdb_to_mongodb.py
+.venv/bin/python migrate_couchdb_to_mongodb.py --apply
+```
+
+En vanlig `--apply` kan återupptas och ersätter dokument med samma ID, men tar
+inte bort extra dokument som redan finns i MongoDB. För en exakt, ren kopia kan
+`--replace-target --apply` användas; detta raderar först hela den namngivna
+MongoDB-databasen. Efter skrivningen verifieras varje kopierat dokuments innehåll.
+
+När migreringen är klar jämför följande kommando punktläsning, batchläsning,
+käll-/tidsfilter, osammanfattade urval, taggfilter och nya artikelwrites:
+
+```bash
+.venv/bin/python benchmark_databases.py \
+  --sample-size 200 --write-count 25 --iterations 7 \
+  --output database-benchmark.json
+```
+
+Läsproven använder samma artikel-ID:n och filter i båda databaserna. Skrivprovet
+skapar endast temporära artiklar med en unik benchmarkmarkör och städar bort dem
+från båda databaserna även om mätningen avbryts. Kör benchmarken nära båda
+databasservrarna och upprepa den vid flera tidpunkter för att skilja databasens
+latens från nätverk, samtidig last och kalla cachear.
+
 #### `checkpointing`
 Checkpoint/resume för långkörningar:
 
