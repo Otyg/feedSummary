@@ -245,7 +245,8 @@ def benchmark(
     mongo = MongoDBStore(
         uri=mongo_uri, database=mongo_database, initialize_schema=False
     )
-    prefix = f"__fs_benchmark_{uuid.uuid4().hex}_"
+    # CouchDB reserves document ids beginning with an underscore.
+    prefix = f"fs-benchmark-{uuid.uuid4().hex}-"
     write_batches = _temporary_articles(prefix, write_count, iterations)
     temporary_ids = [document["id"] for batch in write_batches for document in batch]
     try:

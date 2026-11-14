@@ -35,6 +35,10 @@ class DatabaseMigrationBenchmarkTests(unittest.TestCase):
         self.assertEqual(6, len(ids))
         self.assertEqual(6, len(set(ids)))
 
+    def test_couchdb_benchmark_ids_do_not_use_reserved_prefix(self):
+        batches = _temporary_articles("fs-benchmark-run-", 1, 1)
+        self.assertFalse(batches[0][0]["id"].startswith("_"))
+
     def test_measure_separates_warmups_and_iterations(self):
         calls = []
 
