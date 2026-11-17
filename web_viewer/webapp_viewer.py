@@ -2229,7 +2229,8 @@ def api_reclassify_article_with_existing_tags(article_id: str):
     Reclassify an article using only existing tags from the database.
     
     No new tags are created - the LLM is asked to suggest only from existing tags.
-    The LLM is instructed that it's OK to suggest no tags if none are relevant.
+    This is a human-review flow: it returns broader credible candidates and does
+    not apply the conservative evidence restrictions used by automatic tagging.
     
     Request body:
         max_tags: Maximum number of tags to suggest (default 20)
@@ -2273,6 +2274,7 @@ def api_reclassify_article_with_existing_tags(article_id: str):
                 article=article,
                 current_article_tags=current_tags,
                 max_tags=max_tags,
+                manual_review=True,
             )
         )
         

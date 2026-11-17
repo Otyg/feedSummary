@@ -42,6 +42,7 @@ class ArticleReclassificationLimitTests(unittest.TestCase):
                     )
                     self.assertEqual(200, response.status_code)
                     self.assertEqual(20, classify.await_args.kwargs["max_tags"])
+                    self.assertTrue(classify.await_args.kwargs["manual_review"])
         finally:
             webapp_viewer.APP_STORE = previous_store
             webapp_viewer.APP_CFG = previous_config
